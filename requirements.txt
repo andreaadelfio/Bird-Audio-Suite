@@ -1,0 +1,20 @@
+# Core detection
+birdnetlib>=0.18.0
+wikipedia-api>=0.6.0
+
+# Live microphone mode
+pvrecorder>=1.2.0
+sounddevice>=0.4.6
+
+# Audio processing
+librosa>=0.10.0
+numpy>=1.24.0
+scipy>=1.10.0
+soundfile>=0.12.1
+resampy>=0.4.2
+
+# ML inference
+tensorflow>=2.14.0
+
+# Optional plotting for `denoise --plot`
+matplotlib>=3.7.0

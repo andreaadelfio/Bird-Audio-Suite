@@ -1,0 +1,5 @@
+__pycache__/
+bird_audio_suite/__pycache__/
+detections/
+*.pyc
+
