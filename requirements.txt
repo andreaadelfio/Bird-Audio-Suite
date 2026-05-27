@@ -12,6 +12,8 @@ numpy>=1.24.0
 scipy>=1.10.0
 soundfile>=0.12.1
 resampy>=0.4.2
+requests>=2.31.0
+pyinaturalist>=0.20.0
 
 # ML inference
 tensorflow>=2.14.0

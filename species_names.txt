@@ -1,5 +1,6 @@
 Acrocephalus scirpaceus|Eurasian Reed Warbler|Cannaiola|
 Actitis hypoleucos|Common Sandpiper|Piro Piro Piccolo|
+Aegithalos caudatus|Long-tailed Tit|Codibùgnolo|Schwanzmeise
 Anas platyrhynchos|Mallard|Germano Reale|
 Anser anser|Graylag Goose|Oca Selvatica|
 Anthus trivialis|Tree Pipit|Prispolone|Baumpieper
@@ -13,19 +14,20 @@ Carduelis carduelis|European Goldfinch|Cardellino|
 Certhia brachydactyla|Short-toed Treecreeper|Rampichino Comune|Gartenbaumläufer
 Chloris chloris|European Greenfinch|Verdone Comune|
 Chroicocephalus ridibundus|Black-headed Gull|Gabbiano Comune|
-Coccothraustes coccothraustes|Hawfinch|Frosone Comune|
+Coccothraustes coccothraustes|Hawfinch|Frosone Comune|Kernbeißer
 Columba livia|Rock Pigeon|Piccione Selvatico Occidentale|
 Columba palumbus|Common Wood-Pigeon|Colombaccio|Ringeltaube
-Corvus cornix|Hooded Crow|Cornacchia Grigia|
-Corvus corone|Carrion Crow|Cornacchia|
-Cuculus canorus|Common Cuckoo|Cuculo O|
-Cyanistes caeruleus|Eurasian Blue Tit|Cinciarella|
-Dendrocopos major|Great Spotted Woodpecker|Picchio Rosso Maggiore|
+Corvus cornix|Hooded Crow|Cornacchia Grigia|Nebelkrähe
+Corvus corone|Carrion Crow|Cornacchia|Rabenkrähe
+Cuculus canorus|Common Cuckoo|Cuculo O|Kuckuck
+Cyanistes caeruleus|Eurasian Blue Tit|Cinciarella|Blaumeise
+Dendrocopos major|Great Spotted Woodpecker|Picchio Rosso Maggiore|Buntspecht
 Egretta garzetta|Little Egret|Garzetta|
 Emberiza cirlus|Cirl Bunting|Zigolo Nero|
-Erithacus rubecula|European Robin|Pettirosso|
-Falco tinnunculus|Eurasian Kestrel|Gheppio Comune|
-Fringilla coelebs|Common Chaffinch|Fringuello|
+Emberiza citrinella|Yellowhammer|Zigolo Giallo|Goldammer
+Erithacus rubecula|European Robin|Pettirosso|Rotkehlchen
+Falco tinnunculus|Eurasian Kestrel|Gheppio Comune|Turmfalke
+Fringilla coelebs|Common Chaffinch|Fringuello|Buchfink
 Fulica atra|Eurasian Coot|Folaga Comune|
 Garrulus glandarius|Eurasian Jay|Ghiandaia|
 Grus grus|Common Crane|Gru Cenerina|
@@ -36,23 +38,23 @@ Motacilla flava|Western Yellow Wagtail|Cutrettola|
 Muscicapa striata|Spotted Flycatcher|Pigliamosche Comune|Grauschnäpper
 Otus scops|Eurasian Scops-Owl|Assiolo Comune|
 Parus major|Great Tit|Cinciallegra|Kohlmeise
-Passer domesticus|House Sparrow|Passera Europea|
-Periparus ater|Coal Tit|Cincia Mora|
+Passer domesticus|House Sparrow|Passera Europea|Haussperling
+Periparus ater|Coal Tit|Cincia Mora|Tannenmeise
 Pernis apivorus|European Honey-buzzard|Pecchiaiolo Occidentale|
 Phalacrocorax carbo|Great Cormorant|Cormorano Comune|
 Phasianus colchicus|Ring-necked Pheasant|Fagiano Comune|
-Phoenicurus ochruros|Black Redstart|Codirosso Spazzacamino|
+Phoenicurus ochruros|Black Redstart|Codirosso Spazzacamino|Hausrotschwanz
 Phoenicurus phoenicurus|Common Redstart|Codirosso|
 Phylloscopus collybita|Common Chiffchaff|Luì Piccolo|
-Pica pica|Eurasian Magpie|Gazza|
-Picus viridis|Eurasian Green Woodpecker|Picchio Verde|
+Pica pica|Eurasian Magpie|Gazza|Elster
+Picus viridis|Eurasian Green Woodpecker|Picchio Verde|Grünspecht
 Prunella modularis|Dunnock|Passera Scopaiola|
 Regulus regulus|Goldcrest|Regolo Comune|
 Sitta europaea|Eurasian Nuthatch|Picchio Muratore|
 Streptopelia decaocto|Eurasian Collared-Dove|Tortora Dal Collare Orientale|Türkentaube
 Streptopelia turtur|European Turtle-Dove|Tortora Selvatica|
 Strix aluco|Tawny Owl|Allocco Comune|
-Sylvia atricapilla|Eurasian Blackcap|Capinera|
+Sylvia atricapilla|Eurasian Blackcap|Capinera|Mönchsgrasmücke
 Turdus merula|Eurasian Blackbird|Merlo|
 Turdus philomelos|Song Thrush|Tordo Bottaccio|
 Turdus viscivorus|Mistle Thrush|Tordela|

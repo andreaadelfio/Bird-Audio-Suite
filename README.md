@@ -104,6 +104,47 @@ python bird_audio_cli.py denoise --input ./recording.wav
 python bird_audio_cli.py denoise --input ./recording.wav --noise-ref ./noise.wav --plot
 ```
 
+### Import automatico su iNaturalist
+
+E' possibile automatizzare l'import da script usando l'API ufficiale di iNaturalist:
+
+- l'API v2 espone `POST /observations` per creare osservazioni
+- l'API v2 espone `POST /observation_sounds` per allegare file audio
+- per le richieste `POST` serve autenticazione con JWT
+
+Riferimenti ufficiali:
+
+- https://api.inaturalist.org/v2/docs/
+- https://www.inaturalist.org/pages/developers
+- https://www.inaturalist.org/pages/api%2Breference
+- https://help.inaturalist.org/en/support/solutions/articles/151000169939-how-do-i-add-sounds-
+
+Flusso pratico:
+
+1. ottieni un JWT iNaturalist autenticandoti con il tuo account
+2. esportalo nell'ambiente
+3. lancia l'import sul CSV orario generato da Bird Audio Suite
+
+Esempio:
+
+```bash
+export INATURALIST_JWT="incolla-qui-il-jwt"
+python bird_audio_cli.py inat-import --csv detections/20260522/18/inaturalist_import_20260522_18.csv --dry-run
+python bird_audio_cli.py inat-import --csv detections/20260522/18/inaturalist_import_20260522_18.csv
+```
+
+Comportamento dell'importatore:
+
+- crea una osservazione per ogni riga del CSV
+- allega tutti i file audio elencati in `audio_files=...`
+- salva un file di stato accanto al CSV con estensione `.state.json`
+- se rilanci lo script, aggiorna l'osservazione esistente invece di duplicarla e carica solo i nuovi audio mancanti
+
+Nota:
+
+- il JWT va ottenuto fuori dallo script; il progetto usa il token presente in `INATURALIST_JWT`
+- l'integrazione e' stata implementata contro gli endpoint ufficiali documentati, ma non e' stata testata live da qui perche' manca un token reale e l'accesso di rete esecutivo non e' disponibile in questa sessione
+
 ## Note
 
 - Il progetto non modifica i due progetti originali.

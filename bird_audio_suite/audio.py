@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import re
 from datetime import datetime
 from pathlib import Path
@@ -162,19 +163,141 @@ def sanitize_filename(value: str) -> str:
     return cleaned.strip(" ._") or "detection"
 
 
+def append_inaturalist_csv_row(
+    csv_path: Path,
+    *,
+    taxon_name: str,
+    observed_at: datetime,
+    english_name: str,
+    italian_name: str,
+    german_name: str,
+    confidence: float,
+    place_name: str,
+    latitude: float | None,
+    longitude: float | None,
+    tags: str = "",
+    geoprivacy: str = "",
+    audio_file_name: str = "",
+) -> None:
+    csv_path = Path(csv_path)
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    header = [
+        "Nome del taxon",
+        "Data osservazione",
+        "Descrizione",
+        "Nome del luogo",
+        "Latitudine / coord y / nord",
+        "Longitudine / coord x / est",
+        "Etichette",
+        "Geoprivacy",
+    ]
+    rows: list[dict[str, str]] = []
+    observed_at_text = observed_at.strftime("%Y-%m-%d %H:%M")
+
+    if csv_path.exists():
+        with csv_path.open("r", encoding="utf-8", newline="") as handle:
+            reader = csv.DictReader(handle)
+            for row in reader:
+                if row:
+                    rows.append({key: row.get(key, "") for key in header})
+
+    def build_description(
+        *,
+        current_confidence: float,
+        current_english_name: str,
+        current_italian_name: str,
+        current_german_name: str,
+    ) -> str:
+        parts = [
+            f"{current_english_name}, {current_italian_name}, {current_german_name}",
+            f"birdnet_confidence={current_confidence:.3f}",
+        ]
+        return "; ".join(parts)
+
+    merged = False
+    for row in rows:
+        if row["Nome del taxon"] != taxon_name:
+            continue
+
+        existing_files = ""
+        existing_confidence = 0.0
+        for part in row["Descrizione"].split("; "):
+            if part.startswith("birdnet_confidence="):
+                try:
+                    existing_confidence = float(part.split("=", 1)[1])
+                except ValueError:
+                    existing_confidence = 0.0
+            elif part.startswith("audio_files="):
+                existing_files = part.split("=", 1)[1]
+
+        file_names = [name for name in existing_files.split(",") if name]
+        if audio_file_name and audio_file_name not in file_names:
+            file_names.append(audio_file_name)
+
+        previous_observed_at = row["Data osservazione"].strip()
+        row["Data osservazione"] = max(filter(None, [previous_observed_at, observed_at_text]))
+        row["Descrizione"] = build_description(
+            current_confidence=max(existing_confidence, confidence),
+            current_english_name=english_name,
+            current_italian_name=italian_name,
+            current_german_name=german_name,
+        )
+        row["Nome del luogo"] = place_name
+        row["Latitudine / coord y / nord"] = f"{latitude:.6f}" if latitude is not None else ""
+        row["Longitudine / coord x / est"] = f"{longitude:.6f}" if longitude is not None else ""
+        row["Etichette"] = tags
+        row["Geoprivacy"] = geoprivacy
+        merged = True
+        break
+
+    if not merged:
+        rows.append(
+            {
+                "Nome del taxon": taxon_name,
+                "Data osservazione": observed_at_text,
+                "Descrizione": build_description(
+                    current_confidence=confidence,
+                    current_english_name=english_name,
+                    current_italian_name=italian_name,
+                    current_german_name=german_name,
+                ),
+                "Nome del luogo": place_name,
+                "Latitudine / coord y / nord": f"{latitude:.6f}" if latitude is not None else "",
+                "Longitudine / coord x / est": f"{longitude:.6f}" if longitude is not None else "",
+                "Etichette": tags,
+                "Geoprivacy": geoprivacy,
+            }
+        )
+
+    rows.sort(key=lambda row: row["Data osservazione"], reverse=True)
+
+    with csv_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=header)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
 def export_detection_clips(
     samples: np.ndarray,
     sample_rate: int,
     grouped_detections: dict[str, tuple[float, float, float, str]],
     species_catalog,
     destination_dir: Path,
+    latitude: float | None = None,
+    longitude: float | None = None,
+    place_name: str = "",
+    tags: str = "",
+    geoprivacy: str = "",
 ) -> list[Path]:
     exported_paths: list[Path] = []
     destination_dir = Path(destination_dir)
     destination_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    hour = datetime.now().strftime("%H")
+    export_time = datetime.now()
+    timestamp = export_time.strftime("%Y%m%d_%H%M%S")
+    hour = export_time.strftime("%H")
     normalized = normalize_audio(samples)
+    hour_dir = destination_dir / hour
+    csv_path = hour_dir / f"inaturalist_import_{destination_dir.name}_{hour}.csv"
 
     for scientific_name, (start_sec, end_sec, confidence, english_name) in grouped_detections.items():
         start_index = max(int(start_sec * sample_rate), 0)
@@ -182,10 +305,25 @@ def export_detection_clips(
         if end_index <= start_index:
             continue
 
-        italian_name, _, _ = species_catalog.display_names(scientific_name, english_name)
+        italian_name, german_name, english_name = species_catalog.display_names(scientific_name, english_name)
         clip_name = sanitize_filename(italian_name)
-        output_path = destination_dir / hour / clip_name / f"{clip_name}_{timestamp}_{confidence:.3f}.wav"
+        output_path = hour_dir / clip_name / f"{clip_name}_{timestamp}_{confidence:.3f}.wav"
         write_wav_mono(output_path, normalized[start_index:end_index], sample_rate)
+        append_inaturalist_csv_row(
+            csv_path,
+            taxon_name=scientific_name,
+            observed_at=export_time,
+            english_name=english_name,
+            italian_name=italian_name,
+            german_name=german_name,
+            confidence=confidence,
+            place_name=place_name,
+            latitude=latitude,
+            longitude=longitude,
+            tags=tags,
+            geoprivacy=geoprivacy,
+            audio_file_name=output_path.name,
+        )
         exported_paths.append(output_path)
 
     return exported_paths
