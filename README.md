@@ -11,14 +11,14 @@ Progetto unificato e separato che fonde:
 - Ascolto live da microfono con slicing automatico
 - Denoise opzionale con `librosa`
 - Salvataggio clip `.wav` per specie rilevata
-- Cache locale dei nomi specie in `species_names.txt`
+- Catalogo CSV locale in `species_names.txt` con nomi, conteggi storici, media giornaliera e rarita'
 - Recupero automatico dei nomi italiano e tedesco via Wikipedia
 
 ## Struttura
 
 - `bird_audio_cli.py`: entry point CLI
 - `bird_audio_suite/`: moduli condivisi
-- `species_names.txt`: archivio locale nomi specie
+- `species_names.txt`: catalogo CSV locale con nomi e statistiche storiche di frequenza
 - `detections/`: clip esportate
 
 ## Installazione
@@ -94,6 +94,7 @@ python bird_audio_cli.py live
 python bird_audio_cli.py live --slice-interval 240 --min-confidence 0.15
 python bird_audio_cli.py live --noise-ref ./noise.wav
 python bird_audio_cli.py live --backend sounddevice --device-index 17 --disable-denoise --verbose
+python bird_audio_cli.py live --backend sounddevice --device-index -1 --device-probe-seconds 1
 python bird_audio_cli.py live --clip-span full_slice
 ```
 
@@ -151,4 +152,7 @@ Nota:
 - Le clip esportate finiscono in `detections/YYYYMMDD/`.
 - In `live`, la registrazione si interrompe con `Ctrl+C`.
 - Su questa macchina il default live e' `sounddevice` con device `17` (`Gruppo microfoni (Senary Audio capture)`).
+- In `live`, con `--device-index -1` il programma ascolta ogni ingresso sounddevice per un secondo, mostra RMS e picco e seleziona automaticamente quello con piu' segnale. Usa `--device-probe-seconds` per cambiare la durata del test.
+- Il device selezionato automaticamente viene salvato in `.bird_audio_device.json`; agli avvii successivi viene provato solo quello. Se non e' disponibile o il segnale e' insufficiente, vengono provati gli altri ingressi e la cache viene aggiornata.
 - In `live`, il default export e' `from_detection`: dalla prima detection fino alla fine della slice.
+- `species_names.txt` ora e' un CSV storico: tiene i nomi della specie, primo/ultimo giorno di ascolto, giorni osservati, conteggio totale, media giornaliera e una rarita' inversa basata sulla frequenza media. Le osservazioni del giorno vengono invece lette dai CSV `detections/YYYYMMDD/*/inaturalist_import_*.csv`.

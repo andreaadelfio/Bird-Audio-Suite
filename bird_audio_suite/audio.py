@@ -56,23 +56,26 @@ def denoise_signal(
     sample_rate: int,
     noise_reference: Path | None = None,
     high_pass_hz: float = 500.0,
+    low_pass_hz: float = 5000.0,
     noise_reduction_factor: float = 2.0,
 ) -> np.ndarray:
     signal = normalize_audio(samples)
     if signal.size == 0:
         return signal
 
-    if noise_reference is None:
-        noise_signal = signal
-    else:
-        noise_signal, _ = load_audio(noise_reference, sample_rate=sample_rate)
-
     signal_stft = librosa.stft(signal)
-    noise_stft = librosa.stft(noise_signal)
 
     signal_magnitude = np.abs(signal_stft)
     signal_phase = np.angle(signal_stft)
-    noise_profile = np.mean(np.abs(noise_stft), axis=1, keepdims=True)
+    if noise_reference is None:
+        noise_profile = np.zeros((signal_stft.shape[0], 1), dtype=np.float32)
+    else:
+        noise_signal, _ = load_audio(noise_reference, sample_rate=sample_rate)
+        if noise_signal.size:
+            noise_stft = librosa.stft(noise_signal)
+            noise_profile = np.mean(np.abs(noise_stft), axis=1, keepdims=True)
+        else:
+            noise_profile = np.zeros((signal_stft.shape[0], 1), dtype=np.float32)
 
     filtered_magnitude = np.maximum(
         signal_magnitude - noise_reduction_factor * noise_profile,
@@ -81,11 +84,33 @@ def denoise_signal(
 
     freqs = librosa.fft_frequencies(sr=sample_rate)
     filtered_magnitude[freqs < high_pass_hz, :] = 0.0
+    filtered_magnitude[freqs > low_pass_hz, :] = 0.0
 
     rebuilt_stft = filtered_magnitude * np.exp(1j * signal_phase)
     denoised = librosa.istft(rebuilt_stft, length=len(signal))
     return denoised.astype(np.float32)
 
+def cut_signal_freq(
+    samples: np.ndarray,
+    sample_rate: int,
+    high_pass_hz: float = 500.0,
+    low_pass_hz: float = 5000.0,
+) -> np.ndarray:
+    signal = normalize_audio(samples)
+    if signal.size == 0:
+        return signal
+
+    signal_stft = librosa.stft(signal)
+    signal_magnitude = np.abs(signal_stft)
+    signal_phase = np.angle(signal_stft)
+
+    freqs = librosa.fft_frequencies(sr=sample_rate)
+    signal_magnitude[freqs < high_pass_hz, :] = 0.0
+    signal_magnitude[freqs > low_pass_hz, :] = 0.0
+
+    rebuilt_stft = signal_magnitude * np.exp(1j * signal_phase)
+    denoised = librosa.istft(rebuilt_stft, length=len(signal))
+    return denoised.astype(np.float32)
 
 def aggregate_detections_by_species(
     detections: list[dict],
@@ -192,7 +217,7 @@ def append_inaturalist_csv_row(
         "Geoprivacy",
     ]
     rows: list[dict[str, str]] = []
-    observed_at_text = observed_at.strftime("%Y-%m-%d %H:%M")
+    observed_at_text = observed_at.strftime("%Y-%m-%d %H:%M:%S")
 
     if csv_path.exists():
         with csv_path.open("r", encoding="utf-8", newline="") as handle:
@@ -207,16 +232,21 @@ def append_inaturalist_csv_row(
         current_english_name: str,
         current_italian_name: str,
         current_german_name: str,
+        current_audio_files: list[str],
     ) -> str:
         parts = [
             f"{current_english_name}, {current_italian_name}, {current_german_name}",
             f"birdnet_confidence={current_confidence:.3f}",
         ]
+        if current_audio_files:
+            parts.append(f"audio_files={','.join(current_audio_files)}")
         return "; ".join(parts)
 
     merged = False
     for row in rows:
-        if row["Nome del taxon"] != taxon_name:
+        # consider rows matching by scientific name or any localized/common name
+        existing_taxon = (row.get("Nome del taxon") or "").strip()
+        if existing_taxon not in {taxon_name, english_name, italian_name, german_name}:
             continue
 
         existing_files = ""
@@ -241,6 +271,7 @@ def append_inaturalist_csv_row(
             current_english_name=english_name,
             current_italian_name=italian_name,
             current_german_name=german_name,
+            current_audio_files=file_names,
         )
         row["Nome del luogo"] = place_name
         row["Latitudine / coord y / nord"] = f"{latitude:.6f}" if latitude is not None else ""
@@ -251,6 +282,7 @@ def append_inaturalist_csv_row(
         break
 
     if not merged:
+        file_names = [audio_file_name] if audio_file_name else []
         rows.append(
             {
                 "Nome del taxon": taxon_name,
@@ -260,6 +292,7 @@ def append_inaturalist_csv_row(
                     current_english_name=english_name,
                     current_italian_name=italian_name,
                     current_german_name=german_name,
+                    current_audio_files=file_names,
                 ),
                 "Nome del luogo": place_name,
                 "Latitudine / coord y / nord": f"{latitude:.6f}" if latitude is not None else "",
@@ -288,16 +321,15 @@ def export_detection_clips(
     place_name: str = "",
     tags: str = "",
     geoprivacy: str = "",
+    observed_at: datetime | None = None,
 ) -> list[Path]:
     exported_paths: list[Path] = []
     destination_dir = Path(destination_dir)
     destination_dir.mkdir(parents=True, exist_ok=True)
-    export_time = datetime.now()
+    export_time = observed_at or datetime.now()
     timestamp = export_time.strftime("%Y%m%d_%H%M%S")
-    hour = export_time.strftime("%H")
     normalized = normalize_audio(samples)
-    hour_dir = destination_dir / hour
-    csv_path = hour_dir / f"inaturalist_import_{destination_dir.name}_{hour}.csv"
+    csv_path = destination_dir / f"inaturalist_import_{destination_dir.name}.csv"
 
     for scientific_name, (start_sec, end_sec, confidence, english_name) in grouped_detections.items():
         start_index = max(int(start_sec * sample_rate), 0)
@@ -307,7 +339,7 @@ def export_detection_clips(
 
         italian_name, german_name, english_name = species_catalog.display_names(scientific_name, english_name)
         clip_name = sanitize_filename(italian_name)
-        output_path = hour_dir / clip_name / f"{clip_name}_{timestamp}_{confidence:.3f}.wav"
+        output_path = destination_dir / clip_name / f"{clip_name}_{timestamp}_{confidence:.3f}.wav"
         write_wav_mono(output_path, normalized[start_index:end_index], sample_rate)
         append_inaturalist_csv_row(
             csv_path,
@@ -327,3 +359,75 @@ def export_detection_clips(
         exported_paths.append(output_path)
 
     return exported_paths
+
+def plot_spectrogram(samples: np.ndarray, sample_rate: int) -> None:
+    import matplotlib.pyplot as plt
+
+    stft = librosa.stft(samples)
+    magnitude_db = librosa.amplitude_to_db(np.abs(stft), ref=np.max)
+    plt.figure(figsize=(10, 6))
+    librosa.display.specshow(magnitude_db, sr=sample_rate, x_axis="time", y_axis="hz")
+    plt.colorbar(format="%+2.0f dB")
+    plt.title("Spectrogram")
+    plt.tight_layout()
+    plt.show()
+
+def raise_intensity_sound(samples: np.ndarray, factor: float) -> np.ndarray:
+    normalized = normalize_audio(samples)
+    amplified = normalized * factor
+    clipped = np.clip(amplified, -1.0, 1.0)
+    return clipped.astype(np.float32)
+
+
+if __name__ == "__main__":
+    # this is to denoise an audio file using a mean of the spectrum as noise profile and writing the result to a new file
+    import argparse
+    import sys
+    parser = argparse.ArgumentParser()
+    parser.add_argument("input", type=str, help="Path to the input audio file")
+    parser.add_argument("--output", default='', type=str, help="Path to the output audio file")
+    parser.add_argument("--noise-reference", type=Path, help="Path to an optional noise reference audio file")
+    parser.add_argument("--high-pass-hz", type=float, default=2700.0, help="High-pass filter cutoff frequency in Hz")
+    parser.add_argument("--low-pass-hz", type=float, default=3200.0, help="Low-pass filter cutoff frequency in Hz")
+    parser.add_argument("--noise-reduction-factor", type=float, default=2.0, help="Factor by which to reduce the noise profile")
+    parser.add_argument("--plot", action="store_true", help="Plot the spectrogram of the audio file")
+    args = parser.parse_args()
+    if not args.output:
+        args.output = args.input + "_denoised.wav"
+    try:
+        samples, sample_rate = load_audio(args.input)
+        if args.plot:
+            plot_spectrogram(samples, sample_rate)
+        samples = cut_signal_freq(
+            samples,
+            sample_rate,
+            high_pass_hz=args.high_pass_hz,
+            low_pass_hz=args.low_pass_hz,
+        )
+        if args.plot:
+            plot_spectrogram(samples, sample_rate)
+        samples = raise_intensity_sound(samples, factor=5.5)
+
+        write_wav_mono(args.input + "_cut.wav", samples, sample_rate)
+
+        denoised = denoise_signal(
+            samples,
+            sample_rate,
+            noise_reference=args.noise_reference,
+            high_pass_hz=args.high_pass_hz,
+            low_pass_hz=args.low_pass_hz,
+            noise_reduction_factor=args.noise_reduction_factor,
+        )
+        denoised = raise_intensity_sound(denoised, factor=20.5)
+
+        if args.plot:
+            plot_spectrogram(denoised, sample_rate)
+
+        write_wav_mono(args.output, denoised, sample_rate)
+        print(f"Denoised audio written to: {args.output}")
+    except Exception as e:
+        print(f"Error processing audio: {e}", file=sys.stderr)
+        sys.exit(1)
+    sys.exit(0)
+    # Example usage:
+    # python audio.py input.wav output_denoised.wav --noise-reference noise.wav --high-pass-hz 500 --noise-reduction-factor 2.0

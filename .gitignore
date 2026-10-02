@@ -1,5 +1,6 @@
 __pycache__/
 bird_audio_suite/__pycache__/
 detections/
+.bird_audio_device.json
 *.pyc
 

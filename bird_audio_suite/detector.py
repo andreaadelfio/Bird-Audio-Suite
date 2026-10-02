@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 import io
-import sys
+import warnings
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime
 from pathlib import Path
+
+warnings.filterwarnings(
+    "ignore",
+    message=r".*Please use the LiteRT interpreter from the ai_edge_litert package.*",
+    category=UserWarning,
+    module=r"tensorflow\.lite\.python\.interpreter",
+)
 
 from birdnetlib import Recording
 from birdnetlib.analyzer import Analyzer

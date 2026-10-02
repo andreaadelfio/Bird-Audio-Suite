@@ -10,9 +10,12 @@ import requests
 from pyinaturalist import create_observation as pyinat_create_observation
 from pyinaturalist import update_observation as pyinat_update_observation
 
+import time
+import webbrowser
 
+INAT_API_TOKEN_URL = "https://www.inaturalist.org/users/api_token"
+TOKEN_FILE = Path.home() / ".inat_api_token.json"
 DEFAULT_API_BASE_URL = "https://api.inaturalist.org/v2"
-DEFAULT_TOKEN_ENV_VAR = "INATURALIST_JWT"
 
 
 @dataclass
@@ -370,16 +373,108 @@ def import_csv(
     return imported_count, updated_count, results
 
 
-def load_jwt_from_env(env_var: str = DEFAULT_TOKEN_ENV_VAR) -> str:
-    token = os.getenv(env_var, "").strip()
-    if not token:
-        raise RuntimeError(
-            f"Missing iNaturalist token. Set the JWT in the environment variable {env_var}."
+
+
+def _is_jwt_valid(token: str) -> bool:
+    """
+    Verifica se il JWT è ancora valido facendo una chiamata API.
+    """
+    try:
+        r = requests.get(
+            "https://api.inaturalist.org/v2/users/me",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=15,
         )
+
+        return r.status_code == 200
+
+    except Exception:
+        return False
+
+
+def _save_token(token: str):
+    """
+    Salva il token su file locale.
+    """
+    data = {
+        "api_token": token,
+        "saved_at": int(time.time()),
+    }
+
+    TOKEN_FILE.write_text(json.dumps(data, indent=2))
+
+    # opzionale: esporta anche come env var per il processo corrente
+    os.environ["INAT_API_TOKEN"] = token
+
+
+def _load_saved_token() -> str | None:
+    """
+    Carica il token salvato se esiste.
+    """
+    if not TOKEN_FILE.exists():
+        return None
+
+    try:
+        data = json.loads(TOKEN_FILE.read_text())
+        return data.get("api_token")
+
+    except Exception:
+        return None
+
+
+def _interactive_login() -> str:
+    """
+    Apre il browser sulla pagina token e chiede il token manualmente.
+    """
+    print("\nOpening browser for iNaturalist login...\n")
+
+    webbrowser.open(INAT_API_TOKEN_URL)
+
+    print(
+        "\n1. Login su iNaturalist\n"
+        "2. Copia il valore di 'api_token'\n"
+        "3. Incollalo qui sotto\n"
+    )
+
+    token = input("Paste iNaturalist API token: ").strip()
+
+    if not token:
+        raise RuntimeError("Empty token provided")
+
+    if not _is_jwt_valid(token):
+        raise RuntimeError("Provided token is invalid")
+
+    _save_token(token)
+
+    print("\nToken saved successfully.\n")
+
     return token
 
 
-def resolve_jwt_token(explicit_token: str | None = None, env_var: str = DEFAULT_TOKEN_ENV_VAR) -> str:
+def get_inat_token(force_refresh: bool = False) -> str:
+    """
+    Restituisce un token valido:
+    - usa quello salvato se ancora valido
+    - altrimenti apre browser e richiede login manuale
+    """
+
+    if not force_refresh:
+        token = _load_saved_token()
+
+        if token:
+            print("Found saved token, validating...")
+
+            if _is_jwt_valid(token):
+                os.environ["INAT_API_TOKEN"] = token
+                print("Existing token is valid.")
+                return token
+
+            print("Saved token expired or invalid.")
+
+    return _interactive_login()
+
+
+def resolve_jwt_token(explicit_token: str | None = None) -> str:
     if explicit_token and explicit_token.strip():
         return explicit_token.strip()
-    return load_jwt_from_env(env_var)
+    return get_inat_token()
