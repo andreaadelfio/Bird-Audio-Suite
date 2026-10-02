@@ -1,0 +1,433 @@
+from __future__ import annotations
+
+import csv
+import re
+from datetime import datetime
+from pathlib import Path
+
+import librosa
+import numpy as np
+import scipy.io.wavfile as wavfile
+
+
+def normalize_audio(samples: np.ndarray) -> np.ndarray:
+    array = np.asarray(samples)
+    if array.size == 0:
+        return np.asarray([], dtype=np.float32)
+
+    if np.issubdtype(array.dtype, np.integer):
+        max_value = max(abs(np.iinfo(array.dtype).min), np.iinfo(array.dtype).max)
+        return array.astype(np.float32) / float(max_value)
+
+    return array.astype(np.float32)
+
+
+def to_int16(samples: np.ndarray) -> np.ndarray:
+    normalized = normalize_audio(samples)
+    clipped = np.clip(normalized, -1.0, 1.0)
+    return (clipped * 32767.0).astype(np.int16)
+
+
+def rms_level(samples: np.ndarray) -> float:
+    normalized = normalize_audio(samples)
+    if normalized.size == 0:
+        return 0.0
+    return float(np.sqrt(np.mean(np.square(normalized))))
+
+
+def write_wav_mono(path: Path, samples: np.ndarray, sample_rate: int) -> None:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    wavfile.write(path, sample_rate, to_int16(samples))
+
+
+def load_audio(path: Path, sample_rate: int | None = None) -> tuple[np.ndarray, int]:
+    samples, loaded_rate = librosa.load(
+        str(path),
+        sr=sample_rate,
+        mono=True,
+        res_type="kaiser_fast",
+    )
+    return samples.astype(np.float32), int(loaded_rate)
+
+
+def denoise_signal(
+    samples: np.ndarray,
+    sample_rate: int,
+    noise_reference: Path | None = None,
+    high_pass_hz: float = 500.0,
+    low_pass_hz: float = 5000.0,
+    noise_reduction_factor: float = 2.0,
+) -> np.ndarray:
+    signal = normalize_audio(samples)
+    if signal.size == 0:
+        return signal
+
+    signal_stft = librosa.stft(signal)
+
+    signal_magnitude = np.abs(signal_stft)
+    signal_phase = np.angle(signal_stft)
+    if noise_reference is None:
+        noise_profile = np.zeros((signal_stft.shape[0], 1), dtype=np.float32)
+    else:
+        noise_signal, _ = load_audio(noise_reference, sample_rate=sample_rate)
+        if noise_signal.size:
+            noise_stft = librosa.stft(noise_signal)
+            noise_profile = np.mean(np.abs(noise_stft), axis=1, keepdims=True)
+        else:
+            noise_profile = np.zeros((signal_stft.shape[0], 1), dtype=np.float32)
+
+    filtered_magnitude = np.maximum(
+        signal_magnitude - noise_reduction_factor * noise_profile,
+        0.0,
+    )
+
+    freqs = librosa.fft_frequencies(sr=sample_rate)
+    filtered_magnitude[freqs < high_pass_hz, :] = 0.0
+    filtered_magnitude[freqs > low_pass_hz, :] = 0.0
+
+    rebuilt_stft = filtered_magnitude * np.exp(1j * signal_phase)
+    denoised = librosa.istft(rebuilt_stft, length=len(signal))
+    return denoised.astype(np.float32)
+
+def cut_signal_freq(
+    samples: np.ndarray,
+    sample_rate: int,
+    high_pass_hz: float = 500.0,
+    low_pass_hz: float = 5000.0,
+) -> np.ndarray:
+    signal = normalize_audio(samples)
+    if signal.size == 0:
+        return signal
+
+    signal_stft = librosa.stft(signal)
+    signal_magnitude = np.abs(signal_stft)
+    signal_phase = np.angle(signal_stft)
+
+    freqs = librosa.fft_frequencies(sr=sample_rate)
+    signal_magnitude[freqs < high_pass_hz, :] = 0.0
+    signal_magnitude[freqs > low_pass_hz, :] = 0.0
+
+    rebuilt_stft = signal_magnitude * np.exp(1j * signal_phase)
+    denoised = librosa.istft(rebuilt_stft, length=len(signal))
+    return denoised.astype(np.float32)
+
+def aggregate_detections_by_species(
+    detections: list[dict],
+    duration_seconds: float,
+    min_confidence: float,
+) -> dict[str, tuple[float, float, float, str]]:
+    grouped: dict[str, tuple[float, float, float, str]] = {}
+
+    for detection in detections:
+        confidence = float(detection.get("confidence", 0.0))
+        if confidence < min_confidence:
+            continue
+
+        scientific_name = detection.get("scientific_name", "")
+        english_name = detection.get("common_name", "")
+        start_sec = max(float(detection.get("start_time", 0.0)), 0.0)
+        end_sec = min(float(detection.get("end_time", 0.0)), float(duration_seconds))
+        if end_sec <= start_sec:
+            end_sec = min(start_sec + 1.0, float(duration_seconds) or start_sec + 1.0)
+
+        previous = grouped.get(scientific_name)
+        if previous is None:
+            grouped[scientific_name] = (
+                start_sec,
+                end_sec,
+                round(confidence, 3),
+                english_name,
+            )
+            continue
+
+        grouped[scientific_name] = (
+            min(start_sec, previous[0]),
+            max(end_sec, previous[1]),
+            max(round(confidence, 3), previous[2]),
+            english_name or previous[3],
+        )
+
+    return grouped
+
+
+def apply_clip_span_policy(
+    grouped_detections: dict[str, tuple[float, float, float, str]],
+    duration_seconds: float,
+    clip_span: str = "detection",
+) -> dict[str, tuple[float, float, float, str]]:
+    adjusted: dict[str, tuple[float, float, float, str]] = {}
+    slice_end = max(float(duration_seconds), 0.0)
+
+    for scientific_name, (start_sec, end_sec, confidence, english_name) in grouped_detections.items():
+        next_start = max(0.0, start_sec)
+        next_end = max(next_start, end_sec)
+
+        if clip_span == "full_slice":
+            next_start = 0.0
+            next_end = slice_end
+        elif clip_span == "from_detection":
+            next_end = slice_end
+
+        if next_end <= next_start:
+            next_end = max(next_start, slice_end)
+
+        adjusted[scientific_name] = (
+            next_start,
+            next_end,
+            confidence,
+            english_name,
+        )
+
+    return adjusted
+
+
+def sanitize_filename(value: str) -> str:
+    cleaned = re.sub(r"[^\w\-. ]+", "_", value.strip(), flags=re.UNICODE)
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    return cleaned.strip(" ._") or "detection"
+
+
+def append_inaturalist_csv_row(
+    csv_path: Path,
+    *,
+    taxon_name: str,
+    observed_at: datetime,
+    english_name: str,
+    italian_name: str,
+    german_name: str,
+    confidence: float,
+    place_name: str,
+    latitude: float | None,
+    longitude: float | None,
+    tags: str = "",
+    geoprivacy: str = "",
+    audio_file_name: str = "",
+) -> None:
+    csv_path = Path(csv_path)
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    header = [
+        "Nome del taxon",
+        "Data osservazione",
+        "Descrizione",
+        "Nome del luogo",
+        "Latitudine / coord y / nord",
+        "Longitudine / coord x / est",
+        "Etichette",
+        "Geoprivacy",
+    ]
+    rows: list[dict[str, str]] = []
+    observed_at_text = observed_at.strftime("%Y-%m-%d %H:%M:%S")
+
+    if csv_path.exists():
+        with csv_path.open("r", encoding="utf-8", newline="") as handle:
+            reader = csv.DictReader(handle)
+            for row in reader:
+                if row:
+                    rows.append({key: row.get(key, "") for key in header})
+
+    def build_description(
+        *,
+        current_confidence: float,
+        current_english_name: str,
+        current_italian_name: str,
+        current_german_name: str,
+        current_audio_files: list[str],
+    ) -> str:
+        parts = [
+            f"{current_english_name}, {current_italian_name}, {current_german_name}",
+            f"birdnet_confidence={current_confidence:.3f}",
+        ]
+        if current_audio_files:
+            parts.append(f"audio_files={','.join(current_audio_files)}")
+        return "; ".join(parts)
+
+    merged = False
+    for row in rows:
+        # consider rows matching by scientific name or any localized/common name
+        existing_taxon = (row.get("Nome del taxon") or "").strip()
+        if existing_taxon not in {taxon_name, english_name, italian_name, german_name}:
+            continue
+
+        existing_files = ""
+        existing_confidence = 0.0
+        for part in row["Descrizione"].split("; "):
+            if part.startswith("birdnet_confidence="):
+                try:
+                    existing_confidence = float(part.split("=", 1)[1])
+                except ValueError:
+                    existing_confidence = 0.0
+            elif part.startswith("audio_files="):
+                existing_files = part.split("=", 1)[1]
+
+        file_names = [name for name in existing_files.split(",") if name]
+        if audio_file_name and audio_file_name not in file_names:
+            file_names.append(audio_file_name)
+
+        previous_observed_at = row["Data osservazione"].strip()
+        row["Data osservazione"] = max(filter(None, [previous_observed_at, observed_at_text]))
+        row["Descrizione"] = build_description(
+            current_confidence=max(existing_confidence, confidence),
+            current_english_name=english_name,
+            current_italian_name=italian_name,
+            current_german_name=german_name,
+            current_audio_files=file_names,
+        )
+        row["Nome del luogo"] = place_name
+        row["Latitudine / coord y / nord"] = f"{latitude:.6f}" if latitude is not None else ""
+        row["Longitudine / coord x / est"] = f"{longitude:.6f}" if longitude is not None else ""
+        row["Etichette"] = tags
+        row["Geoprivacy"] = geoprivacy
+        merged = True
+        break
+
+    if not merged:
+        file_names = [audio_file_name] if audio_file_name else []
+        rows.append(
+            {
+                "Nome del taxon": taxon_name,
+                "Data osservazione": observed_at_text,
+                "Descrizione": build_description(
+                    current_confidence=confidence,
+                    current_english_name=english_name,
+                    current_italian_name=italian_name,
+                    current_german_name=german_name,
+                    current_audio_files=file_names,
+                ),
+                "Nome del luogo": place_name,
+                "Latitudine / coord y / nord": f"{latitude:.6f}" if latitude is not None else "",
+                "Longitudine / coord x / est": f"{longitude:.6f}" if longitude is not None else "",
+                "Etichette": tags,
+                "Geoprivacy": geoprivacy,
+            }
+        )
+
+    rows.sort(key=lambda row: row["Data osservazione"], reverse=True)
+
+    with csv_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=header)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def export_detection_clips(
+    samples: np.ndarray,
+    sample_rate: int,
+    grouped_detections: dict[str, tuple[float, float, float, str]],
+    species_catalog,
+    destination_dir: Path,
+    latitude: float | None = None,
+    longitude: float | None = None,
+    place_name: str = "",
+    tags: str = "",
+    geoprivacy: str = "",
+    observed_at: datetime | None = None,
+) -> list[Path]:
+    exported_paths: list[Path] = []
+    destination_dir = Path(destination_dir)
+    destination_dir.mkdir(parents=True, exist_ok=True)
+    export_time = observed_at or datetime.now()
+    timestamp = export_time.strftime("%Y%m%d_%H%M%S")
+    normalized = normalize_audio(samples)
+    csv_path = destination_dir / f"inaturalist_import_{destination_dir.name}.csv"
+
+    for scientific_name, (start_sec, end_sec, confidence, english_name) in grouped_detections.items():
+        start_index = max(int(start_sec * sample_rate), 0)
+        end_index = min(int(end_sec * sample_rate), len(normalized))
+        if end_index <= start_index:
+            continue
+
+        italian_name, german_name, english_name = species_catalog.display_names(scientific_name, english_name)
+        clip_name = sanitize_filename(italian_name)
+        output_path = destination_dir / clip_name / f"{clip_name}_{timestamp}_{confidence:.3f}.wav"
+        write_wav_mono(output_path, normalized[start_index:end_index], sample_rate)
+        append_inaturalist_csv_row(
+            csv_path,
+            taxon_name=scientific_name,
+            observed_at=export_time,
+            english_name=english_name,
+            italian_name=italian_name,
+            german_name=german_name,
+            confidence=confidence,
+            place_name=place_name,
+            latitude=latitude,
+            longitude=longitude,
+            tags=tags,
+            geoprivacy=geoprivacy,
+            audio_file_name=output_path.name,
+        )
+        exported_paths.append(output_path)
+
+    return exported_paths
+
+def plot_spectrogram(samples: np.ndarray, sample_rate: int) -> None:
+    import matplotlib.pyplot as plt
+
+    stft = librosa.stft(samples)
+    magnitude_db = librosa.amplitude_to_db(np.abs(stft), ref=np.max)
+    plt.figure(figsize=(10, 6))
+    librosa.display.specshow(magnitude_db, sr=sample_rate, x_axis="time", y_axis="hz")
+    plt.colorbar(format="%+2.0f dB")
+    plt.title("Spectrogram")
+    plt.tight_layout()
+    plt.show()
+
+def raise_intensity_sound(samples: np.ndarray, factor: float) -> np.ndarray:
+    normalized = normalize_audio(samples)
+    amplified = normalized * factor
+    clipped = np.clip(amplified, -1.0, 1.0)
+    return clipped.astype(np.float32)
+
+
+if __name__ == "__main__":
+    # this is to denoise an audio file using a mean of the spectrum as noise profile and writing the result to a new file
+    import argparse
+    import sys
+    parser = argparse.ArgumentParser()
+    parser.add_argument("input", type=str, help="Path to the input audio file")
+    parser.add_argument("--output", default='', type=str, help="Path to the output audio file")
+    parser.add_argument("--noise-reference", type=Path, help="Path to an optional noise reference audio file")
+    parser.add_argument("--high-pass-hz", type=float, default=2700.0, help="High-pass filter cutoff frequency in Hz")
+    parser.add_argument("--low-pass-hz", type=float, default=3200.0, help="Low-pass filter cutoff frequency in Hz")
+    parser.add_argument("--noise-reduction-factor", type=float, default=2.0, help="Factor by which to reduce the noise profile")
+    parser.add_argument("--plot", action="store_true", help="Plot the spectrogram of the audio file")
+    args = parser.parse_args()
+    if not args.output:
+        args.output = args.input + "_denoised.wav"
+    try:
+        samples, sample_rate = load_audio(args.input)
+        if args.plot:
+            plot_spectrogram(samples, sample_rate)
+        samples = cut_signal_freq(
+            samples,
+            sample_rate,
+            high_pass_hz=args.high_pass_hz,
+            low_pass_hz=args.low_pass_hz,
+        )
+        if args.plot:
+            plot_spectrogram(samples, sample_rate)
+        samples = raise_intensity_sound(samples, factor=5.5)
+
+        write_wav_mono(args.input + "_cut.wav", samples, sample_rate)
+
+        denoised = denoise_signal(
+            samples,
+            sample_rate,
+            noise_reference=args.noise_reference,
+            high_pass_hz=args.high_pass_hz,
+            low_pass_hz=args.low_pass_hz,
+            noise_reduction_factor=args.noise_reduction_factor,
+        )
+        denoised = raise_intensity_sound(denoised, factor=20.5)
+
+        if args.plot:
+            plot_spectrogram(denoised, sample_rate)
+
+        write_wav_mono(args.output, denoised, sample_rate)
+        print(f"Denoised audio written to: {args.output}")
+    except Exception as e:
+        print(f"Error processing audio: {e}", file=sys.stderr)
+        sys.exit(1)
+    sys.exit(0)
+    # Example usage:
+    # python audio.py input.wav output_denoised.wav --noise-reference noise.wav --high-pass-hz 500 --noise-reduction-factor 2.0
