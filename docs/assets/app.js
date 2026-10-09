@@ -4,6 +4,7 @@
 
 const config = window.APP_CONFIG || {};
 const PAGE_SIZE = 25;
+const VISIBLE_CLIPS = 3; // the rest of a long observation stays folded
 const STATUS_LABELS = {
   pending: "da rivedere",
   confirmed: "confermata",
@@ -116,12 +117,16 @@ async function updateClip(id, review) {
 
 // ---------------------------------------------------------------- observation cards
 
-function clipHtml(clip) {
+function clipHtml(clip, folded = false) {
   const recorded = timeFormat.format(new Date(clip.recorded_at));
   return `
-    <figure class="clip review-${clip.review}" data-clip="${escapeHtml(clip.id)}">
+    <figure class="clip review-${clip.review}${folded ? " folded" : ""}" data-clip="${escapeHtml(clip.id)}">
       ${clip.spectrogram_url
-        ? `<img class="spectrogram" src="${escapeHtml(clip.spectrogram_url)}" alt="Spettrogramma" loading="lazy" title="Clic per ascoltare">`
+        ? `<div class="spectrogram-box" title="Tocca per ascoltare">
+             <img class="spectrogram" src="${escapeHtml(clip.spectrogram_url)}" alt="Spettrogramma" loading="lazy">
+             <span class="playhead"></span>
+             <span class="play-badge" aria-hidden="true"></span>
+           </div>`
         : ""}
       <audio controls preload="none" src="${escapeHtml(clip.audio_url)}"></audio>
       <figcaption>
@@ -152,7 +157,10 @@ function observationHtml(observation) {
       <p class="meta">${formatDay(observation.day)} · ${first}${last} · ${escapeHtml(observation.place_name)} ·
         confidenza max ${Number(observation.max_confidence).toFixed(3)} · ${clips.length} clip</p>
       ${corrected}
-      <div class="clips">${clips.map(clipHtml).join("")}</div>
+      <div class="clips">${clips.map((clip, index) => clipHtml(clip, index >= VISIBLE_CLIPS)).join("")}</div>
+      ${clips.length > VISIBLE_CLIPS
+        ? `<button type="button" class="show-clips" data-show-clips>Mostra altre ${clips.length - VISIBLE_CLIPS} clip</button>`
+        : ""}
       <footer>
         <label class="grow">Note <textarea data-field="notes" rows="1">${escapeHtml(observation.notes)}</textarea></label>
         <label>Specie corretta <input data-field="corrected" list="species-list" placeholder="se BirdNET ha sbagliato"
@@ -167,16 +175,33 @@ function observationHtml(observation) {
 }
 
 content.addEventListener("click", async (event) => {
-  const spectrogram = event.target.closest(".spectrogram");
+  const spectrogram = event.target.closest(".spectrogram-box");
   if (spectrogram) {
-    const audio = spectrogram.parentElement.querySelector("audio");
-    audio.paused ? audio.play() : audio.pause();
+    const audio = spectrogram.closest(".clip").querySelector("audio");
+    if (audio.paused) {
+      // tapping where the call is on the spectrogram starts from there
+      const box = spectrogram.getBoundingClientRect();
+      const fraction = Math.min(Math.max((event.clientX - box.left) / box.width, 0), 1);
+      if (Number.isFinite(audio.duration) && audio.duration > 0 && fraction > 0.02) {
+        audio.currentTime = fraction * audio.duration;
+      }
+      audio.play();
+    } else {
+      audio.pause();
+    }
     return;
   }
 
   const card = event.target.closest(".observation");
   if (!card) return;
   const id = Number(card.dataset.id);
+
+  const showClips = event.target.closest("[data-show-clips]");
+  if (showClips) {
+    card.querySelectorAll(".clip.folded").forEach((clip) => clip.classList.remove("folded"));
+    showClips.remove();
+    return;
+  }
 
   const clipButton = event.target.closest("[data-clip-review]");
   if (clipButton) {
@@ -206,6 +231,7 @@ content.addEventListener("click", async (event) => {
       await updateObservation(id, changes);
       setStatus(`Osservazione ${STATUS_LABELS[changes.status]}.`);
       if (state.view === "review" && changes.status !== "pending") {
+        card.querySelectorAll("audio").forEach((audio) => audio.pause());
         card.classList.add("leaving");
         setTimeout(() => card.remove(), 250);
       } else {
@@ -218,6 +244,28 @@ content.addEventListener("click", async (event) => {
     }
   }
 });
+
+// one clip at a time, with a playhead moving over its spectrogram
+content.addEventListener("play", (event) => {
+  document.querySelectorAll("#content audio").forEach((audio) => {
+    if (audio !== event.target) audio.pause();
+  });
+  event.target.closest(".clip")?.classList.add("playing");
+}, true);
+
+for (const type of ["pause", "ended"]) {
+  content.addEventListener(type, (event) => {
+    event.target.closest(".clip")?.classList.remove("playing");
+  }, true);
+}
+
+content.addEventListener("timeupdate", (event) => {
+  const audio = event.target;
+  const clip = audio.closest(".clip");
+  if (clip && audio.duration > 0) {
+    clip.style.setProperty("--progress", String(audio.currentTime / audio.duration));
+  }
+}, true);
 
 // save notes when leaving the field, without changing the status
 content.addEventListener("change", async (event) => {
@@ -238,6 +286,7 @@ async function renderObservations(append = false) {
   }
   setStatus("Carico…");
   const rows = await fetchObservations();
+  if (!append) content.innerHTML = ""; // a refresh may have raced with this load
   content.insertAdjacentHTML("beforeend", rows.map(observationHtml).join(""));
   state.offset += rows.length;
   $("#more").classList.toggle("hidden", rows.length < PAGE_SIZE);
@@ -303,7 +352,7 @@ async function renderReport(days = Number(localStorage.getItem("reportDays") || 
         <span class="label">${hour}</span>
       </div>`).join("")}</div>
     <h3>Specie</h3>
-    <table class="report-table">
+    <div class="table-scroll"><table class="report-table">
       <thead><tr><th>Specie</th><th>Giorni</th><th>Clip</th><th>Conf. max</th><th>Ultima volta</th></tr></thead>
       <tbody>${speciesRows.map((row) => `
         <tr>
@@ -311,7 +360,7 @@ async function renderReport(days = Number(localStorage.getItem("reportDays") || 
           <td>${row.days}</td><td>${row.clips}</td><td>${row.best.toFixed(3)}</td>
           <td>${row.last_heard ? dayFormat.format(new Date(row.last_heard)) : ""}</td>
         </tr>`).join("")}</tbody>
-    </table>`;
+    </table></div>`;
   setStatus("");
 }
 
@@ -349,6 +398,20 @@ document.querySelectorAll("#filters input, #filters select").forEach((input) => 
 
 $("#more").addEventListener("click", () => renderObservations(true).catch((error) => setStatus(`Errore: ${error.message}`, true)));
 
+$("#refresh").addEventListener("click", async () => {
+  try {
+    await loadSpecies();
+    await refreshPendingCount();
+  } catch (error) {
+    setStatus(`Errore: ${error.message}`, true);
+    return;
+  }
+  render();
+});
+
+// filters open on wide screens, folded away on the phone
+$("#filters").open = window.matchMedia("(min-width: 721px)").matches;
+
 async function start() {
   try {
     await loadSpecies();
@@ -358,6 +421,12 @@ async function start() {
     return;
   }
   render();
+}
+
+if ("serviceWorker" in navigator && window.isSecureContext) {
+  navigator.serviceWorker.register("./service-worker.js", { scope: "./" }).catch((error) => {
+    console.warn("Service worker non registrato", error);
+  });
 }
 
 state.client = createClient();

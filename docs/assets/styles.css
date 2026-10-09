@@ -60,6 +60,17 @@ button, input, select, textarea { font: inherit; color: inherit; }
 
 .top-bar h1 { margin: 0; font-size: 1.4rem; color: var(--accent-deep); }
 
+.icon-button {
+  display: grid;
+  place-items: center;
+  width: 2.4rem;
+  height: 2.4rem;
+  padding: 0;
+  border-radius: 999px;
+}
+
+.icon-button svg { width: 1.2rem; height: 1.2rem; fill: var(--accent); }
+
 .tabs {
   display: flex;
   gap: 0.25rem;
@@ -102,12 +113,12 @@ button, input, select, textarea { font: inherit; color: inherit; }
 }
 
 .filters {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.75rem;
-  padding: 0.75rem;
+  padding: 0.6rem 0.75rem;
   margin-bottom: 1rem;
 }
+
+.filters summary { cursor: pointer; color: var(--accent-deep); font-weight: 600; }
+.filter-fields { display: flex; flex-wrap: wrap; gap: 0.75rem; margin-top: 0.6rem; }
 
 label { display: grid; gap: 0.2rem; color: var(--ink-soft); font-size: 0.85rem; }
 
@@ -170,10 +181,59 @@ button.small { padding: 0.1rem 0.5rem; font-size: 0.8rem; }
   background: var(--bg);
 }
 
+.clip.folded { display: none; }
+.show-clips { display: block; width: 100%; margin-top: 0.6rem; color: var(--accent-deep); }
+
 .clip.review-correct { outline: 2px solid var(--positive); }
 .clip.review-wrong { outline: 2px solid var(--negative); opacity: 0.7; }
 
-.spectrogram { display: block; width: 100%; height: 110px; object-fit: fill; cursor: pointer; background: #000; }
+.spectrogram-box { position: relative; cursor: pointer; background: #000; }
+.spectrogram { display: block; width: 100%; height: 110px; object-fit: fill; }
+
+/* where the audio is, over the spectrogram */
+.playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(var(--progress, 0) * 100%);
+  width: 2px;
+  background: #fff;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.clip.playing .playhead { opacity: 0.9; }
+
+.play-badge {
+  position: absolute;
+  right: 0.4rem;
+  bottom: 0.4rem;
+  width: 1.9rem;
+  height: 1.9rem;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.55);
+  pointer-events: none;
+}
+
+.play-badge::before {
+  content: "";
+  position: absolute;
+  left: 0.72rem;
+  top: 0.55rem;
+  border-left: 0.6rem solid #fff;
+  border-top: 0.4rem solid transparent;
+  border-bottom: 0.4rem solid transparent;
+}
+
+.clip.playing .play-badge::before {
+  left: 0.6rem;
+  top: 0.55rem;
+  width: 0.2rem;
+  height: 0.8rem;
+  border: 0;
+  border-left: 0.2rem solid #fff;
+  border-right: 0.2rem solid #fff;
+}
 .clip audio { display: block; width: 100%; height: 36px; }
 
 .clip figcaption {
@@ -237,11 +297,77 @@ button.small { padding: 0.1rem 0.5rem; font-size: 0.8rem; }
 .hour .bar { align-self: end; background: var(--accent); border-radius: 3px 3px 0 0; min-height: 1px; }
 .hour .label { font-size: 0.7rem; color: var(--ink-soft); }
 
+.table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 .report-table { width: 100%; border-collapse: collapse; overflow: hidden; }
 .report-table th, .report-table td { padding: 0.45rem 0.6rem; border-bottom: 1px solid var(--line); text-align: left; }
 .report-table td:nth-child(n+2), .report-table th:nth-child(n+2) { text-align: right; }
 
-@media (max-width: 640px) {
-  .page-shell { padding: 0.6rem; }
+/* ---------------------------------------------------------------- phone */
+
+@media (max-width: 720px) {
+  .page-shell {
+    padding: 0 0.6rem calc(4rem + env(safe-area-inset-bottom));
+  }
+
+  .top-bar {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    margin: 0 -0.6rem 0.75rem;
+    padding: calc(0.5rem + env(safe-area-inset-top)) 0.6rem 0.5rem;
+    background: var(--bg);
+    border-bottom: 1px solid var(--line);
+  }
+
+  .top-bar h1 { font-size: 1.15rem; flex: 1; }
+  .tabs { width: 100%; order: 3; }
+  .tab { flex: 1; min-height: 2.6rem; padding: 0.35rem 0.4rem; white-space: nowrap; font-size: 0.92rem; }
+
+  /* 16px: iOS zooms into smaller fields */
+  input, select, textarea { font-size: 16px; min-height: 2.6rem; }
+  .filter-fields label { flex: 1 1 100%; }
+
+  .observation { padding: 0.75rem; }
+  .observation header { flex-wrap: wrap; }
+  .observation h2 { font-size: 1.05rem; }
   .clips { grid-template-columns: 1fr; }
+  .spectrogram { height: 130px; }
+
+  .clip figcaption { flex-wrap: wrap; }
+  .clip-actions { display: flex; gap: 0.4rem; width: 100%; }
+  .clip-actions button { flex: 1; min-height: 2.75rem; font-size: 0.95rem; }
+
+  .observation footer { flex-direction: column; align-items: stretch; }
+  .observation footer .grow { flex: none; }
+  .actions { display: grid; grid-template-columns: 1fr 1fr; }
+  .actions button { min-height: 3rem; font-size: 1rem; }
+  .actions [data-status="pending"] { grid-column: 1 / -1; }
+
+  .more, .show-clips { width: 100%; min-height: 3rem; }
+
+  /* messages as a toast above the bottom edge */
+  .status-line:not(:empty) {
+    position: fixed;
+    left: 0.6rem;
+    right: 0.6rem;
+    bottom: calc(0.6rem + env(safe-area-inset-bottom));
+    z-index: 20;
+    margin: 0;
+    padding: 0.6rem 0.8rem;
+    border-radius: var(--radius);
+    background: var(--ink);
+    color: var(--bg);
+    text-align: center;
+  }
+
+  .status-line.error:not(:empty) { background: var(--negative); color: #fff; }
+
+  .report-head { flex-wrap: wrap; gap: 0.5rem; }
+  .report-head h2 { font-size: 1.1rem; margin: 0.4rem 0; }
+  .segmented button { min-height: 2.4rem; }
+  .tiles { grid-template-columns: repeat(2, 1fr); }
+  .tile b { font-size: 1.35rem; }
+  .hours { height: 110px; gap: 2px; }
+  /* one hour label in three, or they overlap */
+  .hour:not(:nth-child(3n + 1)) .label { visibility: hidden; }
 }

@@ -2,16 +2,30 @@
 <html lang="it">
   <head>
     <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <title>Bird Audio Suite</title>
     <meta name="robots" content="noindex, nofollow">
     <meta name="theme-color" content="#3f6d56">
-    <link rel="stylesheet" href="./assets/styles.css?v=3">
+    <!-- Installabile come app (manifest + service-worker.js), come MyFinance e Listino Prezzi -->
+    <meta name="application-name" content="Uccelli">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-title" content="Uccelli">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <link rel="manifest" href="./manifest.webmanifest">
+    <link rel="icon" type="image/svg+xml" href="./assets/icon.svg">
+    <link rel="apple-touch-icon" href="./assets/icon-192.png">
+    <link rel="stylesheet" href="./assets/styles.css?v=5">
   </head>
   <body>
     <div class="page-shell">
       <header class="top-bar">
         <h1>Bird Audio Suite</h1>
+        <button id="refresh" class="icon-button" type="button" title="Ricarica" aria-label="Ricarica">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M17.65 6.35A7.95 7.95 0 0 0 12 4V1L7 6l5 5V7a5 5 0 1 1-5 5H5a7 7 0 1 0 12.65-5.65z"/>
+          </svg>
+        </button>
         <nav class="tabs" aria-label="Sezioni">
           <button class="tab active" type="button" data-view="review">Da rivedere <span id="pending-count" class="count"></span></button>
           <button class="tab" type="button" data-view="all">Osservazioni</button>
@@ -19,30 +33,34 @@
         </nav>
       </header>
 
-      <section id="filters" class="filters hidden">
-        <label>Stato
-          <select id="filter-status">
-            <option value="">tutti</option>
-            <option value="pending">da rivedere</option>
-            <option value="confirmed">confermate</option>
-            <option value="rejected">scartate</option>
-            <option value="uploaded">su iNaturalist</option>
-          </select>
-        </label>
-        <label>Specie <input id="filter-species" type="search" placeholder="nome italiano, inglese o scientifico"></label>
-        <label>Dal <input id="filter-from" type="date"></label>
-        <label>Al <input id="filter-to" type="date"></label>
-      </section>
+      <!-- sul telefono i filtri restano chiusi finche' non servono -->
+      <details id="filters" class="filters hidden">
+        <summary>Filtri</summary>
+        <div class="filter-fields">
+          <label>Stato
+            <select id="filter-status">
+              <option value="">tutti</option>
+              <option value="pending">da rivedere</option>
+              <option value="confirmed">confermate</option>
+              <option value="rejected">scartate</option>
+              <option value="uploaded">su iNaturalist</option>
+            </select>
+          </label>
+          <label>Specie <input id="filter-species" type="search" placeholder="nome italiano, inglese o scientifico"></label>
+          <label>Dal <input id="filter-from" type="date"></label>
+          <label>Al <input id="filter-to" type="date"></label>
+        </div>
+      </details>
 
       <main id="content" aria-live="polite"></main>
       <button id="more" class="more hidden" type="button">Carica altre</button>
-      <p id="status-line" class="status-line"></p>
+      <p id="status-line" class="status-line" role="status"></p>
     </div>
 
     <datalist id="species-list"></datalist>
 
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.1/dist/umd/supabase.min.js"></script>
-    <script src="./assets/config.js?v=3"></script>
-    <script type="module" src="./assets/app.js?v=3"></script>
+    <script src="./assets/config.js?v=5"></script>
+    <script type="module" src="./assets/app.js?v=5"></script>
   </body>
 </html>
