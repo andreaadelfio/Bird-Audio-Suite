@@ -5,19 +5,23 @@ import csv
 import json
 import queue
 import shlex
+import signal
+import subprocess
+import sys
 import tempfile
 import traceback
-import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from .audio import (
     append_inaturalist_csv_row,
     apply_clip_span_policy,
     aggregate_detections_by_species,
+    day_csv_path,
     denoise_signal,
     export_detection_clips,
     load_audio,
+    parse_timestamp_from_name,
     rms_level,
     write_wav_mono,
 )
@@ -50,10 +54,15 @@ from .config import (
 from .detector import BirdNetDetector
 from .geolocation import resolve_location
 from .inaturalist import DEFAULT_API_BASE_URL, import_csv, resolve_jwt_token
+from .live import LiveDetectionTracker, run_sliding_window_loop
+from .repair import apply_repair_plan, build_repair_plan
 from .species import SpeciesCatalog
 
 
-_DAILY_SUMMARY_LINE_COUNT = 0
+AUDIO_FILE_SUFFIXES = {".wav", ".flac", ".mp3", ".ogg", ".m4a"}
+BIRDNET_SAMPLE_RATE = 48000
+AUDIO_STALL_TIMEOUT_SECONDS = 30.0
+LIVE_MAX_CLIP_SECONDS = 120.0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -319,6 +328,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print the planned import actions without calling the iNaturalist API.",
     )
 
+    repair_parser = subparsers.add_parser(
+        "repair-detections",
+        help="Move clips saved under the wrong day and rebuild the CSVs one row per species per day.",
+    )
+    repair_parser.add_argument(
+        "--detections-dir",
+        type=Path,
+        default=DEFAULT_DETECTIONS_DIR,
+        help=f"Detections folder to repair. Default: {DEFAULT_DETECTIONS_DIR}",
+    )
+    repair_parser.add_argument(
+        "--species-file",
+        type=Path,
+        default=DEFAULT_SPECIES_FILE,
+        help=f"Species catalog used for the names. Default: {DEFAULT_SPECIES_FILE}",
+    )
+    repair_parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="Actually move files and rewrite CSVs. Without it only the plan is printed.",
+    )
+
     return parser
 
 
@@ -497,32 +528,104 @@ def choose_loudest_sounddevice_index(measurements: list[dict]) -> int:
     return int(selected["index"])
 
 
+_SOUNDDEVICE_PROBE_SCRIPT = r'''
+import json
+import sys
+import time
+
+import numpy as np
+import sounddevice as sd
+
+index, name, duration = int(sys.argv[1]), sys.argv[2], float(sys.argv[3])
+sample_rates = [int(rate) for rate in sys.argv[4].split(",")]
+settle_seconds = 0.5
+devices = sd.query_devices()
+if index >= len(devices) or devices[index]["name"] != name:
+    index = next(i for i, d in enumerate(devices) if d["name"] == name and d["max_input_channels"] > 0)
+
+errors = []
+for sample_rate in sample_rates:
+    blocks = []
+    try:
+        # same stream settings as live mode, so a device that passes here also opens there
+        with sd.InputStream(
+            device=index,
+            channels=1,
+            samplerate=sample_rate,
+            dtype="float32",
+            callback=lambda data, frames, time_info, status: blocks.append(data[:, 0].copy()),
+        ):
+            time.sleep(settle_seconds + duration)
+    except Exception as exc:
+        errors.append(f"{sample_rate} Hz: {exc}")
+        continue
+    mono = np.concatenate(blocks) if blocks else np.empty(0, dtype=np.float32)
+    # drop the click some ALSA plugins emit when opened: it made silent inputs look loud
+    mono = mono[int(sample_rate * settle_seconds):]
+    print(json.dumps({
+        "rms": float(np.sqrt(np.mean(np.square(mono)))) if mono.size else 0.0,
+        "peak": float(np.max(np.abs(mono))) if mono.size else 0.0,
+        "samplerate": sample_rate,
+    }))
+    sys.exit(0)
+sys.exit("; ".join(errors) or "no sample rate to try")
+'''
+
+
+def probe_sample_rates(default_rate: int) -> list[int]:
+    """Sample rates to try, best first: BirdNET works at 48 kHz."""
+    rates = [BIRDNET_SAMPLE_RATE]
+    if default_rate > 0 and default_rate not in rates:
+        rates.append(int(default_rate))
+    return rates
+
+
+def _probe_sounddevice_input(device: dict, duration_seconds: float, timeout_seconds: float) -> dict:
+    """Record from one input in a child process, with the same stream settings as live mode.
+
+    Some ALSA plugins (e.g. ``speex``, ``upmix``) segfault inside PortAudio: in-process
+    that kills the service before the chosen device is saved, so it crash-loops forever.
+    """
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            _SOUNDDEVICE_PROBE_SCRIPT,
+            str(device["index"]),
+            str(device["name"]),
+            str(duration_seconds),
+            ",".join(str(rate) for rate in probe_sample_rates(int(device.get("samplerate") or 0))),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=timeout_seconds,
+    )
+    if completed.returncode != 0:
+        reason = (
+            f"crashed (signal {-completed.returncode})"
+            if completed.returncode < 0
+            else f"exit code {completed.returncode}"
+        )
+        detail = (completed.stderr.strip().splitlines() or [""])[-1]
+        raise RuntimeError(f"{reason} {detail}".strip())
+    return json.loads(completed.stdout.strip().splitlines()[-1])
+
+
 def probe_sounddevice_inputs(
     devices: list[dict],
     duration_seconds: float = 1.0,
 ) -> list[dict]:
-    import numpy as np
-    import sounddevice as sd
-
     measurements: list[dict] = []
     duration_seconds = max(float(duration_seconds), 0.1)
     print(f"Provo i device audio per {duration_seconds:.1f}s ciascuno...")
 
     for device in devices:
-        sample_rate = int(device["samplerate"] or DEFAULT_RECORDER_SAMPLE_RATE)
-        frame_count = max(1, int(sample_rate * duration_seconds))
         try:
-            samples = sd.rec(
-                frame_count,
-                samplerate=sample_rate,
-                channels=1,
-                dtype="float32",
-                device=device["index"],
-                blocking=True,
+            result = _probe_sounddevice_input(
+                device,
+                duration_seconds,
+                timeout_seconds=duration_seconds + 20.0,
             )
-            mono = np.asarray(samples, dtype=np.float32).reshape(-1)
-            rms = float(np.sqrt(np.mean(np.square(mono)))) if mono.size else 0.0
-            peak = float(np.max(np.abs(mono))) if mono.size else 0.0
         except Exception as exc:
             print(f"  {device['index']}: {device['name']} -> errore: {exc}")
             continue
@@ -531,14 +634,14 @@ def probe_sounddevice_inputs(
             {
                 "index": device["index"],
                 "name": device["name"],
-                "rms": rms,
-                "peak": peak,
-                "samplerate": sample_rate,
+                "rms": float(result["rms"]),
+                "peak": float(result["peak"]),
+                "samplerate": int(result["samplerate"]),
             }
         )
         print(
             f"  {device['index']}: {device['name']} "
-            f"RMS={rms:.4f} PEAK={peak:.4f}"
+            f"RMS={result['rms']:.4f} PEAK={result['peak']:.4f} @ {result['samplerate']} Hz"
         )
 
     return measurements
@@ -592,6 +695,13 @@ def find_saved_sounddevice(
     )
 
 
+SOUND_SERVER_DEVICE_NAMES = {"default", "pulse", "pipewire"}
+
+
+def is_sound_server_device(name: str) -> bool:
+    return name.strip().lower() in SOUND_SERVER_DEVICE_NAMES
+
+
 def select_sounddevice_index(
     devices: list[dict],
     duration_seconds: float = 1.0,
@@ -620,9 +730,19 @@ def select_sounddevice_index(
         for measurement in measurements
         if measurement["rms"] >= DEFAULT_DEVICE_MIN_RMS
     ]
+    # Among inputs with real signal prefer, in order:
+    # - full bandwidth: at 16 kHz BirdNET loses everything above 8 kHz;
+    # - the sound server (PipeWire/PulseAudio): raw hw:X,Y devices are exclusive, so they
+    #   are "unavailable" when the desktop holds them and steal the mic from calls;
+    # - the loudest one.
     selected_measurement = max(
         valid_measurements,
-        key=lambda item: (item["rms"], item["peak"]),
+        key=lambda item: (
+            int(item.get("samplerate", 0)) >= 44100,
+            is_sound_server_device(item["name"]),
+            item["rms"],
+            item["peak"],
+        ),
         default=None,
     )
     if selected_measurement is None:
@@ -762,6 +882,11 @@ def interactive_args() -> argparse.Namespace:
     )
 
 
+def is_audio_file(path: Path) -> bool:
+    # case-insensitive: recorders such as AudioMoth write ".WAV"
+    return path.is_file() and path.suffix.lower() in AUDIO_FILE_SUFFIXES
+
+
 def collect_batch_files(file_args: list[str] | None, directory: Path | None, recursive: bool) -> list[Path]:
     files: list[Path] = []
 
@@ -769,13 +894,12 @@ def collect_batch_files(file_args: list[str] | None, directory: Path | None, rec
         files.extend(Path(item).expanduser().resolve() for item in file_args)
 
     if directory:
-        pattern = "*.wav"
         directory = directory.expanduser().resolve()
-        iterator = directory.rglob(pattern) if recursive else directory.glob(pattern)
-        files.extend(path.resolve() for path in iterator)
+        iterator = directory.rglob("*") if recursive else directory.glob("*")
+        files.extend(sorted(path.resolve() for path in iterator if is_audio_file(path)))
 
     if not files:
-        files.extend(path.resolve() for path in Path.cwd().glob("*.wav"))
+        files.extend(sorted(path.resolve() for path in Path.cwd().glob("*") if is_audio_file(path)))
 
     unique_files: list[Path] = []
     seen: set[Path] = set()
@@ -787,10 +911,9 @@ def collect_batch_files(file_args: list[str] | None, directory: Path | None, rec
     return unique_files
 
 
-def ensure_today_folder(base_dir: Path) -> Path:
-    folder = base_dir / datetime.now().strftime("%Y%m%d")
-    folder.mkdir(parents=True, exist_ok=True)
-    return folder
+def today_folder(base_dir: Path) -> Path:
+    """Folder of the current day; computed on each use so long runs follow the calendar."""
+    return day_csv_path(base_dir, datetime.now()).parent
 
 
 def load_species_frequency_stats(species_file: Path = DEFAULT_SPECIES_FILE) -> dict[str, dict[str, str]]:
@@ -811,11 +934,14 @@ def load_species_frequency_stats(species_file: Path = DEFAULT_SPECIES_FILE) -> d
     return stats
 
 
-def load_daily_observation_rows(day_dir: Path) -> list[dict[str, str]]:
+def load_daily_observation_rows(
+    day_dir: Path,
+    species_file: Path = DEFAULT_SPECIES_FILE,
+) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
     seen: set[tuple[str, str, str]] = set()
-    species_stats = load_species_frequency_stats()
-    for csv_path in sorted(day_dir.glob("inaturalist_import_*.csv")):
+    species_stats = load_species_frequency_stats(species_file)
+    for csv_path in sorted(Path(day_dir).glob("inaturalist_import_*.csv")):
         with csv_path.open("r", encoding="utf-8", newline="") as handle:
             reader = csv.DictReader(handle)
             for row in reader:
@@ -834,7 +960,7 @@ def load_daily_observation_rows(day_dir: Path) -> list[dict[str, str]]:
                         "time": observed_at,
                         "description": description,
                         "rarity": species_stats.get(taxon_name, {}).get("rarity", "unseen"),
-                        "avg_counts": str(int(float(species_stats.get(taxon_name, {}).get("daily_average", "0.000")))) + '/day',
+                        "avg_counts": f"{float(species_stats.get(taxon_name, {}).get('daily_average', '0.000')):.2f}/day",
                     }
                 )
 
@@ -859,9 +985,22 @@ def split_description(desc: str) -> tuple[str, str, str, str]:
     return names[0], names[1], names[2], confidence
 
 
-def print_daily_detection_summary(day_dir: Path, title: str = "") -> None:
-    records = load_daily_observation_rows(day_dir)
+def _format_summary_time(value: str) -> str:
+    try:
+        return datetime.strptime(value, "%Y-%m-%d %H:%M:%S").strftime("%H:%M:%S")
+    except ValueError:
+        return value
 
+
+def print_daily_detection_summary(
+    day_dir: Path,
+    title: str = "",
+    species_file: Path = DEFAULT_SPECIES_FILE,
+) -> None:
+    records = load_daily_observation_rows(day_dir, species_file)
+
+    # Always emit clear/resize escapes, even under systemd: the journal is shown in a
+    # terminal (journalctl -f, Ctrl+Alt+L shortcut) that executes them, leaving only the table.
     print("\033[2J\033[H", end="")
     if title:
         print(title)
@@ -874,7 +1013,7 @@ def print_daily_detection_summary(day_dir: Path, title: str = "") -> None:
         taxon_en, taxon_ita, taxon_ger, conf = split_description(record.get("description", ""))
         rows.append(
             {
-                "time": datetime.strptime(record.get("time", ""), "%Y-%m-%d %H:%M:%S").strftime("%H:%M:%S"),
+                "time": _format_summary_time(record.get("time", "")),
                 "taxon_name": record.get("taxon_name", ""),
                 "rarity": record.get("rarity", ""),
                 "avg_counts": record.get("avg_counts", ""),
@@ -888,9 +1027,7 @@ def print_daily_detection_summary(day_dir: Path, title: str = "") -> None:
     headers = ["time", "taxon_name", "rarity", "avg_counts", "taxon_en", "taxon_ita", "taxon_ger", "conf"]
     widths = {header: max(len(header), max(len(row[header]) for row in rows)) for header in headers}
     header = "|".join(header.ljust(widths[header]) for header in headers)
-    strings_width = len(header)
-    strings_len = len(rows) + 2
-    print(f"\033[8;{strings_len};{strings_width}t", end="")
+    print(f"\033[8;{len(rows) + 2};{len(header)}t", end="")
     print(header)
     for row in rows:
         print("|".join(row[header].ljust(widths[header]) for header in headers))
@@ -902,10 +1039,12 @@ def record_live_detection_observation(
     english_name: str,
     confidence: float,
     species_catalog: SpeciesCatalog,
-    output_dir: Path,
+    detections_dir: Path,
     args: argparse.Namespace,
+    observed_at: datetime | None = None,
 ) -> datetime:
-    observed_at = datetime.now()
+    observed_at = observed_at or datetime.now()
+    csv_path = day_csv_path(detections_dir, observed_at)
     species_catalog.ensure_species(
         [
             {
@@ -918,7 +1057,7 @@ def record_live_detection_observation(
     )
     italian_name, german_name, english_name = species_catalog.display_names(scientific_name, english_name)
     append_inaturalist_csv_row(
-        output_dir / f"inaturalist_import_{output_dir.name}.csv",
+        csv_path,
         taxon_name=scientific_name,
         observed_at=observed_at,
         english_name=english_name,
@@ -931,7 +1070,7 @@ def record_live_detection_observation(
         tags=DEFAULT_INATURALIST_TAGS,
         geoprivacy=DEFAULT_INATURALIST_GEOPRIVACY,
     )
-    print_daily_detection_summary(output_dir)
+    print_daily_detection_summary(csv_path.parent, species_file=species_catalog.path)
     return observed_at
 
 
@@ -953,10 +1092,30 @@ def resolve_runtime_location(args: argparse.Namespace) -> None:
     )
 
 
+def infer_recording_start(file_path: Path, duration_seconds: float) -> tuple[datetime, str]:
+    """Best guess of when a recording started, with the source of the guess.
+
+    The ctime used before is the inode change time on Linux (i.e. when the file was
+    copied), so it dated old recordings to the day they were analyzed.
+    """
+    parsed = parse_timestamp_from_name(file_path.name)
+    if parsed is not None:
+        return parsed, "file name"
+    # mtime is when the recorder finished writing: step back to the start
+    modified_at = datetime.fromtimestamp(file_path.stat().st_mtime)
+    return modified_at - timedelta(seconds=duration_seconds), "file modification time"
+
+
+def audio_duration_seconds(file_path: Path) -> float:
+    import librosa
+
+    return float(librosa.get_duration(path=str(file_path)))
+
+
 def run_batch(args: argparse.Namespace) -> int:
     files = collect_batch_files(args.files, args.directory, args.recursive)
     if not files:
-        print("No WAV files found.")
+        print("No audio files found.")
         return 1
 
     resolve_runtime_location(args)
@@ -987,51 +1146,68 @@ def run_batch(args: argparse.Namespace) -> int:
             write_wav_mono(analysis_path, analysis_samples, analysis_rate)
 
         try:
-            file_observed_at = datetime.fromtimestamp(file_path.stat().st_ctime)
+            if analysis_samples is not None:
+                duration_seconds = len(analysis_samples) / float(analysis_rate)
+            else:
+                duration_seconds = audio_duration_seconds(file_path)
+            recording_start, start_source = infer_recording_start(file_path, duration_seconds)
+            print(
+                f"{file_path.name}: {duration_seconds:.1f}s recorded at "
+                f"{recording_start:%Y-%m-%d %H:%M:%S} (from {start_source})"
+            )
+
             detections = detector.detect(
                 analysis_path,
                 latitude=args.lat,
                 longitude=args.lon,
-                when=file_observed_at,
+                when=recording_start,
                 min_confidence=args.min_confidence,
             )
-            species_catalog_changed = species_catalog.ensure_species(
+            grouped = aggregate_detections_by_species(
                 detections,
-                observed_at=file_observed_at,
+                duration_seconds=duration_seconds,
+                min_confidence=args.min_confidence,
             )
+            if not grouped:
+                print("  no detections")
+                continue
 
-            if args.export_clips and detections:
+            for scientific_name, (start_sec, _end_sec, confidence, english_name) in sorted(
+                grouped.items(),
+                key=lambda item: item[1][0],
+            ):
+                heard_at = recording_start + timedelta(seconds=start_sec)
+                print(f"  {heard_at:%Y-%m-%d %H:%M:%S}  {scientific_name} ({english_name})  conf={confidence:.3f}")
+                # one observation per species per file, like one event per species in live mode
+                species_catalog.ensure_species(
+                    [{"scientific_name": scientific_name, "common_name": english_name, "confidence": confidence}],
+                    observed_at=heard_at,
+                )
+
+            if args.export_clips:
                 if analysis_samples is None or analysis_rate is None:
                     analysis_samples, analysis_rate = load_audio(file_path)
 
-                grouped = aggregate_detections_by_species(
-                    detections,
-                    duration_seconds=len(analysis_samples) / float(analysis_rate),
-                    min_confidence=args.min_confidence,
-                )
-                grouped = apply_clip_span_policy(
+                clip_spans = apply_clip_span_policy(
                     grouped,
-                    duration_seconds=len(analysis_samples) / float(analysis_rate),
+                    duration_seconds=duration_seconds,
                     clip_span=getattr(args, "clip_span", DEFAULT_BATCH_CLIP_SPAN),
                 )
-
-                if grouped:
-                    destination_dir = args.detections_dir / file_observed_at.strftime("%Y%m%d")
-                    exported = export_detection_clips(
-                        analysis_samples,
-                        analysis_rate,
-                        grouped,
-                        species_catalog,
-                        destination_dir,
-                        latitude=args.lat,
-                        longitude=args.lon,
-                        place_name=args.place_name,
-                        tags=DEFAULT_INATURALIST_TAGS,
-                        geoprivacy=DEFAULT_INATURALIST_GEOPRIVACY,
-                    )
-                    print(f"  Exported {len(exported)} clip(s) to {destination_dir}")
-                    if species_catalog_changed and exported:
-                        print_daily_detection_summary(destination_dir, title=f"File: {file_path}")
+                exported = export_detection_clips(
+                    analysis_samples,
+                    analysis_rate,
+                    clip_spans,
+                    species_catalog,
+                    args.detections_dir,
+                    latitude=args.lat,
+                    longitude=args.lon,
+                    place_name=args.place_name,
+                    tags=DEFAULT_INATURALIST_TAGS,
+                    geoprivacy=DEFAULT_INATURALIST_GEOPRIVACY,
+                    observed_at=recording_start,
+                )
+                for path in exported:
+                    print(f"  exported {path}")
         finally:
             if analysis_path != file_path and analysis_path.exists():
                 analysis_path.unlink()
@@ -1039,121 +1215,17 @@ def run_batch(args: argparse.Namespace) -> int:
     return 0
 
 
-def process_live_slice(
-    raw_samples,
-    sample_rate: int,
-    slice_number: int,
-    detector: BirdNetDetector,
-    species_catalog: SpeciesCatalog,
-    output_dir: Path,
-    args: argparse.Namespace,
-    temp_path: Path | None = None,
-) -> None:
-    # slice_stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    raw_rms = rms_level(raw_samples)
-    processing_mode = "raw"
-
-    created_temp = False
-    if temp_path is None:
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False, dir=output_dir) as temp_handle:
-            temp_path = Path(temp_handle.name)
-        created_temp = True
-
-    try:
-        if args.disable_denoise:
-            working_samples = raw_samples
-        else:
-            working_samples = denoise_signal(
-                raw_samples,
-                sample_rate,
-                noise_reference=args.noise_ref,
-                high_pass_hz=args.high_pass_hz,
-                noise_reduction_factor=args.noise_reduction_factor,
-            )
-            processing_mode = "denoised"
-
-        write_wav_mono(temp_path, working_samples, sample_rate)
-        detections = detector.detect(
-            temp_path,
-            latitude=args.lat,
-            longitude=args.lon,
-            when=datetime.now(),
-            min_confidence=args.min_confidence,
-        )
-
-        if not detections and not args.disable_denoise:
-            processing_mode = "raw-fallback"
-            write_wav_mono(temp_path, raw_samples, sample_rate)
-            working_samples = raw_samples
-            detections = detector.detect(
-                temp_path,
-                latitude=args.lat,
-                longitude=args.lon,
-                when=datetime.now(),
-                min_confidence=args.min_confidence,
-            )
-    finally:
-        if created_temp and temp_path and temp_path.exists():
-            try:
-                temp_path.unlink()
-            except Exception:
-                pass
-
-    if args.verbose:
-        working_rms = rms_level(working_samples)
-        print(
-            f"{datetime.now():%H:%M:%S} - "
-            f"slice={slice_number} "
-            f"mode={processing_mode} "
-            f"raw_rms={raw_rms:.4f} "
-            f"used_rms={working_rms:.4f} "
-            f"detections={len(detections)}"
-        )
-    print(detections)
-    species_catalog_changed = species_catalog.ensure_species(detections, observed_at=datetime.now())
-    duration_seconds = len(raw_samples) / float(sample_rate)
-    grouped = aggregate_detections_by_species(
-        detections,
-        duration_seconds=duration_seconds,
-        min_confidence=args.min_confidence,
-    )
-    grouped = apply_clip_span_policy(
-        grouped,
-        duration_seconds=duration_seconds,
-        clip_span=getattr(args, "clip_span", DEFAULT_LIVE_CLIP_SPAN),
-    )
-    if grouped:
-        exported = export_detection_clips(
-            working_samples,
-            sample_rate,
-            grouped,
-            species_catalog,
-            output_dir,
-            latitude=args.lat,
-            longitude=args.lon,
-            place_name=args.place_name,
-            tags=DEFAULT_INATURALIST_TAGS,
-            geoprivacy=DEFAULT_INATURALIST_GEOPRIVACY,
-        )
-        if species_catalog_changed and exported:
-            print_daily_detection_summary(output_dir)
-        # print(f"{datetime.now():%H:%M:%S} - Exported {len(exported)} clip(s).")
-
-
 def detect_live_slice(
     raw_samples,
     sample_rate: int,
     detector: BirdNetDetector,
     args: argparse.Namespace,
-    temp_path: Path | None = None,
-) -> tuple[dict[str, tuple[float, float, float, str]], np.ndarray]:
+):
     """Detect on a live slice and return grouped detections and the working samples.
 
     This function does NOT export clips; the caller is responsible for aggregating
     detections across slices and exporting when appropriate.
     """
-    import numpy as np
-
     if args.disable_denoise:
         working_samples = raw_samples
         processing_mode = "raw"
@@ -1167,38 +1239,30 @@ def detect_live_slice(
         )
         processing_mode = "denoised"
 
-    created_temp = False
-    if temp_path is None:
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_handle:
-            temp_path = Path(temp_handle.name)
-        created_temp = True
-
-    try:
-        write_wav_mono(temp_path, working_samples, sample_rate)
-        detections = detector.detect(
-            temp_path,
+    def detect(samples):
+        return detector.detect_samples(
+            samples,
+            sample_rate,
             latitude=args.lat,
             longitude=args.lon,
             when=datetime.now(),
             min_confidence=args.min_confidence,
         )
 
-        if not detections and not args.disable_denoise:
-            write_wav_mono(temp_path, raw_samples, sample_rate)
-            working_samples = raw_samples
-            detections = detector.detect(
-                temp_path,
-                latitude=args.lat,
-                longitude=args.lon,
-                when=datetime.now(),
-                min_confidence=args.min_confidence,
-            )
-    finally:
-        if created_temp and temp_path and temp_path.exists():
-            try:
-                temp_path.unlink()
-            except Exception:
-                pass
+    detections = detect(working_samples)
+    if not detections and not args.disable_denoise:
+        processing_mode = "raw-fallback"
+        working_samples = raw_samples
+        detections = detect(working_samples)
+
+    if getattr(args, "verbose", False):
+        print(
+            f"{datetime.now():%H:%M:%S} - "
+            f"mode={processing_mode} "
+            f"raw_rms={rms_level(raw_samples):.4f} "
+            f"used_rms={rms_level(working_samples):.4f} "
+            f"detections={len(detections)}"
+        )
 
     duration_seconds = len(working_samples) / float(sample_rate)
     grouped = aggregate_detections_by_species(
@@ -1206,21 +1270,82 @@ def detect_live_slice(
         duration_seconds=duration_seconds,
         min_confidence=args.min_confidence,
     )
-    grouped = apply_clip_span_policy(
-        grouped,
-        duration_seconds=duration_seconds,
-        clip_span=getattr(args, "clip_span", DEFAULT_LIVE_CLIP_SPAN),
-    )
     return grouped, working_samples
 
 
+def print_live_header(args: argparse.Namespace, device_label: str, sample_rate: int) -> None:
+    print(f"{datetime.now():%H:%M:%S} - Working directory: {Path.cwd()}")
+    print(f"{datetime.now():%H:%M:%S} - Saving detections to: {args.detections_dir}/YYYYMMDD")
+    print(f"{datetime.now():%H:%M:%S} - Device: {device_label}")
+    print(f"{datetime.now():%H:%M:%S} - Recorder sample rate: {sample_rate}")
+    print(f"{datetime.now():%H:%M:%S} - Slice duration: {(args.frame_length * args.slice_interval) / float(sample_rate):.2f}s")
+    print(f"{datetime.now():%H:%M:%S} - Denoise live: {'off' if args.disable_denoise else 'on'}")
+
+
+def run_live_detection(
+    args: argparse.Namespace,
+    frames,
+    sample_rate: int,
+    species_catalog: SpeciesCatalog,
+    detector: BirdNetDetector,
+) -> None:
+    """Shared live pipeline for every backend: ``frames`` yields float32 blocks in [-1, 1]."""
+    args.detections_dir = Path(args.detections_dir)
+
+    def record_observation(scientific_name: str, english_name: str, confidence: float, heard_at: datetime) -> None:
+        record_live_detection_observation(
+            scientific_name=scientific_name,
+            english_name=english_name,
+            confidence=confidence,
+            species_catalog=species_catalog,
+            detections_dir=args.detections_dir,
+            args=args,
+            observed_at=heard_at,
+        )
+
+    tracker = LiveDetectionTracker(
+        sample_rate=sample_rate,
+        detections_dir=args.detections_dir,
+        species_catalog=species_catalog,
+        record_observation=record_observation,
+        export_kwargs={
+            "latitude": args.lat,
+            "longitude": args.lon,
+            "place_name": args.place_name,
+            "tags": DEFAULT_INATURALIST_TAGS,
+            "geoprivacy": DEFAULT_INATURALIST_GEOPRIVACY,
+        },
+        clip_span=getattr(args, "clip_span", DEFAULT_LIVE_CLIP_SPAN),
+        max_clip_seconds=LIVE_MAX_CLIP_SECONDS,
+    )
+    def on_exported(paths: list[Path]) -> None:
+        print_daily_detection_summary(today_folder(args.detections_dir), species_file=species_catalog.path)
+        if args.verbose:
+            for path in paths:
+                print(f"{datetime.now():%H:%M:%S} - Exported {path}")
+
+    def on_error(exc: Exception) -> None:
+        print(f"{datetime.now():%H:%M:%S} - Detection error: {exc!r}")
+
+    print_daily_detection_summary(today_folder(args.detections_dir), species_file=species_catalog.path)
+    run_sliding_window_loop(
+        frames,
+        sample_rate=sample_rate,
+        slice_frames=args.slice_interval,
+        detect_window=lambda window: detect_live_slice(window, sample_rate, detector, args),
+        tracker=tracker,
+        on_exported=on_exported,
+        on_error=on_error,
+    )
+
+
 def run_live_pvrecorder(args: argparse.Namespace) -> int:
+    import numpy as np
     from pvrecorder import PvRecorder
 
     resolve_runtime_location(args)
     species_catalog = SpeciesCatalog(args.species_file)
-    async_detector = BirdNetDetector()
-    output_dir = ensure_today_folder(args.detections_dir)
+    detector = BirdNetDetector()
     devices = get_available_audio_devices()
     if devices:
         print("Device audio disponibili:")
@@ -1233,185 +1358,60 @@ def run_live_pvrecorder(args: argparse.Namespace) -> int:
     )
     recorder = PvRecorder(device_index=args.device_index, frame_length=args.frame_length)
     sample_rate = getattr(recorder, "sample_rate", DEFAULT_RECORDER_SAMPLE_RATE)
+    print_live_header(args, f"{args.device_index} ({selected_device_name})", sample_rate)
+
+    def frames():
+        while True:
+            # PvRecorder returns int16 values: scale them to [-1, 1] like sounddevice
+            yield np.asarray(recorder.read(), dtype=np.int16).astype(np.float32) / 32768.0
+
     started = False
-
-    print(f"{datetime.now():%H:%M:%S} - Working directory: {Path.cwd()}")
-    print(f"{datetime.now():%H:%M:%S} - Saving detections to: {output_dir}")
-    print(f"{datetime.now():%H:%M:%S} - Device index: {args.device_index} ({selected_device_name})")
-    print(f"{datetime.now():%H:%M:%S} - Recorder sample rate: {sample_rate}")
-    print(f"{datetime.now():%H:%M:%S} - Slice duration: {(args.frame_length * args.slice_interval) / float(sample_rate):.2f}s")
-    print(f"{datetime.now():%H:%M:%S} - Denoise live: {'off' if args.disable_denoise else 'on'}")
-    print_daily_detection_summary(output_dir)
-
-    audio_frames: list[int] = []
-    slice_index = 0
-
-    # Choose a temp directory (prefer tmpfs /dev/shm if available)
-    tmp_dir = Path("/dev/shm") if Path("/dev/shm").is_dir() and os.access("/dev/shm", os.W_OK) else output_dir
-    shared_temp = tmp_dir / f".birdnet_live_tmp_{os.getpid()}.wav"
-
     try:
-        import threading
-        import collections
-        import numpy as _np
-
-        # sliding window parameters (50% overlap)
-        slice_frames = int(args.slice_interval)
-        slide_step_frames = max(1, slice_frames // 2)
-
-        # queues for async detection
-        task_queue: queue.Queue = queue.Queue()
-        result_queue: queue.Queue = queue.Queue()
-
-        # Worker thread runs detections asynchronously using the pre-loaded analyzer.
-        def _detection_worker():
-            while True:
-                item = task_queue.get()
-                if item is None:
-                    break
-                window_samples, window_start = item
-                try:
-                    grouped, working_samples = detect_live_slice(
-                        window_samples,
-                        sample_rate,
-                        async_detector,
-                        args,
-                        temp_path=shared_temp,
-                    )
-                    result_queue.put((grouped, working_samples, window_start))
-                except Exception as exc:
-                    result_queue.put(("error", exc))
-
-        worker = threading.Thread(target=_detection_worker, daemon=True)
-        worker.start()
-
-        # sliding buffer of recent frames (keeps last slice_frames frames)
-        frames_buf: collections.deque = collections.deque(maxlen=slice_frames)
-        frames_since_last_detection = 0
-        total_samples = 0
-
         recorder.start()
         started = True
-        if "_active_groups" not in locals():
-            _active_groups: dict = {}
-            _grace_slices = 1
-
-        while True:
-            frame = recorder.read()
-            arr = _np.asarray(frame, dtype=_np.float32)
-            frames_buf.append(arr)
-            total_samples += arr.size
-            frames_since_last_detection += 1
-
-            # process any completed detections
-            while not result_queue.empty():
-                res = result_queue.get()
-                if isinstance(res, tuple) and res[0] == "error":
-                    # log and continue
-                    if args.verbose:
-                        print(f"Detection worker error: {res[1]}")
-                    continue
-                grouped, working_samples, win_start = res
-                present = set(grouped.keys())
-
-                for sci, (start_sec, end_sec, conf, english) in grouped.items():
-                    win_len = int(len(working_samples))
-                    if sci in _active_groups:
-                        last_end = _active_groups[sci].get("last_end_sample", _active_groups[sci].get("start_sample", win_start))
-                        append_from = max(0, last_end - win_start)
-                        if append_from < win_len:
-                            part = _np.asarray(working_samples[append_from:], dtype=_np.float32)
-                            _active_groups[sci]["samples"].append(part)
-                            _active_groups[sci]["last_end_sample"] = max(_active_groups[sci].get("last_end_sample", win_start), win_start + win_len)
-                        _active_groups[sci]["conf"] = max(conf, _active_groups[sci]["conf"])
-                        _active_groups[sci]["missing"] = 0
-                    else:
-                        observed_at = record_live_detection_observation(
-                            scientific_name=sci,
-                            english_name=english,
-                            confidence=conf,
-                            species_catalog=species_catalog,
-                            output_dir=output_dir,
-                            args=args,
-                        )
-                        _active_groups[sci] = {
-                            "samples": [_np.asarray(working_samples, dtype=_np.float32)],
-                            "conf": conf,
-                            "english": english,
-                            "missing": 0,
-                            "start_sample": win_start,
-                            "last_end_sample": win_start + int(len(working_samples)),
-                            "observed_at": observed_at,
-                            "csv_recorded": True,
-                        }
-
-                # increment missing for groups not present in this result and finalize
-                for sci in list(_active_groups.keys()):
-                    if sci not in present:
-                        _active_groups[sci]["missing"] += 1
-                        if _active_groups[sci]["missing"] > _grace_slices:
-                            concat = _np.concatenate(_active_groups[sci]["samples"], axis=0)
-                            confidence = _active_groups[sci]["conf"]
-                            english = _active_groups[sci]["english"]
-                            dummy_group = {sci: (0.0, len(concat) / float(sample_rate), confidence, english)}
-                            exported = export_detection_clips(
-                                concat,
-                                sample_rate,
-                                dummy_group,
-                                species_catalog,
-                                output_dir,
-                                latitude=args.lat,
-                                longitude=args.lon,
-                                place_name=args.place_name,
-                                tags=DEFAULT_INATURALIST_TAGS,
-                                geoprivacy=DEFAULT_INATURALIST_GEOPRIVACY,
-                                observed_at=_active_groups[sci].get("observed_at"),
-                            )
-                            if exported:
-                                print_daily_detection_summary(output_dir)
-                            del _active_groups[sci]
-
-            # if we don't yet have a full window, continue
-            if len(frames_buf) < slice_frames:
-                continue
-
-            # only submit a new detection every slide_step_frames
-            if frames_since_last_detection < slide_step_frames:
-                continue
-
-            # build window from last slice_frames frames and submit to worker
-            window = _np.concatenate(list(frames_buf), axis=0)
-            window_start = total_samples - (slice_frames * args.frame_length)
-            task_queue.put((window.copy(), int(window_start)))
-            frames_since_last_detection = 0
-
+        run_live_detection(args, frames(), sample_rate, species_catalog, detector)
     except KeyboardInterrupt:
         print("\nStopping live recognition.")
-        try:
-            if "task_queue" in locals():
-                task_queue.put(None)
-        except Exception:
-            pass
         return 0
     finally:
         if started:
             recorder.stop()
         recorder.delete()
-        try:
-            if shared_temp and shared_temp.exists():
-                shared_temp.unlink()
-        except Exception:
-            pass
+    return 0
+
+
+def choose_sounddevice_sample_rate(device: int | None, default_rate: int) -> int:
+    """Prefer at least 44.1 kHz: BirdNET works at 48 kHz and analyzes up to ~15 kHz,
+    so a 16 kHz input (8 kHz Nyquist) hides many high-pitched songs."""
+    import sounddevice as sd
+
+    if default_rate >= 44100:
+        return default_rate
+    try:
+        sd.check_input_settings(device=device, samplerate=BIRDNET_SAMPLE_RATE, channels=1, dtype="float32")
+        return BIRDNET_SAMPLE_RATE
+    except Exception:
+        return default_rate
+
+
+def rechunk_frames(blocks, frame_length: int):
+    """Yield fixed-size frames from blocks of any size."""
+    import numpy as np
+
+    pending = np.empty(0, dtype=np.float32)
+    for block in blocks:
+        pending = np.concatenate((pending, np.asarray(block, dtype=np.float32).reshape(-1)))
+        while pending.size >= frame_length:
+            yield pending[:frame_length]
+            pending = pending[frame_length:]
 
 
 def run_live_sounddevice(args: argparse.Namespace) -> int:
-    import numpy as np
     import sounddevice as sd
 
     resolve_runtime_location(args)
     species_catalog = SpeciesCatalog(args.species_file)
-    async_detector = BirdNetDetector()
-    output_dir = ensure_today_folder(args.detections_dir)
+    detector = BirdNetDetector()
     devices = get_available_audio_devices_sounddevice()
     if devices:
         print("Device audio disponibili (sounddevice):")
@@ -1447,18 +1447,15 @@ def run_live_sounddevice(args: argparse.Namespace) -> int:
             sample_rate,
         )
     device = None if args.device_index < 0 else args.device_index
+    saved_state = load_sounddevice_state()
+    if selected_device and saved_state.get("name") == selected_device["name"] and saved_state.get("samplerate"):
+        # the probe opened this device with exactly these settings
+        sample_rate = int(saved_state["samplerate"])
+    else:
+        sample_rate = choose_sounddevice_sample_rate(device, int(sample_rate))
+    print_live_header(args, f"{args.device_index} ({selected_device_name})", sample_rate)
 
-    print(f"{datetime.now():%H:%M:%S} - Working directory: {Path.cwd()}")
-    print(f"{datetime.now():%H:%M:%S} - Saving detections to: {output_dir}")
-    print(f"{datetime.now():%H:%M:%S} - Device index: {args.device_index} ({selected_device_name})")
-    print(f"{datetime.now():%H:%M:%S} - Recorder sample rate: {sample_rate}")
-    print(f"{datetime.now():%H:%M:%S} - Slice duration: {(args.frame_length * args.slice_interval) / float(sample_rate):.2f}s")
-    print(f"{datetime.now():%H:%M:%S} - Denoise live: {'off' if args.disable_denoise else 'on'}")
-    print_daily_detection_summary(output_dir)
-
-    audio_frames: list[float] = []
-    slice_index = 0
-    audio_queue: queue.Queue[np.ndarray] = queue.Queue()
+    audio_queue: queue.Queue = queue.Queue()
     status_queue: queue.Queue[str] = queue.Queue()
 
     def audio_callback(indata, frames, time_info, status) -> None:
@@ -1467,187 +1464,54 @@ def run_live_sounddevice(args: argparse.Namespace) -> int:
             status_queue.put(str(status))
         audio_queue.put(indata[:, 0].copy())
 
-    # Choose a temp directory (prefer tmpfs /dev/shm if available)
-    tmp_dir = Path("/dev/shm") if Path("/dev/shm").is_dir() and os.access("/dev/shm", os.W_OK) else output_dir
-    shared_temp = tmp_dir / f".birdnet_live_tmp_{os.getpid()}.wav"
+    def blocks():
+        while True:
+            try:
+                block = audio_queue.get(timeout=AUDIO_STALL_TIMEOUT_SECONDS)
+            except queue.Empty:
+                # e.g. USB microphone unplugged: fail so systemd restarts us, instead of hanging
+                raise RuntimeError(
+                    f"no audio received for {AUDIO_STALL_TIMEOUT_SECONDS:.0f}s from device {selected_device_name}"
+                ) from None
+            while not status_queue.empty():
+                message = status_queue.get_nowait()
+                if args.verbose:
+                    print(f"{datetime.now():%H:%M:%S} - audio status: {message}")
+            yield block
 
     try:
-        import threading
-        import collections
-
-        # sliding window parameters (50% overlap)
-        slice_frames = int(args.slice_interval)
-        slide_step_frames = max(1, slice_frames // 2)
-
-        # queues for async detection
-        task_queue: queue.Queue = queue.Queue()
-        result_queue: queue.Queue = queue.Queue()
-
-        def _detection_worker():
-            while True:
-                item = task_queue.get()
-                if item is None:
-                    break
-                window_samples, window_start = item
-                try:
-                    grouped, working_samples = detect_live_slice(
-                        window_samples,
-                        sample_rate,
-                        async_detector,
-                        args,
-                        temp_path=shared_temp,
-                    )
-                    result_queue.put((grouped, working_samples, window_start))
-                except Exception as exc:
-                    result_queue.put(("error", exc))
-
-        worker = threading.Thread(target=_detection_worker, daemon=True)
-        worker.start()
-
-        frames_buf: collections.deque = collections.deque(maxlen=slice_frames)
-        frames_since_last_detection = 0
-        total_samples = 0
-
-        with sd.InputStream(
+        # blocksize=0 lets PortAudio pick the period: ALSA plugins such as "samplerate"
+        # reject a fixed 1536-frame block at 44.1 kHz (ALSA error -22). Frames of
+        # args.frame_length are rebuilt in software, so the slice duration is unchanged.
+        stream = sd.InputStream(
             device=device,
             channels=1,
             samplerate=sample_rate,
             dtype="float32",
-            blocksize=args.frame_length,
             callback=audio_callback,
-        ):
-            if "_active_groups" not in locals():
-                _active_groups: dict = {}
-                _grace_slices = 1
-            while True:
-                frame = audio_queue.get()
-                while not status_queue.empty():
-                    message = status_queue.get_nowait()
-                    if args.verbose:
-                        print(f"{datetime.now():%H:%M:%S} - audio status: {message}")
+        )
+    except Exception as exc:
+        print(f"\nCannot open audio device {args.device_index} ({selected_device_name}): {exc}")
+        # forget the cached choice so the next (re)start probes the inputs again
+        DEFAULT_AUDIO_DEVICE_STATE_FILE.unlink(missing_ok=True)
+        return 1
 
-                arr = np.asarray(frame, dtype=np.float32)
-                frames_buf.append(arr)
-                total_samples += arr.size
-                frames_since_last_detection += 1
-
-                # process completed detections
-                while not result_queue.empty():
-                    res = result_queue.get()
-                    if isinstance(res, tuple) and res[0] == "error":
-                        if args.verbose:
-                            print(f"Detection worker error: {res[1]}")
-                        continue
-                    grouped, working_samples, win_start = res
-                    present = set(grouped.keys())
-
-                    for sci, (start_sec, end_sec, conf, english) in grouped.items():
-                        win_len = int(len(working_samples))
-                        if sci in _active_groups:
-                            last_end = _active_groups[sci].get("last_end_sample", _active_groups[sci].get("start_sample", win_start))
-                            append_from = max(0, last_end - win_start)
-                            if append_from < win_len:
-                                part = working_samples[append_from:]
-                                _active_groups[sci]["samples"].append(part)
-                                _active_groups[sci]["last_end_sample"] = max(_active_groups[sci].get("last_end_sample", win_start), win_start + win_len)
-                            _active_groups[sci]["conf"] = max(conf, _active_groups[sci]["conf"])
-                            _active_groups[sci]["missing"] = 0
-                        else:
-                            observed_at = record_live_detection_observation(
-                                scientific_name=sci,
-                                english_name=english,
-                                confidence=conf,
-                                species_catalog=species_catalog,
-                                output_dir=output_dir,
-                                args=args,
-                            )
-                            _active_groups[sci] = {
-                                "samples": [working_samples],
-                                "conf": conf,
-                                "english": english,
-                                "missing": 0,
-                                "start_sample": win_start,
-                                "last_end_sample": win_start + int(len(working_samples)),
-                                "observed_at": observed_at,
-                                "csv_recorded": True,
-                            }
-
-                    import numpy as _np
-                    for sci in list(_active_groups.keys()):
-                        if sci not in present:
-                            _active_groups[sci]["missing"] += 1
-                            if _active_groups[sci]["missing"] > _grace_slices:
-                                concat = _np.concatenate(_active_groups[sci]["samples"], axis=0)
-                                confidence = _active_groups[sci]["conf"]
-                                english = _active_groups[sci]["english"]
-                                dummy_group = {sci: (0.0, len(concat) / float(sample_rate), confidence, english)}
-                                exported = export_detection_clips(
-                                    concat,
-                                    sample_rate,
-                                    dummy_group,
-                                    species_catalog,
-                                    output_dir,
-                                    latitude=args.lat,
-                                    longitude=args.lon,
-                                    place_name=args.place_name,
-                                    tags=DEFAULT_INATURALIST_TAGS,
-                                    geoprivacy=DEFAULT_INATURALIST_GEOPRIVACY,
-                                    observed_at=_active_groups[sci].get("observed_at"),
-                                )
-                                if exported:
-                                    print_daily_detection_summary(output_dir)
-                                del _active_groups[sci]
-
-                # if we don't yet have a full window, continue
-                if len(frames_buf) < slice_frames:
-                    continue
-
-                # only submit a new detection every slide_step_frames
-                if frames_since_last_detection < slide_step_frames:
-                    continue
-
-                window = np.concatenate(list(frames_buf), axis=0)
-                window_start = total_samples - (slice_frames * args.frame_length)
-                task_queue.put((window.copy(), int(window_start)))
-                frames_since_last_detection = 0
+    try:
+        with stream:
+            run_live_detection(args, rechunk_frames(blocks(), args.frame_length), sample_rate, species_catalog, detector)
     except KeyboardInterrupt:
         print("\nStopping live recognition.")
-        try:
-            if "task_queue" in locals():
-                task_queue.put(None)
-        except Exception:
-            pass
-        try:
-            if shared_temp and shared_temp.exists():
-                shared_temp.unlink()
-        except Exception:
-            pass
         return 0
     except Exception as exc:
         print(f"\nLive audio error ({args.backend}): {exc}")
         traceback.print_exc()
-        try:
-            if "task_queue" in locals():
-                task_queue.put(None)
-        except Exception:
-            pass
-        try:
-            if shared_temp and shared_temp.exists():
-                shared_temp.unlink()
-        except Exception:
-            pass
         return 1
-    try:
-        try:
-            if "task_queue" in locals():
-                task_queue.put(None)
-        except Exception:
-            pass
-        if shared_temp and shared_temp.exists():
-            shared_temp.unlink()
-    except Exception:
-        pass
     return 0
+
+
+def _raise_keyboard_interrupt(signum, frame) -> None:
+    del signum, frame
+    raise KeyboardInterrupt
 
 
 def run_live(args: argparse.Namespace) -> int:
@@ -1659,9 +1523,14 @@ def run_live(args: argparse.Namespace) -> int:
         print_available_audio_devices(backend)
         return 0
 
-    if backend == "sounddevice":
-        return run_live_sounddevice(args)
-    return run_live_pvrecorder(args)
+    # systemd stops the service with SIGTERM: handle it like Ctrl+C so open clips are saved
+    previous_handler = signal.signal(signal.SIGTERM, _raise_keyboard_interrupt)
+    try:
+        if backend == "sounddevice":
+            return run_live_sounddevice(args)
+        return run_live_pvrecorder(args)
+    finally:
+        signal.signal(signal.SIGTERM, previous_handler)
 
 
 def run_denoise(args: argparse.Namespace) -> int:
@@ -1747,6 +1616,36 @@ def run_inat_import(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_repair_detections(args: argparse.Namespace) -> int:
+    plan = build_repair_plan(args.detections_dir, SpeciesCatalog(args.species_file))
+    moves = plan.moves
+    print(f"CSV letti: {len(plan.source_csvs)}")
+    print(f"Osservazioni (specie x giorno) dopo la riparazione: {len(plan.observations)}")
+    print(f"Clip da spostare nel giorno corretto: {len(moves)}")
+    by_folder: dict[tuple[str, str], int] = {}
+    for move in moves:
+        key = (move.source.parent.parent.name, move.target.parent.parent.name)
+        by_folder[key] = by_folder.get(key, 0) + 1
+    for (source_day, target_day), count in sorted(by_folder.items()):
+        print(f"  {source_day} -> {target_day}: {count}")
+    if plan.missing_clips:
+        print(f"Clip citate nei CSV ma non trovate: {len(plan.missing_clips)}")
+        for name in plan.missing_clips[:20]:
+            print(f"  {name}")
+    if plan.unreferenced_clips:
+        print(f"Clip non citate in nessun CSV (lasciate dove sono): {len(plan.unreferenced_clips)}")
+        for path in plan.unreferenced_clips[:20]:
+            print(f"  {path.relative_to(plan.detections_dir)}")
+
+    if not args.apply:
+        print("\nDry run: nessun file modificato. Rilancia con --apply per applicare.")
+        return 0
+
+    backup_dir = apply_repair_plan(plan)
+    print(f"\nFatto. Backup dei CSV originali e lista degli spostamenti in: {backup_dir}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -1767,6 +1666,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_denoise(args)
     if args.command == "inat-import":
         return run_inat_import(args)
+    if args.command == "repair-detections":
+        return run_repair_detections(args)
 
     parser.error("Unknown command.")
     return 2

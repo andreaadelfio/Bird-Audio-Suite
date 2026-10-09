@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import csv
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import librosa
@@ -188,6 +188,34 @@ def sanitize_filename(value: str) -> str:
     return cleaned.strip(" ._") or "detection"
 
 
+_FILENAME_TIMESTAMP_PATTERNS = (
+    # 20260601_063000, 20260601-063000, 20260601T063000 (AudioMoth, Song Meter, our own clips)
+    re.compile(r"(?<!\d)(\d{4})(\d{2})(\d{2})[_\-T ]?(\d{2})(\d{2})(\d{2})(?!\d)"),
+    # 2026-06-01 06-30-00, 2026-06-01_06.30.00, 2026-06-01T06:30:00 (phone recorders)
+    re.compile(r"(?<!\d)(\d{4})-(\d{2})-(\d{2})[_\-T ](\d{2})[\-:.](\d{2})[\-:.](\d{2})(?!\d)"),
+)
+
+
+def parse_timestamp_from_name(name: str) -> datetime | None:
+    """Return the first valid date-time embedded in a file name, if any."""
+    for pattern in _FILENAME_TIMESTAMP_PATTERNS:
+        for match in pattern.finditer(name):
+            try:
+                return datetime(*(int(part) for part in match.groups()))
+            except ValueError:
+                continue
+    return None
+
+
+def day_folder_name(when: datetime) -> str:
+    return when.strftime("%Y%m%d")
+
+
+def day_csv_path(detections_dir: Path, when: datetime) -> Path:
+    day_name = day_folder_name(when)
+    return Path(detections_dir) / day_name / f"inaturalist_import_{day_name}.csv"
+
+
 def append_inaturalist_csv_row(
     csv_path: Path,
     *,
@@ -247,6 +275,9 @@ def append_inaturalist_csv_row(
         # consider rows matching by scientific name or any localized/common name
         existing_taxon = (row.get("Nome del taxon") or "").strip()
         if existing_taxon not in {taxon_name, english_name, italian_name, german_name}:
+            continue
+        # one observation per species per day: never merge detections of different days
+        if (row.get("Data osservazione") or "").strip()[:10] != observed_at_text[:10]:
             continue
 
         existing_files = ""
@@ -315,7 +346,7 @@ def export_detection_clips(
     sample_rate: int,
     grouped_detections: dict[str, tuple[float, float, float, str]],
     species_catalog,
-    destination_dir: Path,
+    detections_dir: Path,
     latitude: float | None = None,
     longitude: float | None = None,
     place_name: str = "",
@@ -323,13 +354,17 @@ def export_detection_clips(
     geoprivacy: str = "",
     observed_at: datetime | None = None,
 ) -> list[Path]:
+    """Write one clip per species and record it in the CSV of the day it was heard.
+
+    ``observed_at`` is the wall-clock time of the first sample of ``samples``; each
+    species is timestamped at ``observed_at + start_sec`` and routed to
+    ``detections_dir/YYYYMMDD`` of that moment, so a recording spanning midnight
+    never mixes days.
+    """
     exported_paths: list[Path] = []
-    destination_dir = Path(destination_dir)
-    destination_dir.mkdir(parents=True, exist_ok=True)
-    export_time = observed_at or datetime.now()
-    timestamp = export_time.strftime("%Y%m%d_%H%M%S")
+    detections_dir = Path(detections_dir)
+    recording_start = observed_at or datetime.now()
     normalized = normalize_audio(samples)
-    csv_path = destination_dir / f"inaturalist_import_{destination_dir.name}.csv"
 
     for scientific_name, (start_sec, end_sec, confidence, english_name) in grouped_detections.items():
         start_index = max(int(start_sec * sample_rate), 0)
@@ -337,14 +372,17 @@ def export_detection_clips(
         if end_index <= start_index:
             continue
 
+        species_time = recording_start + timedelta(seconds=float(start_sec))
+        csv_path = day_csv_path(detections_dir, species_time)
+        timestamp = species_time.strftime("%Y%m%d_%H%M%S")
         italian_name, german_name, english_name = species_catalog.display_names(scientific_name, english_name)
         clip_name = sanitize_filename(italian_name)
-        output_path = destination_dir / clip_name / f"{clip_name}_{timestamp}_{confidence:.3f}.wav"
+        output_path = csv_path.parent / clip_name / f"{clip_name}_{timestamp}_{confidence:.3f}.wav"
         write_wav_mono(output_path, normalized[start_index:end_index], sample_rate)
         append_inaturalist_csv_row(
             csv_path,
             taxon_name=scientific_name,
-            observed_at=export_time,
+            observed_at=species_time,
             english_name=english_name,
             italian_name=italian_name,
             german_name=german_name,
@@ -361,6 +399,7 @@ def export_detection_clips(
     return exported_paths
 
 def plot_spectrogram(samples: np.ndarray, sample_rate: int) -> None:
+    import librosa.display
     import matplotlib.pyplot as plt
 
     stft = librosa.stft(samples)

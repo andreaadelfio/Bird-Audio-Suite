@@ -13,6 +13,8 @@ from pyinaturalist import update_observation as pyinat_update_observation
 import time
 import webbrowser
 
+from .audio import sanitize_filename
+
 INAT_API_TOKEN_URL = "https://www.inaturalist.org/users/api_token"
 TOKEN_FILE = Path.home() / ".inat_api_token.json"
 DEFAULT_API_BASE_URL = "https://api.inaturalist.org/v2"
@@ -65,8 +67,8 @@ def _infer_audio_files_from_description(description: str, hour_dir: Path) -> lis
     if len(localized_names) < 2:
         return []
 
-    italian_name = localized_names[1]
-    folder = hour_dir / italian_name
+    # clips are saved under the sanitized name ("Gallinella D'Acqua" -> "Gallinella D_Acqua")
+    folder = hour_dir / sanitize_filename(localized_names[1])
     if not folder.exists() or not folder.is_dir():
         return []
 
@@ -77,8 +79,7 @@ def _resolve_audio_paths(hour_dir: Path, description: str, audio_files: list[str
     first_section = description.split(";", 1)[0].strip()
     localized_names = [part.strip() for part in first_section.split(",")]
     if len(localized_names) >= 2:
-        italian_name = localized_names[1]
-        folder = hour_dir / italian_name
+        folder = hour_dir / sanitize_filename(localized_names[1])
         if folder.exists() and folder.is_dir():
             if audio_files:
                 resolved = [folder / audio_name for audio_name in audio_files]
@@ -358,6 +359,9 @@ def import_csv(
                 "observed_at": row.observed_at,
                 "description": row.description,
             }
+            # save after every row: if a later request fails, a rerun must update
+            # the observations already created instead of duplicating them
+            _save_state(state_path, state)
         results.append(
             ImportResult(
                 action=action,
@@ -368,8 +372,6 @@ def import_csv(
             )
         )
 
-    if not dry_run:
-        _save_state(state_path, state)
     return imported_count, updated_count, results
 
 

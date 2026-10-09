@@ -23,9 +23,14 @@ Progetto unificato e separato che fonde:
 
 ## Installazione
 
+Il progetto usa un ambiente dedicato in `~/.venvs/bird-audio-suite` (fuori da Dropbox), con NumPy 2 e LiteRT (`ai-edge-litert`) al posto di TensorFlow: BirdNET gira con ~200 MB di RAM invece di ~550+ MB.
+
 ```bash
-pip install -r requirements.txt
+make venv     # crea l'ambiente con uv e installa requirements.txt
+make test     # esegue i test
 ```
+
+`bird_audio_suite/detector.py` presenta LiteRT a birdnetlib come `tflite_runtime`; se LiteRT non e' installato, birdnetlib usa TensorFlow come prima.
 
 ### Installazione come servizio all'avvio
 
@@ -51,13 +56,13 @@ make log-follow
 Per impostazione predefinita il servizio usa:
 
 - backend `sounddevice`
-- device index `17`
-- il primo `python3` trovato nel `PATH`
+- device index `-1` (selezione automatica, vedi sotto)
+- il Python di `~/.venvs/bird-audio-suite`
 
 Puoi personalizzare l'installazione al momento della creazione del servizio:
 
 ```bash
-make install PYTHON=/home/andrea-adelfio/anaconda3/bin/python3 DEVICE_INDEX=17 BACKEND=sounddevice
+make install PYTHON=/percorso/python DEVICE_INDEX=-1 BACKEND=sounddevice
 ```
 
 Note utili:
@@ -87,6 +92,15 @@ python bird_audio_cli.py batch --directory ./recordings --recursive
 python bird_audio_cli.py batch --files audio.wav --denoise --export-clips
 ```
 
+Formati letti: `.wav`, `.flac`, `.mp3`, `.ogg`, `.m4a` (anche in maiuscolo, es. `.WAV` di AudioMoth).
+
+Data e ora della registrazione:
+
+- se il nome del file contiene un timestamp (`20260601_063000.wav`, `SMA01234_20260601_063000.wav`, `2026-06-01 06-30-00.m4a`) viene usato quello come inizio registrazione;
+- altrimenti si usa la data di modifica del file meno la sua durata (la data di modifica e' quella di fine scrittura del registratore: se il file e' stato copiato senza preservare le date, rinominalo con il timestamp).
+
+Ogni specie viene datata `inizio registrazione + offset della detection` e salvata nella cartella del giorno in cui e' stata sentita.
+
 ### Ascolto live
 
 ```bash
@@ -97,6 +111,17 @@ python bird_audio_cli.py live --backend sounddevice --device-index 17 --disable-
 python bird_audio_cli.py live --backend sounddevice --device-index -1 --device-probe-seconds 1
 python bird_audio_cli.py live --clip-span full_slice
 ```
+
+### Riparazione delle detection salvate nel giorno sbagliato
+
+Le versioni precedenti del live calcolavano la cartella `detections/YYYYMMDD` solo all'avvio: una sessione lunga piu' giorni salvava tutto nella cartella del primo giorno e il CSV univa giorni diversi in un'unica osservazione per specie. Il comando seguente sposta ogni clip nel giorno indicato dal suo nome e ricostruisce i CSV con una riga per specie per giorno:
+
+```bash
+python bird_audio_cli.py repair-detections            # mostra solo il piano
+python bird_audio_cli.py repair-detections --apply    # applica
+```
+
+Con `--apply` i CSV originali e la lista degli spostamenti (`moves.json`) vengono salvati in `detections/_backup_repair_<timestamp>/`.
 
 ### Denoise standalone
 
@@ -149,10 +174,10 @@ Nota:
 ## Note
 
 - Il progetto non modifica i due progetti originali.
-- Le clip esportate finiscono in `detections/YYYYMMDD/`.
-- In `live`, la registrazione si interrompe con `Ctrl+C`.
-- Su questa macchina il default live e' `sounddevice` con device `17` (`Gruppo microfoni (Senary Audio capture)`).
-- In `live`, con `--device-index -1` il programma ascolta ogni ingresso sounddevice per un secondo, mostra RMS e picco e seleziona automaticamente quello con piu' segnale. Usa `--device-probe-seconds` per cambiare la durata del test.
-- Il device selezionato automaticamente viene salvato in `.bird_audio_device.json`; agli avvii successivi viene provato solo quello. Se non e' disponibile o il segnale e' insufficiente, vengono provati gli altri ingressi e la cache viene aggiornata.
-- In `live`, il default export e' `from_detection`: dalla prima detection fino alla fine della slice.
+- Le clip esportate finiscono in `detections/YYYYMMDD/`, dove `YYYYMMDD` e' il giorno in cui la specie e' stata sentita (anche se il live gira da piu' giorni). Il CSV del giorno contiene una riga per specie: piu' detection della stessa specie nello stesso giorno vengono unite, giorni diversi mai.
+- In `live`, la registrazione si interrompe con `Ctrl+C` o con `SIGTERM` (`make stop`): in entrambi i casi le clip ancora aperte vengono salvate prima di uscire.
+- In `live`, il default e' `sounddevice` con `--device-index -1` (selezione automatica).
+- Con `--device-index -1` il programma ascolta ogni ingresso sounddevice (di default per un secondo), mostra RMS e picco e seleziona quello con piu' segnale, preferendo a parita' di segnale quelli a 44.1/48 kHz (BirdNET lavora a 48 kHz: a 16 kHz si perde tutto sopra gli 8 kHz). Ogni ingresso viene provato in un processo separato con le stesse impostazioni del live, scartando il primo mezzo secondo: alcuni plugin ALSA (`speex`, `upmix`, `vdownmix`) vanno in segfault o emettono solo un "click" iniziale. Usa `--device-probe-seconds` per cambiare la durata del test.
+- Il device selezionato automaticamente (con il sample rate verificato) viene salvato in `.bird_audio_device.json`; agli avvii successivi viene provato solo quello. Se non e' disponibile, il segnale e' insufficiente o lo stream non si apre, la cache viene scartata e vengono provati gli altri ingressi.
+- In `live`, il default export e' `from_detection`: la clip parte 3 s prima della prima detection e continua finche' la specie viene sentita; si chiude dopo 3 finestre consecutive senza detection (pause fino a ~15 s non la spezzano), dura almeno 10 s e al massimo 120 s (i cori lunghi vengono spezzati in piu' clip della stessa osservazione).
 - `species_names.txt` ora e' un CSV storico: tiene i nomi della specie, primo/ultimo giorno di ascolto, giorni osservati, conteggio totale, media giornaliera e una rarita' inversa basata sulla frequenza media. Le osservazioni del giorno vengono invece lette dai CSV `detections/YYYYMMDD/*/inaturalist_import_*.csv`.

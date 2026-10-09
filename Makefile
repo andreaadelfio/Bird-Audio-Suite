@@ -6,11 +6,20 @@ SERVICE_FILE := $(SYSTEMD_USER_DIR)/$(SERVICE_NAME)
 PROJECT_DIR := $(abspath .)
 CLI_SCRIPT := $(PROJECT_DIR)/bird_audio_cli.py
 
-PYTHON ?= $(shell command -v python3)
+VENV_DIR ?= $(HOME)/.venvs/bird-audio-suite
+PYTHON ?= $(VENV_DIR)/bin/python
 BACKEND ?= sounddevice
-DEVICE_INDEX ?= 17
+DEVICE_INDEX ?= -1
 
-.PHONY: install start stop restart log log-follow status
+.PHONY: venv test install start stop restart log log-follow status
+
+# Dedicated environment outside Dropbox (NumPy 2 + LiteRT, no TensorFlow).
+venv:
+	uv venv --python python3.12 "$(VENV_DIR)"
+	VIRTUAL_ENV="$(VENV_DIR)" uv pip install --python "$(VENV_DIR)/bin/python" -r requirements.txt
+
+test:
+	"$(PYTHON)" -m pytest -q tests
 
 install:
 	mkdir -p "$(SYSTEMD_USER_DIR)"

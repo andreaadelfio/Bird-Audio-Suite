@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import re
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -107,8 +108,8 @@ class SpeciesCatalog:
                     rarity_score=float(row.get("rarity_score") or 0.0),
                     rarity=(row.get("rarity") or "").strip(),
                 )
-                self._refresh_frequency_stats(record)
                 self.records[scientific_name] = record
+        self._refresh_all_frequency_stats()
 
     def _load_legacy_format(self, lines: list[str]) -> None:
         for raw_line in lines:
@@ -196,22 +197,43 @@ class SpeciesCatalog:
 
             confidence = float(detection.get("confidence", 0.0) or 0.0)
 
-            if not record.first_seen_date:
+            # Dates are ISO strings, so they compare chronologically. Batch runs can feed
+            # old recordings out of order: first/last seen must only ever widen.
+            if record.total_count <= 0 or not record.first_seen_date or not record.last_seen_date:
                 record.first_seen_date = observed_day
-            if record.last_seen_date != observed_day:
+                record.last_seen_date = observed_day
+                record.observed_days = 1
+            elif observed_day > record.last_seen_date:
+                record.last_seen_date = observed_day
                 record.observed_days += 1
-            record.last_seen_date = observed_day
+            elif observed_day < record.first_seen_date:
+                record.first_seen_date = observed_day
+                record.observed_days += 1
             record.total_count += 1
             record.last_confidence = max(record.last_confidence, confidence)
-            self._refresh_frequency_stats(record)
-            
+
             updated = True
 
         if updated:
+            self._refresh_all_frequency_stats()
             self.save()
         return updated
 
-    def _refresh_frequency_stats(self, record: SpeciesRecord) -> None:
+    def _monitoring_span_days(self) -> int:
+        """Days between the first and the last detection of any species."""
+        seen = [record for record in self.records.values() if record.total_count > 0]
+        first_dates = [record.first_seen_date for record in seen if record.first_seen_date]
+        last_dates = [record.last_seen_date or record.first_seen_date for record in seen if record.first_seen_date]
+        if not first_dates:
+            return 1
+        return self._date_span_days(min(first_dates), max(last_dates))
+
+    def _refresh_all_frequency_stats(self) -> None:
+        span_days = self._monitoring_span_days()
+        for record in self.records.values():
+            self._refresh_frequency_stats(record, span_days)
+
+    def _refresh_frequency_stats(self, record: SpeciesRecord, span_days: int | None = None) -> None:
         if record.total_count <= 0:
             record.observed_days = 0
             record.daily_average = 0.0
@@ -219,7 +241,10 @@ class SpeciesCatalog:
             record.rarity = "unseen"
             return
 
-        span_days = self._date_span_days(record.first_seen_date, record.last_seen_date)
+        # Average over the whole monitoring period, not the species' own first/last
+        # span: otherwise a bird heard on a single busy day looks "common" forever.
+        if span_days is None:
+            span_days = self._monitoring_span_days()
         if record.observed_days <= 0:
             record.observed_days = 1
         record.daily_average = record.total_count / float(span_days)
@@ -250,17 +275,29 @@ class SpeciesCatalog:
 
     @staticmethod
     def _lookup_localized_name(wiki: wikipediaapi.Wikipedia, scientific_name: str) -> str | None:
-        page = wiki.page(scientific_name)
-        if not page.exists():
+        # Network errors must never break detection (in live mode this runs in the audio loop).
+        try:
+            page = wiki.page(scientific_name)
+            if not page.exists():
+                return None
+            summary = page.summary or ""
+        except Exception as exc:
+            print(f"Wikipedia lookup failed for {scientific_name}: {exc}")
             return None
 
-        summary = page.summary or ""
         if "<b>" in summary:
             try:
-                return summary.split("<b>", 1)[1].split("<", 1)[0].title()
+                return SpeciesCatalog._clean_localized_name(summary.split("<b>", 1)[1].split("<", 1)[0])
             except (IndexError, ValueError):
                 return None
         return None
+
+    @staticmethod
+    def _clean_localized_name(raw_name: str) -> str | None:
+        """Keep the first name of a bold lead such as "rondone, " or "cuculo o"."""
+        name = re.split(r"[,;(]", raw_name, maxsplit=1)[0].strip()
+        name = re.sub(r"\s+(o|oder|or)$", "", name, flags=re.IGNORECASE).strip(" -:")
+        return name.title() or None
 
     def display_names(
         self, scientific_name: str, fallback_english: str = ""
