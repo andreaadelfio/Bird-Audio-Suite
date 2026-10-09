@@ -1,0 +1,195 @@
+from __future__ import annotations
+
+import sys
+import tempfile
+import types
+import unittest
+from datetime import datetime
+from pathlib import Path
+
+import numpy as np
+import soundfile
+
+fake_pyinaturalist = types.ModuleType("pyinaturalist")
+fake_pyinaturalist.create_observation = lambda **kwargs: {}
+fake_pyinaturalist.update_observation = lambda *args, **kwargs: {}
+sys.modules.setdefault("pyinaturalist", fake_pyinaturalist)
+
+from bird_audio_suite.audio import append_inaturalist_csv_row
+from bird_audio_suite.cloud import (
+    CloudConfig,
+    DetectionSync,
+    SupabaseStorageUploader,
+    cloudinary_signature,
+    slugify_public_id,
+)
+
+
+class FakeCatalog:
+    records: dict = {}
+
+    def display_names(self, scientific_name: str, fallback_english: str = "") -> tuple[str, str, str]:
+        return ("Merlo", "Amsel", "Blackbird")
+
+
+class FakeRest:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, list[dict], str]] = []
+        self.next_id = 1
+
+    def upsert(self, table, rows, on_conflict, returning=False):
+        self.calls.append((table, rows, on_conflict))
+        if returning:
+            stored = [{**row, "id": self.next_id} for row in rows]
+            self.next_id += 1
+            return stored
+        return []
+
+
+class FakeUploader:
+    def __init__(self) -> None:
+        self.uploads: list[tuple[str, str]] = []
+
+    def upload(self, path, public_id, resource_type):
+        self.uploads.append((public_id, resource_type, Path(path).suffix))
+        return f"https://res.cloudinary.com/demo/{resource_type}/upload/v1/{public_id}{Path(path).suffix}"
+
+
+def make_detections(root: Path) -> None:
+    day = root / "20261009"
+    clip = day / "Merlo" / "Merlo_20261009_065500_0.910.wav"
+    clip.parent.mkdir(parents=True)
+    soundfile.write(clip, np.zeros(16000, dtype=np.float32), 16000)
+    append_inaturalist_csv_row(
+        day / "inaturalist_import_20261009.csv",
+        taxon_name="Turdus merula",
+        observed_at=datetime(2026, 10, 9, 6, 55),
+        english_name="Blackbird",
+        italian_name="Merlo",
+        german_name="Amsel",
+        confidence=0.91,
+        place_name="Monfalcone",
+        latitude=45.8,
+        longitude=13.5,
+        audio_file_name=clip.name,
+    )
+
+
+def fake_render(audio_path: Path, output_path: Path) -> Path:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_bytes(b"jpg")
+    return output_path
+
+
+class CloudinaryTests(unittest.TestCase):
+    def test_signature_matches_the_documented_example(self) -> None:
+        params = {
+            "eager": "w_400,h_300,c_pad|w_260,h_200,c_crop",
+            "public_id": "sample_image",
+            "timestamp": "1315060510",
+        }
+        self.assertEqual(cloudinary_signature(params, "abcd"), "bfd09f95f331f558cbd1320e67aa8d488770583e")
+
+    def test_public_ids_are_ascii_slugs(self) -> None:
+        self.assertEqual(slugify_public_id("Codibùgnolo_20260901_113103_0.980"), "codibugnolo_20260901_113103_0-980")
+        self.assertEqual(slugify_public_id("Gallinella D_Acqua_x"), "gallinella-d_acqua_x")
+
+
+class FakeSession:
+    def __init__(self) -> None:
+        self.headers: dict = {}
+        self.posts: list = []
+
+    def post(self, url, data=None, headers=None, timeout=None):
+        self.posts.append((url, headers, len(data)))
+        return types.SimpleNamespace(status_code=200, text="{}")
+
+
+class SupabaseStorageTests(unittest.TestCase):
+    def test_uploads_to_the_public_bucket_with_upsert(self) -> None:
+        session = FakeSession()
+        config = CloudConfig(supabase_url="https://abc.supabase.co", supabase_key="sb_publishable_x")
+        uploader = SupabaseStorageUploader(config, session=session)
+        with tempfile.TemporaryDirectory() as directory:
+            mp3 = Path(directory) / "clip.mp3"
+            mp3.write_bytes(b"ID3data")
+            url = uploader.upload(mp3, "20261009/merlo_20261009_065500_0-910", "video")
+
+        posted_url, headers, size = session.posts[0]
+        self.assertEqual(posted_url, "https://abc.supabase.co/storage/v1/object/bird-audio/20261009/merlo_20261009_065500_0-910.mp3")
+        self.assertEqual((headers["Content-Type"], headers["x-upsert"], size), ("audio/mpeg", "true", 7))
+        self.assertEqual(session.headers["apikey"], "sb_publishable_x")
+        self.assertEqual(url, "https://abc.supabase.co/storage/v1/object/public/bird-audio/20261009/merlo_20261009_065500_0-910.mp3")
+
+    def test_supabase_storage_is_the_default_without_cloudinary_keys(self) -> None:
+        self.assertEqual(CloudConfig(supabase_url="u", supabase_key="k").storage_backend, "supabase")
+        self.assertEqual(
+            CloudConfig(cloudinary_cloud_name="c", cloudinary_api_key="k", cloudinary_api_secret="s").storage_backend,
+            "cloudinary",
+        )
+
+
+class DetectionSyncTests(unittest.TestCase):
+    def run_sync(self, root: Path, cache: Path, rest: FakeRest, uploader=None):
+        config = CloudConfig(supabase_url="https://example.supabase.co", supabase_key="secret")
+        if uploader is None:
+            config.media_storage = "local"
+        sync = DetectionSync(
+            root, FakeCatalog(), config, cache_dir=cache, rest=rest, uploader=uploader, render=fake_render, log=lambda *_: None
+        )
+        return sync.run()
+
+    def test_pushes_species_observation_and_clip_without_touching_review_columns(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root, cache = Path(directory) / "detections", Path(directory) / "cache"
+            make_detections(root)
+            rest = FakeRest()
+            report = self.run_sync(root, cache, rest)
+
+        tables = [call[0] for call in rest.calls]
+        self.assertEqual(tables, ["species", "observations", "clips"])
+        observation = rest.calls[1][1][0]
+        self.assertEqual(observation["day"], "2026-10-09")
+        self.assertEqual(rest.calls[1][2], "day,scientific_name")
+        for review_column in ("status", "notes", "corrected_scientific_name", "reviewed_at"):
+            self.assertNotIn(review_column, observation)
+        clip = rest.calls[2][1][0]
+        self.assertEqual(clip["id"], "Merlo_20261009_065500_0.910.wav")
+        self.assertEqual(clip["audio_url"], "media/clips/20261009/Merlo/Merlo_20261009_065500_0.910.wav")
+        self.assertEqual(clip["duration_s"], 1.0)
+        self.assertNotIn("review", clip)
+        self.assertEqual((report.observations_synced, report.clips_uploaded, report.errors), (1, 1, []))
+
+    def test_second_run_skips_unchanged_observations(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root, cache = Path(directory) / "detections", Path(directory) / "cache"
+            make_detections(root)
+            self.run_sync(root, cache, FakeRest())
+            rest = FakeRest()
+            report = self.run_sync(root, cache, rest)
+
+        self.assertEqual(report.observations_synced, 0)
+        self.assertEqual([call[0] for call in rest.calls], ["species"])
+        self.assertEqual(rest.calls[0][1], [])
+
+    def test_remote_storage_gets_an_mp3_not_the_wav(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root, cache = Path(directory) / "detections", Path(directory) / "cache"
+            make_detections(root)
+            rest, uploader = FakeRest(), FakeUploader()
+            self.run_sync(root, cache, rest, uploader)
+
+        clip = rest.calls[2][1][0]
+        self.assertEqual(
+            uploader.uploads,
+            [
+                ("20261009/merlo_20261009_065500_0-910", "video", ".mp3"),
+                ("20261009/merlo_20261009_065500_0-910-spectrogram", "image", ".jpg"),
+            ],
+        )
+        self.assertTrue(clip["audio_url"].endswith(".mp3"))
+        self.assertTrue(clip["spectrogram_url"].endswith("-spectrogram.jpg"))
+
+
+if __name__ == "__main__":
+    unittest.main()

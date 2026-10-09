@@ -23,5 +23,6 @@ ai-edge-litert>=2.0
 # Optional plotting for `denoise --plot`
 matplotlib>=3.7.0
 
-# Tests
+# Tests and local review-site stand-in (make web-dev)
 pytest>=7.0
+pgserver>=0.1

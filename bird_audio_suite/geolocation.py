@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from pathlib import Path
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
@@ -109,6 +110,31 @@ def _lookup_ipwhois(timeout_seconds: float) -> ResolvedLocation | None:
     )
 
 
+def _load_last_known(cache_path: Path | None) -> ResolvedLocation | None:
+    if cache_path is None:
+        return None
+    try:
+        data = json.loads(Path(cache_path).read_text(encoding="utf-8"))
+        return ResolvedLocation(
+            latitude=float(data["latitude"]),
+            longitude=float(data["longitude"]),
+            place_name=str(data.get("place_name", "")),
+            source=f"last known ({data.get('source', '?')})",
+            used_fallback=True,
+        )
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def _save_last_known(cache_path: Path | None, location: ResolvedLocation) -> None:
+    if cache_path is None:
+        return
+    try:
+        Path(cache_path).write_text(json.dumps(asdict(location)), encoding="utf-8")
+    except OSError:
+        pass
+
+
 def resolve_location(
     *,
     fallback_latitude: float,
@@ -116,6 +142,7 @@ def resolve_location(
     fallback_place_name: str,
     enable_auto_lookup: bool = True,
     timeout_seconds: float = 2.0,
+    cache_path: Path | None = None,
 ) -> ResolvedLocation:
     env_location = _lookup_environment()
     if env_location:
@@ -131,13 +158,20 @@ def resolve_location(
         for lookup in (_lookup_ipapi, _lookup_ipwhois):
             result = lookup(timeout_seconds)
             if result:
-                return ResolvedLocation(
+                resolved = ResolvedLocation(
                     latitude=result.latitude,
                     longitude=result.longitude,
                     place_name=result.place_name or fallback_place_name,
                     source=result.source,
                     used_fallback=False,
                 )
+                _save_last_known(cache_path, resolved)
+                return resolved
+
+    # Offline: the laptop travels, so the last position actually seen beats the config default.
+    last_known = _load_last_known(cache_path)
+    if last_known is not None:
+        return last_known
 
     return ResolvedLocation(
         latitude=fallback_latitude,

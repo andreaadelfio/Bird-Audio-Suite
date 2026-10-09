@@ -65,6 +65,14 @@ Puoi personalizzare l'installazione al momento della creazione del servizio:
 make install PYTHON=/percorso/python DEVICE_INDEX=-1 BACKEND=sounddevice
 ```
 
+### Controllo di salute con notifiche desktop
+
+```bash
+make install-health
+```
+
+Installa un timer systemd che ogni 5 minuti controlla il servizio live e manda una notifica desktop se, per due controlli di fila: il servizio non e' attivo, non analizza audio da piu' di 5 minuti (es. crash loop), oppure il microfono da' solo silenzio digitale da 10 minuti (muto/scollegato). Una notifica per problema, piu' una quando si risolve. Il live scrive il battito in `$XDG_RUNTIME_DIR/bird-audio-suite/heartbeat.json`. Prova delle notifiche: `python -m bird_audio_suite.health --test-notification`.
+
 Note utili:
 
 - `make install` crea `~/.config/systemd/user/bird-audio-suite.service`
@@ -123,6 +131,22 @@ python bird_audio_cli.py repair-detections --apply    # applica
 
 Con `--apply` i CSV originali e la lista degli spostamenti (`moves.json`) vengono salvati in `detections/_backup_repair_<timestamp>/`.
 
+### Sito di revisione e cloud
+
+Le osservazioni si rivedono su un sito statico (`docs/`, pubblicato con GitHub Pages) che legge da Supabase, progetto "progetti": dati nello schema `birds`, audio (MP3) e spettrogrammi nel bucket pubblico `bird-audio` di Supabase Storage:
+
+- **Da rivedere**: per ogni osservazione (una per specie al giorno) le clip con spettrogramma (clic per ascoltare) e player; ogni clip si segna "giusta" o "sbagliata", l'osservazione si conferma, si scarta o si corregge la specie, con note.
+- **Osservazioni**: tutte, filtrabili per stato, specie e date.
+- **Report**: ultimi 7/30/90 giorni: specie, clip, minuti di audio, specie nuove, attività per ora.
+
+Pezzi:
+
+- `supabase/birds_schema.sql`: tabelle `species`, `observations`, `clips` e viste del report, nel progetto Supabase "progetti". Accesso volutamente aperto alla chiave publishable, come MyFinance: chi ha il link del sito legge (coordinate comprese) e scrive.
+- `bird_audio_cli.py sync`: carica le clip in MP3 (8 volte piu' leggere del WAV, che resta sul PC per iNaturalist) e gli spettrogrammi (JPEG, rumore di fondo sottratto banda per banda) nel bucket e scrive le righe nello schema `birds`; rimanda solo cio' che e' cambiato, non tocca mai le revisioni e se e' offline recupera al giro dopo. Credenziali in `~/.config/bird-audio-suite/cloud.env` (vedi `bird_audio_suite/cloud.py`), mai nel repository.
+- `make web-dev`: prova tutto in locale, senza Supabase: Postgres integrato + PostgREST (lo stesso strato REST di Supabase) con lo schema, sync delle detection e sito su http://127.0.0.1:8010.
+
+Messa in linea: schema eseguito nel SQL Editor di "progetti" ed esposto in Data API, credenziali in `~/.config/bird-audio-suite/cloud.env`, `sync`, `make install-sync` (sync ogni 15 minuti), GitHub Pages da `main` cartella `/docs`.
+
 ### Denoise standalone
 
 ```bash
@@ -180,4 +204,5 @@ Nota:
 - Con `--device-index -1` il programma ascolta ogni ingresso sounddevice (di default per un secondo), mostra RMS e picco e seleziona quello con piu' segnale, preferendo a parita' di segnale quelli a 44.1/48 kHz (BirdNET lavora a 48 kHz: a 16 kHz si perde tutto sopra gli 8 kHz). Ogni ingresso viene provato in un processo separato con le stesse impostazioni del live, scartando il primo mezzo secondo: alcuni plugin ALSA (`speex`, `upmix`, `vdownmix`) vanno in segfault o emettono solo un "click" iniziale. Usa `--device-probe-seconds` per cambiare la durata del test.
 - Il device selezionato automaticamente (con il sample rate verificato) viene salvato in `.bird_audio_device.json`; agli avvii successivi viene provato solo quello. Se non e' disponibile, il segnale e' insufficiente o lo stream non si apre, la cache viene scartata e vengono provati gli altri ingressi.
 - In `live`, il default export e' `from_detection`: la clip parte 3 s prima della prima detection e continua finche' la specie viene sentita; si chiude dopo 3 finestre consecutive senza detection (pause fino a ~15 s non la spezzano), dura almeno 10 s e al massimo 120 s (i cori lunghi vengono spezzati in piu' clip della stessa osservazione).
+- Posizione: in `live` viene ricalcolata ogni 15 minuti (il portatile si sposta). Se la ricerca via IP fallisce si usa l'ultima posizione trovata (`.bird_audio_location.json`), non quella di default nel config. `BIRD_AUDIO_LATITUDE`/`BIRD_AUDIO_LONGITUDE` la fissano a mano.
 - `species_names.txt` ora e' un CSV storico: tiene i nomi della specie, primo/ultimo giorno di ascolto, giorni osservati, conteggio totale, media giornaliera e una rarita' inversa basata sulla frequenza media. Le osservazioni del giorno vengono invece lette dai CSV `detections/YYYYMMDD/*/inaturalist_import_*.csv`.

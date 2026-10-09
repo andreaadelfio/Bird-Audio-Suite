@@ -4,6 +4,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_SPECIES_FILE = PROJECT_ROOT / "species_names.txt"
 DEFAULT_DETECTIONS_DIR = PROJECT_ROOT / "detections"
 DEFAULT_AUDIO_DEVICE_STATE_FILE = PROJECT_ROOT / ".bird_audio_device.json"
+DEFAULT_LOCATION_CACHE_FILE = PROJECT_ROOT / ".bird_audio_location.json"
 
 # BERLIN
 DEFAULT_LATITUDE = 52.520008
@@ -11,6 +12,8 @@ DEFAULT_LONGITUDE = 13.404954
 DEFAULT_PLACE_NAME = "Berlin, Germany"
 DEFAULT_ENABLE_AUTO_LOCATION = True
 DEFAULT_LOCATION_LOOKUP_TIMEOUT_SECONDS = 2.0
+# Live mode looks the position up again periodically: the laptop travels while it runs.
+DEFAULT_LOCATION_REFRESH_SECONDS = 15 * 60
 DEFAULT_INATURALIST_TAGS = "audio,birdnet"
 DEFAULT_INATURALIST_GEOPRIVACY = ""
 

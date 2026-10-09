@@ -9,6 +9,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import traceback
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -43,7 +44,9 @@ from .config import (
     DEFAULT_LIVE_CLIP_SPAN,
     DEFAULT_LIVE_DEVICE_INDEX,
     DEFAULT_LIVE_MIN_CONFIDENCE,
+    DEFAULT_LOCATION_CACHE_FILE,
     DEFAULT_LOCATION_LOOKUP_TIMEOUT_SECONDS,
+    DEFAULT_LOCATION_REFRESH_SECONDS,
     DEFAULT_LONGITUDE,
     DEFAULT_PLACE_NAME,
     DEFAULT_RECORDER_SAMPLE_RATE,
@@ -53,6 +56,7 @@ from .config import (
 )
 from .detector import BirdNetDetector
 from .geolocation import resolve_location
+from .health import HeartbeatWriter
 from .inaturalist import DEFAULT_API_BASE_URL, import_csv, resolve_jwt_token
 from .live import LiveDetectionTracker, run_sliding_window_loop
 from .repair import apply_repair_plan, build_repair_plan
@@ -349,6 +353,21 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Actually move files and rewrite CSVs. Without it only the plan is printed.",
     )
+
+    sync_parser = subparsers.add_parser(
+        "sync",
+        help="Push detections to Supabase (data) and Cloudinary (audio + spectrograms).",
+    )
+    sync_parser.add_argument("--detections-dir", type=Path, default=DEFAULT_DETECTIONS_DIR)
+    sync_parser.add_argument("--species-file", type=Path, default=DEFAULT_SPECIES_FILE)
+    sync_parser.add_argument(
+        "--config",
+        type=Path,
+        default=None,
+        help="Credentials file. Default: ~/.config/bird-audio-suite/cloud.env",
+    )
+    sync_parser.add_argument("--dry-run", action="store_true", help="Only count what would be synced.")
+    sync_parser.add_argument("--limit", type=int, help="Sync at most N observations (to try it out).")
 
     return parser
 
@@ -1074,22 +1093,46 @@ def record_live_detection_observation(
     return observed_at
 
 
-def resolve_runtime_location(args: argparse.Namespace) -> None:
+def resolve_runtime_location(args: argparse.Namespace, only_report_changes: bool = False) -> bool:
+    """Update args.lat/lon/place_name; return True if the position changed."""
+    previous = (getattr(args, "lat", None), getattr(args, "lon", None), getattr(args, "place_name", None))
     resolved = resolve_location(
         fallback_latitude=float(getattr(args, "lat", DEFAULT_LATITUDE)),
         fallback_longitude=float(getattr(args, "lon", DEFAULT_LONGITUDE)),
         fallback_place_name=getattr(args, "place_name", DEFAULT_PLACE_NAME) or DEFAULT_PLACE_NAME,
         enable_auto_lookup=DEFAULT_ENABLE_AUTO_LOCATION,
         timeout_seconds=DEFAULT_LOCATION_LOOKUP_TIMEOUT_SECONDS,
+        cache_path=DEFAULT_LOCATION_CACHE_FILE,
     )
+    if only_report_changes and resolved.used_fallback:
+        return False  # offline during a refresh: keep the position we already have
     args.lat = resolved.latitude
     args.lon = resolved.longitude
     args.place_name = resolved.place_name
-    source_label = "fallback config" if resolved.used_fallback else resolved.source
-    print(
-        f"{datetime.now():%H:%M:%S} - Observation location: "
-        f"{args.place_name} ({args.lat:.6f}, {args.lon:.6f}) [{source_label}]"
-    )
+    changed = previous != (args.lat, args.lon, args.place_name)
+    if changed or not only_report_changes:
+        source_label = "fallback config" if resolved.source == "config" else resolved.source
+        print(
+            f"{datetime.now():%H:%M:%S} - Observation location: "
+            f"{args.place_name} ({args.lat:.6f}, {args.lon:.6f}) [{source_label}]"
+        )
+    return changed
+
+
+def start_location_refresh(args: argparse.Namespace, on_change, interval_seconds: float) -> threading.Event:
+    """Look the position up again every ``interval_seconds`` in a daemon thread."""
+    stop = threading.Event()
+
+    def refresh() -> None:
+        while not stop.wait(interval_seconds):
+            try:
+                if resolve_runtime_location(args, only_report_changes=True):
+                    on_change()
+            except Exception as exc:
+                print(f"{datetime.now():%H:%M:%S} - Location refresh failed: {exc!r}")
+
+    threading.Thread(target=refresh, name="location-refresh", daemon=True).start()
+    return stop
 
 
 def infer_recording_start(file_path: Path, duration_seconds: float) -> tuple[datetime, str]:
@@ -1288,9 +1331,11 @@ def run_live_detection(
     sample_rate: int,
     species_catalog: SpeciesCatalog,
     detector: BirdNetDetector,
+    device_label: str = "",
 ) -> None:
     """Shared live pipeline for every backend: ``frames`` yields float32 blocks in [-1, 1]."""
     args.detections_dir = Path(args.detections_dir)
+    heartbeat = HeartbeatWriter()
 
     def record_observation(scientific_name: str, english_name: str, confidence: float, heard_at: datetime) -> None:
         record_live_detection_observation(
@@ -1327,16 +1372,28 @@ def run_live_detection(
     def on_error(exc: Exception) -> None:
         print(f"{datetime.now():%H:%M:%S} - Detection error: {exc!r}")
 
+    def detect_window(window):
+        result = detect_live_slice(window, sample_rate, detector, args)
+        heartbeat.beat(rms_level(window), device=device_label, place_name=args.place_name)
+        return result
+
+    def on_location_change() -> None:
+        tracker.export_kwargs.update(latitude=args.lat, longitude=args.lon, place_name=args.place_name)
+
+    stop_refresh = start_location_refresh(args, on_location_change, DEFAULT_LOCATION_REFRESH_SECONDS)
     print_daily_detection_summary(today_folder(args.detections_dir), species_file=species_catalog.path)
-    run_sliding_window_loop(
-        frames,
-        sample_rate=sample_rate,
-        slice_frames=args.slice_interval,
-        detect_window=lambda window: detect_live_slice(window, sample_rate, detector, args),
-        tracker=tracker,
-        on_exported=on_exported,
-        on_error=on_error,
-    )
+    try:
+        run_sliding_window_loop(
+            frames,
+            sample_rate=sample_rate,
+            slice_frames=args.slice_interval,
+            detect_window=detect_window,
+            tracker=tracker,
+            on_exported=on_exported,
+            on_error=on_error,
+        )
+    finally:
+        stop_refresh.set()
 
 
 def run_live_pvrecorder(args: argparse.Namespace) -> int:
@@ -1369,7 +1426,7 @@ def run_live_pvrecorder(args: argparse.Namespace) -> int:
     try:
         recorder.start()
         started = True
-        run_live_detection(args, frames(), sample_rate, species_catalog, detector)
+        run_live_detection(args, frames(), sample_rate, species_catalog, detector, selected_device_name)
     except KeyboardInterrupt:
         print("\nStopping live recognition.")
         return 0
@@ -1498,7 +1555,14 @@ def run_live_sounddevice(args: argparse.Namespace) -> int:
 
     try:
         with stream:
-            run_live_detection(args, rechunk_frames(blocks(), args.frame_length), sample_rate, species_catalog, detector)
+            run_live_detection(
+                args,
+                rechunk_frames(blocks(), args.frame_length),
+                sample_rate,
+                species_catalog,
+                detector,
+                selected_device_name,
+            )
     except KeyboardInterrupt:
         print("\nStopping live recognition.")
         return 0
@@ -1646,6 +1710,25 @@ def run_repair_detections(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_sync(args: argparse.Namespace) -> int:
+    from .cloud import DEFAULT_CLOUD_CONFIG, CloudConfig, DetectionSync
+
+    config = CloudConfig.load(args.config or DEFAULT_CLOUD_CONFIG)
+    print(
+        f"Supabase: {config.supabase_url or '(non configurato)'} | "
+        f"media: {config.storage_backend}"
+    )
+    sync = DetectionSync(args.detections_dir, SpeciesCatalog(args.species_file), config)
+    report = sync.run(dry_run=args.dry_run, limit=args.limit)
+    print(
+        f"Osservazioni: {report.observations_synced} sincronizzate su {report.observations_total}, "
+        f"clip caricate: {report.clips_uploaded}, specie: {report.species_synced}"
+    )
+    for error in report.errors:
+        print(f"  errore: {error}")
+    return 1 if report.errors else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -1668,6 +1751,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_inat_import(args)
     if args.command == "repair-detections":
         return run_repair_detections(args)
+    if args.command == "sync":
+        return run_sync(args)
 
     parser.error("Unknown command.")
     return 2
