@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from .audio import append_inaturalist_csv_row, day_csv_path, parse_timestamp_from_name
+from .audio import append_inaturalist_csv_row, day_csv_path, parse_timestamp_from_name, sanitize_filename
 
 _CLIP_CONFIDENCE = re.compile(r"_(\d+\.\d+)\.wav$", re.IGNORECASE)
 
@@ -28,6 +28,7 @@ class ClipPlan:
     target: Path
     heard_at: datetime
     confidence: float
+    on_disk: bool = True  # False: WAV already uploaded to Supabase and removed from the laptop
 
 
 @dataclass
@@ -56,7 +57,7 @@ class RepairPlan:
 
     @property
     def moves(self) -> list[ClipPlan]:
-        return [clip for obs in self.observations for clip in obs.clips if clip.source != clip.target]
+        return [clip for obs in self.observations for clip in obs.clips if clip.on_disk and clip.source != clip.target]
 
     @property
     def target_csvs(self) -> set[Path]:
@@ -87,7 +88,13 @@ def _optional_float(value: str) -> float | None:
         return None
 
 
-def build_repair_plan(detections_dir: Path, species_catalog=None) -> RepairPlan:
+def build_repair_plan(
+    detections_dir: Path,
+    species_catalog=None,
+    stored_elsewhere: set[str] | frozenset[str] = frozenset(),
+) -> RepairPlan:
+    """``stored_elsewhere``: clip names whose WAV may be gone because it lives on Supabase;
+    they still belong to their observation instead of being reported missing."""
     detections_dir = Path(detections_dir)
     source_csvs = sorted(detections_dir.glob("*/inaturalist_import_*.csv"))
     clip_index: dict[str, list[Path]] = {}
@@ -144,11 +151,15 @@ def build_repair_plan(detections_dir: Path, species_catalog=None) -> RepairPlan:
                 candidates = [path for path in clip_index.get(audio_name, []) if path.parent.parent == csv_path.parent]
                 candidates = candidates or clip_index.get(audio_name, [])
                 heard_at = parse_timestamp_from_name(audio_name)
-                if not candidates or heard_at is None:
+                on_disk = bool(candidates)
+                if heard_at is None or (not on_disk and audio_name not in stored_elsewhere):
                     missing.append(f"{csv_path.parent.name}/{audio_name}")
                     continue
-                source = candidates[0]
-                referenced.add(source)
+                if on_disk:
+                    source = candidates[0]
+                    referenced.add(source)
+                else:
+                    source = csv_path.parent / sanitize_filename(italian_name) / audio_name
                 confidence_match = _CLIP_CONFIDENCE.search(audio_name)
                 confidence = float(confidence_match.group(1)) if confidence_match else row_confidence
                 plan = observation_for(heard_at)
@@ -159,6 +170,7 @@ def build_repair_plan(detections_dir: Path, species_catalog=None) -> RepairPlan:
                         target=detections_dir / heard_at.strftime("%Y%m%d") / source.parent.name / source.name,
                         heard_at=heard_at,
                         confidence=confidence,
+                        on_disk=on_disk,
                     )
                 )
                 placed = True

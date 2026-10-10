@@ -9,6 +9,7 @@ Settings live outside the repository, in ``~/.config/bird-audio-suite/cloud.env`
 
     SUPABASE_URL=https://<project>.supabase.co
     SUPABASE_KEY=sb_publishable_...              # `birds` and the bucket are open: the site's key is enough
+    DELETE_LOCAL_AUDIO=true                      # optional: remove WAVs once safely on Supabase
     # optional, instead of Supabase Storage:
     # CLOUDINARY_CLOUD_NAME=...  CLOUDINARY_API_KEY=...  CLOUDINARY_API_SECRET=...
 
@@ -48,6 +49,7 @@ class CloudConfig:
     cloudinary_api_secret: str = ""
     media_base_url: str = "media"
     media_storage: str = ""  # "supabase" | "cloudinary" | "local"; empty = cloudinary if configured, else supabase
+    delete_local_audio: bool = False  # the laptop as temporary storage: WAVs go once safely online
 
     @property
     def uses_cloudinary(self) -> bool:
@@ -72,6 +74,7 @@ class CloudConfig:
             cloudinary_api_secret=values.get("CLOUDINARY_API_SECRET", ""),
             media_base_url=values.get("MEDIA_BASE_URL", "media").rstrip("/"),
             media_storage=values.get("MEDIA_STORAGE", "").strip().lower(),
+            delete_local_audio=values.get("DELETE_LOCAL_AUDIO", "").strip().lower() in {"1", "true", "yes", "si", "sì"},
         )
 
     @property
@@ -265,7 +268,16 @@ class SyncReport:
     observations_synced: int = 0
     clips_uploaded: int = 0
     species_synced: int = 0
+    local_deleted: int = 0
+    local_bytes_freed: int = 0
     errors: list[str] = field(default_factory=list)
+
+
+def remote_file_exists(url: str) -> bool:
+    try:
+        return requests.head(url, timeout=30, allow_redirects=True).status_code == 200
+    except requests.RequestException:
+        return False
 
 
 def _iso(value: datetime) -> str:
@@ -301,6 +313,7 @@ class DetectionSync:
         uploader: CloudinaryUploader | None = None,
         render=render_spectrogram,
         log=print,
+        verify_remote=remote_file_exists,
     ) -> None:
         self.detections_dir = Path(detections_dir)
         self.catalog = species_catalog
@@ -315,6 +328,7 @@ class DetectionSync:
         self.uploader = uploader  # None: local media (make web-dev)
         self.render = render
         self.log = log
+        self.verify_remote = verify_remote
         self.state = self._load_state()
 
     # state: which media are already online and which observations are unchanged
@@ -383,7 +397,8 @@ class DetectionSync:
         return rows
 
     def run(self, *, dry_run: bool = False, limit: int | None = None) -> SyncReport:
-        plan = build_repair_plan(self.detections_dir, self.catalog)
+        # clips already uploaded may have had their WAV removed: they still belong to their observation
+        plan = build_repair_plan(self.detections_dir, self.catalog, stored_elsewhere=set(self.state["media"]))
         if plan.moves:
             raise RuntimeError(
                 f"{len(plan.moves)} clip nel giorno sbagliato: esegui prima `repair-detections --apply`"
@@ -403,7 +418,9 @@ class DetectionSync:
 
         report = SyncReport(observations_total=len(plan.observations))
         pending = []
+        trashed_on_disk = []
         for observation in plan.observations:
+            trashed_on_disk += [clip for clip in observation.clips if clip.source.name in deleted and clip.on_disk]
             observation.clips = [clip for clip in observation.clips if clip.source.name not in deleted]
             if not observation.clips:
                 report.observations_total -= 1
@@ -422,6 +439,10 @@ class DetectionSync:
             )
             self.log(f"[dry-run] {len(pending)} osservazioni da sincronizzare, {new_media} clip da caricare")
             report.observations_synced = len(pending)
+            if self.config.delete_local_audio and self.uploader is not None:
+                removable = self._removable_local_clips(plan, verify=False) + trashed_on_disk
+                report.local_deleted = len(removable)
+                report.local_bytes_freed = sum(clip.source.stat().st_size for clip in removable)
             return report
 
         species = self._species_rows({row["scientific_name"] for _, row, _ in pending})
@@ -455,4 +476,34 @@ class DetectionSync:
                 self._save_state()
             if index % 20 == 0:
                 self.log(f"  {index}/{len(pending)} osservazioni")
+
+        if self.config.delete_local_audio and self.uploader is not None:
+            for clip in self._removable_local_clips(plan, verify=True) + trashed_on_disk:
+                report.local_bytes_freed += clip.source.stat().st_size
+                clip.source.unlink()
+                report.local_deleted += 1
+                try:
+                    clip.source.parent.rmdir()  # species folder, once empty (the day CSV stays)
+                except OSError:
+                    pass
         return report
+
+    def _removable_local_clips(self, plan, *, verify: bool) -> list:
+        """WAVs whose observation is fully on Supabase and whose MP3 is really downloadable."""
+        removable = []
+        for observation in plan.observations:
+            if not observation.clips:
+                continue
+            row = _observation_row(observation)
+            key = f"{row['day']}|{row['scientific_name']}"
+            if self.state["observations"].get(key) != _fingerprint(row, [clip.source.name for clip in observation.clips]):
+                continue  # not (fully) synced yet: keep everything
+            for clip in observation.clips:
+                media = self.state["media"].get(clip.source.name)
+                if not clip.on_disk or not media:
+                    continue
+                if verify and not self.verify_remote(media["audio_url"]):
+                    self.log(f"  tengo {clip.source.name}: l'MP3 su Supabase non risponde")
+                    continue
+                removable.append(clip)
+        return removable

@@ -368,6 +368,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sync_parser.add_argument("--dry-run", action="store_true", help="Only count what would be synced.")
     sync_parser.add_argument("--limit", type=int, help="Sync at most N observations (to try it out).")
+    sync_parser.add_argument(
+        "--keep-local",
+        action="store_true",
+        help="Do not remove local WAVs this time, even with DELETE_LOCAL_AUDIO=true.",
+    )
 
     return parser
 
@@ -1714,9 +1719,12 @@ def run_sync(args: argparse.Namespace) -> int:
     from .cloud import DEFAULT_CLOUD_CONFIG, CloudConfig, DetectionSync
 
     config = CloudConfig.load(args.config or DEFAULT_CLOUD_CONFIG)
+    if args.keep_local:
+        config.delete_local_audio = False
     print(
         f"Supabase: {config.supabase_url or '(non configurato)'} | "
-        f"media: {config.storage_backend}"
+        f"media: {config.storage_backend} | "
+        f"WAV locali: {'eliminati dopo il caricamento' if config.delete_local_audio else 'tenuti'}"
     )
     sync = DetectionSync(args.detections_dir, SpeciesCatalog(args.species_file), config)
     report = sync.run(dry_run=args.dry_run, limit=args.limit)
@@ -1724,6 +1732,9 @@ def run_sync(args: argparse.Namespace) -> int:
         f"Osservazioni: {report.observations_synced} sincronizzate su {report.observations_total}, "
         f"clip caricate: {report.clips_uploaded}, specie: {report.species_synced}"
     )
+    if config.delete_local_audio:
+        verb = "da eliminare" if args.dry_run else "eliminati"
+        print(f"WAV locali {verb}: {report.local_deleted} ({report.local_bytes_freed / 1e6:.0f} MB)")
     for error in report.errors:
         print(f"  errore: {error}")
     return 1 if report.errors else 0

@@ -135,12 +135,21 @@ class SupabaseStorageTests(unittest.TestCase):
 
 
 class DetectionSyncTests(unittest.TestCase):
-    def run_sync(self, root: Path, cache: Path, rest: FakeRest, uploader=None):
+    def run_sync(self, root: Path, cache: Path, rest: FakeRest, uploader=None, delete_local=False, remote_ok=True):
         config = CloudConfig(supabase_url="https://example.supabase.co", supabase_key="secret")
+        config.delete_local_audio = delete_local
         if uploader is None:
             config.media_storage = "local"
         sync = DetectionSync(
-            root, FakeCatalog(), config, cache_dir=cache, rest=rest, uploader=uploader, render=fake_render, log=lambda *_: None
+            root,
+            FakeCatalog(),
+            config,
+            cache_dir=cache,
+            rest=rest,
+            uploader=uploader,
+            render=fake_render,
+            log=lambda *_: None,
+            verify_remote=lambda url: remote_ok,
         )
         return sync.run()
 
@@ -187,6 +196,38 @@ class DetectionSyncTests(unittest.TestCase):
             report = self.run_sync(root, cache, OldSchemaRest())
 
         self.assertEqual((report.observations_synced, report.errors), (1, []))
+
+    def test_wavs_go_once_safely_on_supabase_and_are_not_forgotten(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root, cache = Path(directory) / "detections", Path(directory) / "cache"
+            make_detections(root)
+            report = self.run_sync(root, cache, FakeRest(), FakeUploader(), delete_local=True)
+            wavs_left = list(root.rglob("*.wav"))
+            csv_kept = (root / "20261009" / "inaturalist_import_20261009.csv").exists()
+            rest = FakeRest()
+            again = self.run_sync(root, cache, rest, FakeUploader(), delete_local=True)
+
+        self.assertEqual((report.local_deleted, wavs_left, csv_kept), (1, [], True))
+        # next run: the clip still counts as part of its observation, nothing is re-sent
+        self.assertEqual((again.observations_total, again.observations_synced, again.errors), (1, 0, []))
+
+    def test_wavs_stay_when_the_option_is_off_or_the_mp3_is_not_reachable(self) -> None:
+        for delete_local, remote_ok in ((False, True), (True, False)):
+            with tempfile.TemporaryDirectory() as directory:
+                root, cache = Path(directory) / "detections", Path(directory) / "cache"
+                make_detections(root)
+                report = self.run_sync(root, cache, FakeRest(), FakeUploader(), delete_local=delete_local, remote_ok=remote_ok)
+                self.assertEqual((report.local_deleted, len(list(root.rglob("*.wav")))), (0, 1))
+
+    def test_wavs_deleted_from_the_cestino_are_removed_locally_too(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root, cache = Path(directory) / "detections", Path(directory) / "cache"
+            make_detections(root)
+            rest = FakeRest(deleted=["Merlo_20261009_065500_0.910.wav"])
+            report = self.run_sync(root, cache, rest, FakeUploader(), delete_local=True)
+            wavs_left = list(root.rglob("*.wav"))
+
+        self.assertEqual((report.local_deleted, wavs_left), (1, []))
 
     def test_second_run_skips_unchanged_observations(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
