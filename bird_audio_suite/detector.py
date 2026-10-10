@@ -75,8 +75,12 @@ class BirdNetDetector:
         longitude: float,
         when: datetime,
         min_confidence: float,
+        overlap: float = 0.0,
     ) -> list[dict]:
-        """Analyze audio already in memory (live mode): no temporary WAV to write and decode."""
+        """Analyze audio already in memory (live mode): no temporary WAV to write and decode.
+
+        overlap (s) makes BirdNET's 3 s chunks overlap, so a call cut by a chunk border is still
+        heard whole by the next one (slower: 3x the chunks with overlap=2)."""
         recording = RecordingBuffer(
             self.analyzer,
             np.asarray(samples, dtype=np.float32),
@@ -85,6 +89,7 @@ class BirdNetDetector:
             lon=longitude,
             date=when,
             min_conf=min_confidence,
+            overlap=overlap,
         )
         return self._analyze(recording)
 

@@ -62,6 +62,8 @@ AUDIO_STALL_TIMEOUT_SECONDS = 30.0
 LIVE_MAX_CLIP_SECONDS = 120.0
 OUTBOX_RETRY_SECONDS = 60.0
 SEGMENT_MIN_CONFIDENCE = 0.5  # bands highlighted on the spectrogram
+BACKFILL_OVERLAP_SECONDS = 2.0  # backfill: 3 s chunks every 1 s
+BACKFILL_FALLBACK_CONFIDENCE = 0.1  # backfill: below 0.5, the best chunk is still shown
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -308,6 +310,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Find with BirdNET where the species is heard in clips that were saved without it.",
     )
     backfill_parser.add_argument("--limit", type=int, help="At most N clips.")
+    backfill_parser.add_argument("--retry-empty", action="store_true",
+                                 help="Also clips already analysed where nothing was found.")
 
     return parser
 
@@ -1667,7 +1671,13 @@ def run_sync(args: argparse.Namespace) -> int:
 
 def run_backfill_segments(args: argparse.Namespace) -> int:
     """Clips saved before BirdNET's bands were kept: analyse their MP3 again and store where the
-    clip's own species is heard. Clips with nothing found get an empty list (not retried)."""
+    clip's own species is heard.
+
+    The chunks overlap (1 s step): the clip's start is not aligned with the live windows, and a
+    call cut in two by a chunk border can drop from 0.9 to 0.3. When nothing reaches
+    SEGMENT_MIN_CONFIDENCE the best chunk is kept anyway (if at least BACKFILL_FALLBACK_CONFIDENCE),
+    as a fainter band showing where to look. Clips with nothing at all get an empty list, retried
+    only with --retry-empty."""
     import requests
     import soundfile
 
@@ -1679,7 +1689,7 @@ def run_backfill_segments(args: argparse.Namespace) -> int:
         "clips",
         {
             "select": "id,media_path,recorded_at,latitude,longitude,observations(scientific_name)",
-            "segments": "is.null",
+            **({"or": "(segments.is.null,segments.eq.[])"} if args.retry_empty else {"segments": "is.null"}),
             "order": "recorded_at",
             "limit": str(args.limit or 100000),
         },
@@ -1703,9 +1713,15 @@ def run_backfill_segments(args: argparse.Namespace) -> int:
                 latitude=clip["latitude"] if clip["latitude"] is not None else DEFAULT_LATITUDE,
                 longitude=clip["longitude"] if clip["longitude"] is not None else DEFAULT_LONGITUDE,
                 when=datetime.fromisoformat(clip["recorded_at"]),
-                min_confidence=SEGMENT_MIN_CONFIDENCE,
+                min_confidence=BACKFILL_FALLBACK_CONFIDENCE,
+                overlap=BACKFILL_OVERLAP_SECONDS,
             )
             bands = detection_segments(detections, SEGMENT_MIN_CONFIDENCE).get(species, [])
+            if not bands:
+                own = [d for d in detections if d.get("scientific_name") == species]
+                if own:
+                    best = max(own, key=lambda d: d["confidence"])
+                    bands = [(float(best["start_time"]), float(best["end_time"]), float(best["confidence"]))]
             duration = len(samples) / float(sample_rate)
             segments = [[round(start, 2), round(min(end, duration), 2), round(confidence, 3)]
                         for start, end, confidence in bands]
@@ -1716,7 +1732,7 @@ def run_backfill_segments(args: argparse.Namespace) -> int:
             print(f"  {clip['id']}: {exc}")
         if index % 25 == 0:
             print(f"  {index}/{len(clips)}")
-    print(f"Fatto: {done} clip aggiornate, {empty} senza bande sopra {SEGMENT_MIN_CONFIDENCE}.")
+    print(f"Fatto: {done} clip aggiornate, {empty} senza nessuna banda (nemmeno sopra {BACKFILL_FALLBACK_CONFIDENCE}).")
     return 0
 
 
