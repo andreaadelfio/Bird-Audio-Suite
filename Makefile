@@ -12,8 +12,10 @@ VENV_DIR ?= $(HOME)/.venvs/bird-audio-suite
 PYTHON ?= $(VENV_DIR)/bin/python
 BACKEND ?= sounddevice
 DEVICE_INDEX ?= -1
+PORT ?= 8004
+HOST ?= 127.0.0.1
 
-.PHONY: venv test web-dev install install-health install-sync start stop restart log log-follow status
+.PHONY: venv test git dev dev-stop web-dev install install-health install-sync start stop restart log log-follow status
 
 # Dedicated environment outside Dropbox (NumPy 2 + LiteRT, no TensorFlow).
 venv:
@@ -22,6 +24,30 @@ venv:
 
 test:
 	"$(PYTHON)" -m pytest -q tests
+
+# Like the other projects: commit everything and publish (GitHub Pages serves docs/)
+git:
+	git add --all
+	git diff --cached --quiet || git commit -m "Updated website at $(shell date)"
+	git push
+
+# The review site (docs/) against the real Supabase, at http://$(HOST):$(PORT)/
+dev:
+	@echo "Avvio server su http://$(HOST):$(PORT)/index.html"
+	python3 -m http.server "$(PORT)" --bind "$(HOST)" --directory "$(PROJECT_DIR)/docs" >/dev/null 2>&1 &
+	@if command -v xdg-open >/dev/null 2>&1; then \
+		xdg-open "http://$(HOST):$(PORT)/index.html" >/dev/null 2>&1; \
+	else \
+		echo "Apri manualmente: http://$(HOST):$(PORT)/index.html"; \
+	fi
+
+# `stop` is taken by the live service
+dev-stop:
+	@if pkill -f "[p]ython3 -m http.server $(PORT)" 2>/dev/null; then \
+		echo "Server fermato sulla porta $(PORT)"; \
+	else \
+		echo "Nessun server trovato sulla porta $(PORT)"; \
+	fi
 
 # Review site on a local stand-in for Supabase (embedded Postgres + PostgREST): http://127.0.0.1:8010
 web-dev:

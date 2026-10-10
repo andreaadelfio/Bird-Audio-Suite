@@ -1,0 +1,1 @@
+- assicurarsi che se il pc stesso riproduce audio, non viene registrato
