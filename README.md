@@ -135,7 +135,8 @@ Con `--apply` i CSV originali e la lista degli spostamenti (`moves.json`) vengon
 
 Le osservazioni si rivedono su un sito statico (`docs/`, pubblicato con GitHub Pages) che legge da Supabase, progetto "progetti": dati nello schema `birds`, audio (MP3) e spettrogrammi nel bucket pubblico `bird-audio` di Supabase Storage:
 
-- **Da rivedere**: per ogni osservazione (una per specie al giorno) le clip con spettrogramma (clic per ascoltare) e player; ogni clip si segna "giusta" o "sbagliata", l'osservazione si conferma, si scarta o si corregge la specie, con note.
+- **Da rivedere**: per ogni osservazione (una per specie al giorno) le clip con spettrogramma (tocca per ascoltare da quel punto) e player. **Conferma** / **Scarta** valgono per l'intera osservazione ("questa specie c'era quel giorno?"); **Scarta clip** serve solo per le singole clip sbagliate dentro un'osservazione che tieni. Si puo' correggere la specie e aggiungere note.
+- **Cestino**: osservazioni scartate e clip scartate, da riascoltare e ripristinare o eliminare definitivamente (con conferma). L'eliminazione cancella righe, MP3 e spettrogrammi da Supabase e annota le clip in `birds.deleted_clips`, cosi' `sync` non le ricarica; i WAV sul PC restano.
 - **Osservazioni**: tutte, filtrabili per stato, specie e date.
 - **Report**: ultimi 7/30/90 giorni: specie, clip, minuti di audio, specie nuove, attività per ora.
 

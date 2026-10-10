@@ -12,11 +12,15 @@ const STATUS_LABELS = {
   uploaded: "su iNaturalist",
 };
 
+const BUCKET = "bird-audio";
+const OBSERVATION_SELECT = "*, species(italian_name,english_name,german_name), clips(*)";
+
 const state = {
   client: null,
   view: "review",
   offset: 0,
   species: new Map(),
+  trash: new Map(), // observation id -> { whole, clips } shown in the Cestino
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -64,12 +68,16 @@ async function loadSpecies() {
     .join("");
 }
 
-async function refreshPendingCount() {
-  const { count } = await state.client
-    .from("observations")
-    .select("id", { count: "exact", head: true })
-    .eq("status", "pending");
-  $("#pending-count").textContent = count ? String(count) : "";
+async function refreshCounts() {
+  const [pending, rejected, wrongClips] = await Promise.all([
+    state.client.from("observations").select("id", { count: "exact", head: true }).eq("status", "pending"),
+    state.client.from("observations").select("id", { count: "exact", head: true }).eq("status", "rejected"),
+    state.client.from("clips").select("id, observations!inner(status)", { count: "exact", head: true })
+      .eq("review", "wrong").neq("observations.status", "rejected"),
+  ]);
+  $("#pending-count").textContent = pending.count ? String(pending.count) : "";
+  const trash = (rejected.count || 0) + (wrongClips.count || 0);
+  $("#trash-count").textContent = trash ? String(trash) : "";
 }
 
 async function matchingSpecies(text) {
@@ -83,7 +91,7 @@ async function matchingSpecies(text) {
 async function fetchObservations() {
   let query = state.client
     .from("observations")
-    .select("*, species(italian_name,english_name,german_name), clips(*)")
+    .select(OBSERVATION_SELECT)
     .order("day", { ascending: false })
     .order("observed_at", { ascending: false })
     .range(state.offset, state.offset + PAGE_SIZE - 1);
@@ -132,8 +140,8 @@ function clipHtml(clip, folded = false) {
       <figcaption>
         <span>${recorded} · ${Number(clip.confidence).toFixed(3)} · ${Math.round(clip.duration_s || 0)} s</span>
         <span class="clip-actions">
-          <button type="button" class="small ${clip.review === "correct" ? "on" : ""}" data-clip-review="correct" title="La clip contiene questa specie">giusta</button>
-          <button type="button" class="small ${clip.review === "wrong" ? "on" : ""}" data-clip-review="wrong" title="Falso positivo">sbagliata</button>
+          <button type="button" class="small ${clip.review === "wrong" ? "on" : ""}" data-clip-review="wrong"
+            title="Questa clip non contiene la specie: finisce nel Cestino">${clip.review === "wrong" ? "Ripristina clip" : "Scarta clip"}</button>
         </span>
       </figcaption>
     </figure>`;
@@ -206,31 +214,41 @@ content.addEventListener("click", async (event) => {
   const clipButton = event.target.closest("[data-clip-review]");
   if (clipButton) {
     const figure = clipButton.closest(".clip");
-    const value = clipButton.classList.contains("on") ? "unreviewed" : clipButton.dataset.clipReview;
+    const value = clipButton.classList.contains("on") ? "unreviewed" : "wrong";
     try {
       await updateClip(figure.dataset.clip, value);
-      figure.className = `clip review-${value}`;
-      figure.querySelectorAll("[data-clip-review]").forEach((button) => {
-        button.classList.toggle("on", button.dataset.clipReview === value);
-      });
+      figure.classList.toggle("review-wrong", value === "wrong");
+      clipButton.classList.toggle("on", value === "wrong");
+      clipButton.textContent = value === "wrong" ? "Ripristina clip" : "Scarta clip";
+      if (state.view === "trash" && value !== "wrong") figure.remove();
+      refreshCounts();
     } catch (error) {
       setStatus(`Errore: ${error.message}`, true);
     }
     return;
   }
 
+  const deleteButton = event.target.closest("[data-delete]");
+  if (deleteButton) {
+    const entry = state.trash.get(id);
+    if (entry) await deleteForGood([{ observationId: id, ...entry }]);
+    return;
+  }
+
   const statusButton = event.target.closest("[data-status]");
   if (statusButton) {
-    const corrected = card.querySelector('[data-field="corrected"]').value.trim();
-    const changes = {
-      status: statusButton.dataset.status,
-      notes: card.querySelector('[data-field="notes"]').value,
-      corrected, // "" clears a previous correction
-    };
+    const changes = { status: statusButton.dataset.status };
+    const notes = card.querySelector('[data-field="notes"]');
+    const corrected = card.querySelector('[data-field="corrected"]');
+    if (notes) changes.notes = notes.value;
+    if (corrected) changes.corrected = corrected.value; // "" clears a previous correction
     try {
       await updateObservation(id, changes);
       setStatus(`Osservazione ${STATUS_LABELS[changes.status]}.`);
-      if (state.view === "review" && changes.status !== "pending") {
+      const leavesView =
+        (state.view === "review" && changes.status !== "pending") ||
+        (state.view === "trash" && changes.status !== "rejected");
+      if (leavesView) {
         card.querySelectorAll("audio").forEach((audio) => audio.pause());
         card.classList.add("leaving");
         setTimeout(() => card.remove(), 250);
@@ -238,7 +256,7 @@ content.addEventListener("click", async (event) => {
         card.className = `observation status-${changes.status}`;
         card.querySelector(".badge").textContent = STATUS_LABELS[changes.status];
       }
-      refreshPendingCount();
+      refreshCounts();
     } catch (error) {
       setStatus(`Errore: ${error.message}`, true);
     }
@@ -295,6 +313,132 @@ async function renderObservations(append = false) {
   }
   setStatus("");
 }
+
+// ---------------------------------------------------------------- Cestino
+
+async function fetchTrash() {
+  const [rejected, partial] = await Promise.all([
+    state.client.from("observations").select(OBSERVATION_SELECT)
+      .eq("status", "rejected").order("day", { ascending: false }).limit(500),
+    // kept observations, with only their rejected clips
+    state.client.from("observations").select("*, species(italian_name,english_name,german_name), clips!inner(*)")
+      .neq("status", "rejected").eq("clips.review", "wrong").order("day", { ascending: false }).limit(500),
+  ]);
+  if (rejected.error || partial.error) throw rejected.error || partial.error;
+  return { rejected: rejected.data, partial: partial.data };
+}
+
+function trashCardHtml(observation, whole) {
+  const species = observation.species || {};
+  const clips = [...(observation.clips || [])].sort((a, b) => a.recorded_at.localeCompare(b.recorded_at));
+  return `
+    <article class="observation trash status-${observation.status}" data-id="${observation.id}">
+      <header>
+        <h2>${escapeHtml(species.italian_name || observation.scientific_name)}
+          <small><i>${escapeHtml(observation.scientific_name)}</i></small></h2>
+        <span class="badge">${whole ? "osservazione scartata" : `${clips.length} clip scartate`}</span>
+      </header>
+      <p class="meta">${formatDay(observation.day)} · ${escapeHtml(observation.place_name)} ·
+        ${whole ? `tutte le ${clips.length} clip` : "il resto dell'osservazione resta"}</p>
+      <div class="clips">${clips.map((clip, index) => clipHtml(clip, index >= VISIBLE_CLIPS)).join("")}</div>
+      ${clips.length > VISIBLE_CLIPS
+        ? `<button type="button" class="show-clips" data-show-clips>Mostra altre ${clips.length - VISIBLE_CLIPS} clip</button>`
+        : ""}
+      <footer>
+        <div class="actions">
+          <button type="button" class="danger" data-delete>Elimina definitivamente</button>
+          ${whole ? '<button type="button" data-status="pending">Ripristina</button>' : ""}
+        </div>
+      </footer>
+    </article>`;
+}
+
+async function renderTrash() {
+  setStatus("Carico…");
+  const { rejected, partial } = await fetchTrash();
+  state.trash = new Map([
+    ...rejected.map((observation) => [observation.id, { whole: true, clips: observation.clips || [] }]),
+    ...partial.map((observation) => [observation.id, { whole: false, clips: observation.clips || [] }]),
+  ]);
+  const clipCount = [...state.trash.values()].reduce((sum, entry) => sum + entry.clips.length, 0);
+  content.innerHTML = state.trash.size
+    ? `<div class="trash-head">
+         <p>${rejected.length} osservazioni scartate e ${partial.reduce((sum, o) => sum + o.clips.length, 0)} clip scartate
+           in osservazioni tenute: ${clipCount} clip in tutto. Riascoltale se vuoi, poi eliminale: audio e spettrogrammi
+           spariscono da Supabase, i WAV sul PC restano.</p>
+         <button type="button" class="danger" data-empty-trash>Svuota il cestino (${clipCount} clip)</button>
+       </div>
+       ${rejected.map((observation) => trashCardHtml(observation, true)).join("")}
+       ${partial.map((observation) => trashCardHtml(observation, false)).join("")}`
+    : '<p class="empty">Il cestino è vuoto.</p>';
+  setStatus("");
+}
+
+function storagePath(url) {
+  const marker = `/storage/v1/object/public/${BUCKET}/`;
+  const index = String(url || "").indexOf(marker);
+  return index >= 0 ? decodeURIComponent(url.slice(index + marker.length)) : null;
+}
+
+function chunks(items, size) {
+  const result = [];
+  for (let i = 0; i < items.length; i += size) result.push(items.slice(i, i + size));
+  return result;
+}
+
+// entries: [{ observationId, whole, clips }]
+async function deleteForGood(entries) {
+  const clips = entries.flatMap((entry) => entry.clips);
+  const wholeCount = entries.filter((entry) => entry.whole).length;
+  const question = `Eliminare definitivamente ${clips.length} clip${wholeCount ? ` (${wholeCount} osservazioni intere)` : ""}?\n\n`
+    + "Audio e spettrogrammi vengono cancellati da Supabase e non si possono recuperare dal sito. I WAV sul PC restano.";
+  if (!clips.length || !window.confirm(question)) return;
+
+  setStatus("Elimino…");
+  try {
+    const ids = clips.map((clip) => clip.id);
+    // 1. first the list `sync` reads: if anything below fails, they are not uploaded again
+    for (const part of chunks(ids, 200)) {
+      const { error } = await state.client.from("deleted_clips")
+        .upsert(part.map((id) => ({ id })), { onConflict: "id", ignoreDuplicates: true });
+      if (error) throw error;
+    }
+    // 2. files in the bucket
+    const paths = clips.flatMap((clip) => [storagePath(clip.audio_url), storagePath(clip.spectrogram_url)]).filter(Boolean);
+    for (const part of chunks(paths, 100)) {
+      const { error } = await state.client.storage.from(BUCKET).remove(part);
+      if (error) throw error;
+    }
+    // 3. rows: clips, then whole observations and kept ones left without clips
+    for (const part of chunks(ids, 50)) {
+      const { error } = await state.client.from("clips").delete().in("id", part);
+      if (error) throw error;
+    }
+    const observationIds = entries.filter((entry) => entry.whole).map((entry) => entry.observationId);
+    const partialIds = entries.filter((entry) => !entry.whole).map((entry) => entry.observationId);
+    if (partialIds.length) {
+      const { data, error } = await state.client.from("clips").select("observation_id").in("observation_id", partialIds);
+      if (error) throw error;
+      const stillWithClips = new Set(data.map((row) => row.observation_id));
+      observationIds.push(...partialIds.filter((id) => !stillWithClips.has(id)));
+    }
+    for (const part of chunks(observationIds, 100)) {
+      const { error } = await state.client.from("observations").delete().in("id", part);
+      if (error) throw error;
+    }
+    setStatus(`Eliminate ${clips.length} clip.`);
+  } catch (error) {
+    setStatus(`Errore durante l'eliminazione: ${error.message}`, true);
+  }
+  await refreshCounts();
+  if (state.view === "trash") await renderTrash();
+}
+
+content.addEventListener("click", (event) => {
+  if (!event.target.closest("[data-empty-trash]")) return;
+  const entries = [...state.trash.entries()].map(([observationId, entry]) => ({ observationId, ...entry }));
+  deleteForGood(entries);
+});
 
 // ---------------------------------------------------------------- report
 
@@ -379,6 +523,7 @@ async function render() {
   $("#more").classList.add("hidden");
   try {
     if (state.view === "report") await renderReport();
+    else if (state.view === "trash") await renderTrash();
     else await renderObservations();
   } catch (error) {
     setStatus(`Errore: ${error.message}`, true);
@@ -401,7 +546,7 @@ $("#more").addEventListener("click", () => renderObservations(true).catch((error
 $("#refresh").addEventListener("click", async () => {
   try {
     await loadSpecies();
-    await refreshPendingCount();
+    await refreshCounts();
   } catch (error) {
     setStatus(`Errore: ${error.message}`, true);
     return;
@@ -415,7 +560,7 @@ $("#filters").open = window.matchMedia("(min-width: 721px)").matches;
 async function start() {
   try {
     await loadSpecies();
-    await refreshPendingCount();
+    await refreshCounts();
   } catch (error) {
     setStatus(`Errore: ${error.message}`, true);
     return;

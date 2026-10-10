@@ -15,7 +15,7 @@
     <link rel="manifest" href="./manifest.webmanifest">
     <link rel="icon" type="image/svg+xml" href="./assets/icon.svg">
     <link rel="apple-touch-icon" href="./assets/icon-192.png">
-    <link rel="stylesheet" href="./assets/styles.css?v=5">
+    <link rel="stylesheet" href="./assets/styles.css?v=6">
   </head>
   <body>
     <div class="page-shell">
@@ -28,8 +28,9 @@
         </button>
         <nav class="tabs" aria-label="Sezioni">
           <button class="tab active" type="button" data-view="review">Da rivedere <span id="pending-count" class="count"></span></button>
-          <button class="tab" type="button" data-view="all">Osservazioni</button>
+          <button class="tab" type="button" data-view="all">Tutte</button>
           <button class="tab" type="button" data-view="report">Report</button>
+          <button class="tab" type="button" data-view="trash">Cestino <span id="trash-count" class="count trash-count"></span></button>
         </nav>
       </header>
 
@@ -60,7 +61,7 @@
     <datalist id="species-list"></datalist>
 
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.1/dist/umd/supabase.min.js"></script>
-    <script src="./assets/config.js?v=5"></script>
-    <script type="module" src="./assets/app.js?v=5"></script>
+    <script src="./assets/config.js?v=6"></script>
+    <script type="module" src="./assets/app.js?v=6"></script>
   </body>
 </html>

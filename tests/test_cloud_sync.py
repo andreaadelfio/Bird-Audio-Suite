@@ -33,9 +33,14 @@ class FakeCatalog:
 
 
 class FakeRest:
-    def __init__(self) -> None:
+    def __init__(self, deleted: list[str] | None = None) -> None:
         self.calls: list[tuple[str, list[dict], str]] = []
         self.next_id = 1
+        self.deleted = deleted or []
+
+    def select_column(self, table, column):
+        assert (table, column) == ("deleted_clips", "id")
+        return list(self.deleted)
 
     def upsert(self, table, rows, on_conflict, returning=False):
         self.calls.append((table, rows, on_conflict))
@@ -159,6 +164,29 @@ class DetectionSyncTests(unittest.TestCase):
         self.assertEqual(clip["duration_s"], 1.0)
         self.assertNotIn("review", clip)
         self.assertEqual((report.observations_synced, report.clips_uploaded, report.errors), (1, 1, []))
+
+    def test_clips_deleted_from_the_site_are_never_uploaded_again(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root, cache = Path(directory) / "detections", Path(directory) / "cache"
+            make_detections(root)
+            rest = FakeRest(deleted=["Merlo_20261009_065500_0.910.wav"])
+            report = self.run_sync(root, cache, rest)
+
+        # its only clip was deleted: the observation is not recreated either
+        self.assertEqual((report.observations_total, report.observations_synced), (0, 0))
+        self.assertEqual([call[0] for call in rest.calls], ["species"])
+
+    def test_sync_keeps_working_before_the_schema_has_deleted_clips(self) -> None:
+        class OldSchemaRest(FakeRest):
+            def select_column(self, table, column):
+                raise RuntimeError("Supabase deleted_clips read failed (404): PGRST205")
+
+        with tempfile.TemporaryDirectory() as directory:
+            root, cache = Path(directory) / "detections", Path(directory) / "cache"
+            make_detections(root)
+            report = self.run_sync(root, cache, OldSchemaRest())
+
+        self.assertEqual((report.observations_synced, report.errors), (1, []))
 
     def test_second_run_skips_unchanged_observations(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

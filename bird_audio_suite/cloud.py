@@ -170,6 +170,22 @@ class SupabaseRest:
             }
         )
 
+    def select_column(self, table: str, column: str, page_size: int = 1000) -> list:
+        values: list = []
+        while True:
+            response = self.session.get(
+                f"{self.base}/{table}",
+                params={"select": column, "order": column},
+                headers={"Range": f"{len(values)}-{len(values) + page_size - 1}"},
+                timeout=60,
+            )
+            if response.status_code >= 400:
+                raise RuntimeError(f"Supabase {table} read failed ({response.status_code}): {response.text[:300]}")
+            page = [row[column] for row in response.json()]
+            values.extend(page)
+            if len(page) < page_size:
+                return values
+
     def upsert(self, table: str, rows: list[dict], on_conflict: str, returning: bool = False) -> list[dict]:
         if not rows:
             return []
@@ -372,9 +388,26 @@ class DetectionSync:
             raise RuntimeError(
                 f"{len(plan.moves)} clip nel giorno sbagliato: esegui prima `repair-detections --apply`"
             )
+        if self.rest is None and not dry_run:
+            self.rest = SupabaseRest(self.config)
+        # clips deleted for good from the site's "Cestino": never upload them again
+        deleted: set[str] = set()
+        if self.rest is not None:
+            try:
+                deleted = set(self.rest.select_column("deleted_clips", "id"))
+            except RuntimeError as exc:
+                # schema not updated yet on Supabase: keep syncing as before
+                self.log(f"Lista delle clip eliminate non disponibile ({exc}): riesegui supabase/birds_schema.sql")
+        for clip_id in deleted:
+            self.state["media"].pop(clip_id, None)
+
         report = SyncReport(observations_total=len(plan.observations))
         pending = []
         for observation in plan.observations:
+            observation.clips = [clip for clip in observation.clips if clip.source.name not in deleted]
+            if not observation.clips:
+                report.observations_total -= 1
+                continue
             row = _observation_row(observation)
             key = f"{row['day']}|{row['scientific_name']}"
             clip_ids = [clip.source.name for clip in observation.clips]
@@ -390,8 +423,6 @@ class DetectionSync:
             self.log(f"[dry-run] {len(pending)} osservazioni da sincronizzare, {new_media} clip da caricare")
             report.observations_synced = len(pending)
             return report
-        if self.rest is None:
-            self.rest = SupabaseRest(self.config)
 
         species = self._species_rows({row["scientific_name"] for _, row, _ in pending})
         self.rest.upsert("species", species, on_conflict="scientific_name")

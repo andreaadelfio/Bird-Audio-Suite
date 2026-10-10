@@ -65,6 +65,13 @@ create table if not exists birds.clips (
   created_at      timestamptz not null default now()
 );
 
+-- Clips deleted for good from the site ("Cestino"): `sync` reads this list and never
+-- uploads them again. The WAV files on the laptop are not touched.
+create table if not exists birds.deleted_clips (
+  id         text primary key, -- same id as birds.clips.id (the clip file name)
+  deleted_at timestamptz not null default now()
+);
+
 create index if not exists clips_observation_idx on birds.clips (observation_id);
 create index if not exists observations_status_day_idx on birds.observations (status, day desc);
 
@@ -141,7 +148,7 @@ do $$
 declare
   t text;
 begin
-  foreach t in array array['species', 'observations', 'clips'] loop
+  foreach t in array array['species', 'observations', 'clips', 'deleted_clips'] loop
     execute format('alter table birds.%I enable row level security', t);
     execute format('drop policy if exists "accesso pubblico" on birds.%I', t);
     execute format(
