@@ -15,7 +15,7 @@ DEVICE_INDEX ?= -1
 PORT ?= 8004
 HOST ?= 127.0.0.1
 
-.PHONY: venv test git dev dev-stop web-dev install install-health install-sync start stop restart log log-follow status
+.PHONY: venv test git dev dev-stop dev_mob web-dev install install-health install-sync start stop restart log log-follow status
 
 # Dedicated environment outside Dropbox (NumPy 2 + LiteRT, no TensorFlow).
 venv:
@@ -40,6 +40,11 @@ dev:
 	else \
 		echo "Apri manualmente: http://$(HOST):$(PORT)/index.html"; \
 	fi
+
+# Mobile preview, like MyFinance: the site in a "phone" at http://127.0.0.1:8005/mobile and on the
+# real phone (same Wi-Fi) at the address it prints; both reload by themselves at every save. Ctrl+C stops it.
+dev_mob:
+	python3 dev/dev_server.py 8005 --rete
 
 # `stop` is taken by the live service
 dev-stop:
