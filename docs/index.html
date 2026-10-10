@@ -15,12 +15,13 @@
     <link rel="manifest" href="./manifest.webmanifest">
     <link rel="icon" type="image/svg+xml" href="./assets/icon.svg">
     <link rel="apple-touch-icon" href="./assets/icon-192.png">
-    <link rel="stylesheet" href="./assets/styles.css?v=9">
+    <link rel="stylesheet" href="./assets/styles.css?v=10">
   </head>
   <body>
     <div class="page-shell">
       <header class="top-bar">
         <h1>Bird Audio Suite</h1>
+        <button id="inat-toggle" class="pill-button" type="button" title="Carica su iNaturalist">iNat</button>
         <button id="refresh" class="icon-button" type="button" title="Ricarica" aria-label="Ricarica">
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <path d="M17.65 6.35A7.95 7.95 0 0 0 12 4V1L7 6l5 5V7a5 5 0 1 1-5 5H5a7 7 0 1 0 12.65-5.65z"/>
@@ -33,6 +34,33 @@
           <button class="tab" type="button" data-view="trash">Cestino <span id="trash-count" class="count trash-count"></span></button>
         </nav>
       </header>
+
+      <section id="inat-panel" class="inat-panel hidden" aria-label="iNaturalist">
+        <h2>iNaturalist</h2>
+        <p id="inat-state" class="inat-state"></p>
+        <form id="inat-token-form" class="inat-token">
+          <p class="hint">
+            1. Apri <a href="https://www.inaturalist.org/users/api_token" target="_blank" rel="noopener">la pagina del token</a>
+            (con l'accesso a iNaturalist fatto) e copia tutto quello che mostra.
+            2. Incollalo qui: vale 24 ore e resta salvato in questo browser.
+          </p>
+          <input id="inat-token" type="password" autocomplete="off" placeholder='{"api_token":"..."}'>
+          <button type="submit">Collega</button>
+        </form>
+        <label>Posizione su iNaturalist
+          <select id="inat-geoprivacy">
+            <option value="">precisa</option>
+            <option value="obscured">oscurata (circa 20 km)</option>
+            <option value="private">privata</option>
+          </select>
+        </label>
+        <button id="inat-upload-all" class="primary" type="button">Carica le confermate</button>
+        <p class="hint">
+          Si caricano le osservazioni confermate, con la specie corretta se l'hai indicata e fino a 5 clip
+          (le migliori, escluse quelle scartate). Se si interrompe, riprende da dove era rimasto senza doppioni.
+        </p>
+        <ul id="inat-log" class="inat-log"></ul>
+      </section>
 
       <!-- sul telefono i filtri restano chiusi finche' non servono -->
       <details id="filters" class="filters hidden">
@@ -61,7 +89,7 @@
     <datalist id="species-list"></datalist>
 
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.1/dist/umd/supabase.min.js"></script>
-    <script src="./assets/config.js?v=9"></script>
-    <script type="module" src="./assets/app.js?v=9"></script>
+    <script src="./assets/config.js?v=10"></script>
+    <script type="module" src="./assets/app.js?v=10"></script>
   </body>
 </html>

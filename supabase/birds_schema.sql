@@ -72,6 +72,10 @@ create table if not exists birds.deleted_clips (
   deleted_at timestamptz not null default now()
 );
 
+-- iNaturalist upload from the site: the sound id of each uploaded clip, so an interrupted
+-- upload resumes without duplicates (the observation id is in observations.inat_observation_id)
+alter table birds.clips add column if not exists inat_sound_id bigint;
+
 create index if not exists clips_observation_idx on birds.clips (observation_id);
 create index if not exists observations_status_day_idx on birds.observations (status, day desc);
 

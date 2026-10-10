@@ -71,6 +71,41 @@ button, input, select, textarea { font: inherit; color: inherit; }
 
 .icon-button svg { width: 1.2rem; height: 1.2rem; fill: var(--accent); }
 
+.pill-button {
+  min-height: 2.4rem;
+  padding: 0 0.9rem;
+  border-radius: 999px;
+  color: var(--accent-deep);
+  font-weight: 600;
+}
+
+/* iNaturalist panel, opened from the header */
+.inat-panel {
+  display: grid;
+  gap: 0.6rem;
+  margin-bottom: 1rem;
+  padding: 0.9rem 1rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.inat-panel h2 { margin: 0; font-size: 1.1rem; color: var(--accent-deep); }
+.inat-state { margin: 0; font-weight: 600; color: var(--positive); }
+.inat-state.error { color: var(--negative); }
+.inat-token { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
+.inat-token .hint { flex: 1 1 100%; }
+.inat-token input { flex: 1 1 220px; }
+.inat-panel .hint { margin: 0; color: var(--ink-soft); font-size: 0.85rem; }
+.inat-panel > .primary { justify-self: start; min-height: 2.6rem; }
+.inat-panel > .primary:disabled { opacity: 0.5; cursor: default; }
+.inat-log { margin: 0; padding-left: 1.1rem; font-size: 0.9rem; }
+.inat-log:empty { display: none; }
+.inat-log .error { color: var(--negative); }
+
+button.inat { border-color: var(--positive); color: var(--positive); }
+.inat-link { align-self: center; color: var(--positive); font-weight: 600; }
+
 .tabs {
   display: flex;
   gap: 0.25rem;
@@ -396,6 +431,8 @@ button.small { padding: 0.1rem 0.5rem; font-size: 0.8rem; }
   .actions [data-status="pending"] { grid-column: 1 / -1; }
 
   .more, .show-clips { width: 100%; min-height: 3rem; }
+  .inat-panel > .primary { justify-self: stretch; min-height: 3rem; }
+  .actions .inat, .actions .inat-link { grid-column: 1 / -1; text-align: center; }
 
   .report-head { flex-wrap: wrap; gap: 0.5rem; }
   .report-head h2 { font-size: 1.1rem; margin: 0.4rem 0; }

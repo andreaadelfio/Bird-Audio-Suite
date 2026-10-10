@@ -136,6 +136,7 @@ Con `--apply` i CSV originali e la lista degli spostamenti (`moves.json`) vengon
 Le osservazioni si rivedono su un sito statico (`docs/`, pubblicato con GitHub Pages) che legge da Supabase, progetto "progetti": dati nello schema `birds`, audio (MP3) e spettrogrammi nel bucket pubblico `bird-audio` di Supabase Storage:
 
 - **Da rivedere**: per ogni osservazione (una per specie al giorno) le clip con spettrogramma (tocca per ascoltare da quel punto) e player. **Conferma** / **Scarta** valgono per l'intera osservazione ("questa specie c'era quel giorno?"); **Scarta clip** serve solo per le singole clip sbagliate dentro un'osservazione che tieni. Si puo' correggere la specie e aggiungere note.
+- **iNaturalist** (pulsante "iNat" in alto): si collega con il token personale di https://www.inaturalist.org/users/api_token (vale 24 ore, resta nel browser) e carica le osservazioni **confermate**, con la specie corretta se indicata (nome esatto su iNaturalist, sinonimi compresi), fino a 5 clip in MP3 (le migliori non scartate), posizione precisa/oscurata/privata a scelta. Tutto dal browser, senza PC. Supabase tiene traccia di cosa e' online (`inat_observation_id`, `clips.inat_sound_id`, stato "su iNaturalist"): se il caricamento si interrompe, riprende senza doppioni. Ogni osservazione confermata ha anche il suo "Carica su iNaturalist", quelle caricate "Vedi su iNaturalist".
 - **Cestino**: osservazioni scartate e clip scartate, da riascoltare e ripristinare o eliminare definitivamente (con conferma). L'eliminazione cancella righe, MP3 e spettrogrammi da Supabase e annota le clip in `birds.deleted_clips`, cosi' `sync` non le ricarica; i WAV sul PC restano.
 - **Osservazioni**: tutte, filtrabili per stato, specie e date.
 - **Report**: ultimi 7/30/90 giorni: specie, clip, minuti di audio, specie nuove, attività per ora.
@@ -158,7 +159,9 @@ python bird_audio_cli.py denoise --input ./recording.wav
 python bird_audio_cli.py denoise --input ./recording.wav --noise-ref ./noise.wav --plot
 ```
 
-### Import automatico su iNaturalist
+### Import su iNaturalist da riga di comando (vecchio metodo)
+
+Ora si carica dal sito (pulsante "iNat"). Il comando qui sotto legge i CSV e i WAV del PC: non funziona piu' se i WAV vengono eliminati dopo il sync (`DELETE_LOCAL_AUDIO=true`).
 
 E' possibile automatizzare l'import da script usando l'API ufficiale di iNaturalist:
 

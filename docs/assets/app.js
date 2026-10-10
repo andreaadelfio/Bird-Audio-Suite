@@ -21,6 +21,7 @@ const state = {
   offset: 0,
   species: new Map(),
   trash: new Map(), // observation id -> { whole, clips } shown in the Cestino
+  observations: new Map(), // id -> observation currently shown, for the iNaturalist upload
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -193,6 +194,11 @@ function observationHtml(observation) {
           <button type="button" data-status="confirmed" class="primary">Conferma</button>
           <button type="button" data-status="rejected">Scarta</button>
           ${observation.status !== "pending" ? '<button type="button" data-status="pending">Rimetti da rivedere</button>' : ""}
+          ${observation.status === "confirmed" ? '<button type="button" class="inat" data-inat-upload>Carica su iNaturalist</button>' : ""}
+          ${observation.inat_observation_id
+            ? `<a class="inat-link" href="https://www.inaturalist.org/observations/${Number(observation.inat_observation_id)}"
+                target="_blank" rel="noopener">Vedi su iNaturalist</a>`
+            : ""}
         </div>
       </footer>
     </article>`;
@@ -240,6 +246,23 @@ content.addEventListener("click", async (event) => {
       refreshCounts();
     } catch (error) {
       setStatus(`Errore: ${error.message}`, true);
+    }
+    return;
+  }
+
+  const inatButton = event.target.closest("[data-inat-upload]");
+  if (inatButton) {
+    const observation = state.observations.get(id);
+    if (!observation) return;
+    inatButton.disabled = true;
+    try {
+      await uploadObservationToInat(observation, (step) => setStatus(`iNaturalist: ${step}`));
+      setStatus("Caricata su iNaturalist.");
+      card.outerHTML = observationHtml(observation);
+      refreshCounts();
+    } catch (error) {
+      inatButton.disabled = false;
+      setStatus(`iNaturalist: ${error.message}`, true);
     }
     return;
   }
@@ -321,6 +344,7 @@ async function renderObservations(append = false) {
   setStatus("Carico…");
   const rows = await fetchObservations();
   if (!append) content.innerHTML = ""; // a refresh may have raced with this load
+  rows.forEach((row) => state.observations.set(row.id, row));
   content.insertAdjacentHTML("beforeend", rows.map(observationHtml).join(""));
   state.offset += rows.length;
   $("#more").classList.toggle("hidden", rows.length < PAGE_SIZE);
@@ -455,6 +479,250 @@ content.addEventListener("click", (event) => {
   if (!event.target.closest("[data-empty-trash]")) return;
   const entries = [...state.trash.entries()].map(([observationId, entry]) => ({ observationId, ...entry }));
   deleteForGood(entries);
+});
+
+// ---------------------------------------------------------------- iNaturalist
+// Everything runs in the browser: the iNaturalist API accepts calls from any site, the token is
+// the personal one from inaturalist.org/users/api_token (24 hours), Supabase keeps track of what
+// is already online (observations.inat_observation_id, clips.inat_sound_id, status "uploaded").
+
+const INAT_API = "https://api.inaturalist.org/v1";
+const INAT_TOKEN_KEY = "inatToken";
+const INAT_LOGIN_KEY = "inatLogin";
+const INAT_GEOPRIVACY_KEY = "inatGeoprivacy";
+const INAT_MAX_SOUNDS = 5;
+const taxonIds = new Map();
+
+function storageGet(key) {
+  try {
+    return localStorage.getItem(key) || "";
+  } catch {
+    return "";
+  }
+}
+
+function storageSet(key, value) {
+  try {
+    if (value) localStorage.setItem(key, value);
+    else localStorage.removeItem(key);
+  } catch {
+    // private window: nothing is remembered
+  }
+}
+
+function tokenExpiry(token) {
+  try {
+    const payload = JSON.parse(atob(token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/")));
+    return payload.exp ? new Date(payload.exp * 1000) : null;
+  } catch {
+    return null;
+  }
+}
+
+function inatToken() {
+  const token = storageGet(INAT_TOKEN_KEY);
+  const expiry = tokenExpiry(token);
+  if (token && expiry && expiry <= new Date()) {
+    storageSet(INAT_TOKEN_KEY, "");
+    return "";
+  }
+  return token;
+}
+
+async function renderInatPanel() {
+  const token = inatToken();
+  const expiry = tokenExpiry(token);
+  const login = storageGet(INAT_LOGIN_KEY);
+  const until = expiry ? ` fino alle ${expiry.toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" })}` : "";
+  $("#inat-state").textContent = token
+    ? `Collegato${login ? ` come ${login}` : ""}${until}.`
+    : "Non collegato: serve il token di oggi.";
+  $("#inat-state").classList.toggle("error", !token);
+  $("#inat-geoprivacy").value = storageGet(INAT_GEOPRIVACY_KEY);
+  const { count } = await state.client.from("observations").select("id", { count: "exact", head: true }).eq("status", "confirmed");
+  const button = $("#inat-upload-all");
+  button.textContent = `Carica le confermate (${count || 0})`;
+  button.disabled = !token || !count;
+}
+
+async function inatRequest(path, options = {}) {
+  const response = await fetch(`${INAT_API}${path}`, {
+    ...options,
+    headers: { Accept: "application/json", Authorization: `Bearer ${inatToken()}`, ...(options.headers || {}) },
+  });
+  const text = await response.text();
+  let data = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = null;
+  }
+  if (!response.ok) {
+    if (response.status === 401) {
+      storageSet(INAT_TOKEN_KEY, "");
+      renderInatPanel();
+      throw new Error("token scaduto o non valido: ricollegati dal pannello iNat");
+    }
+    const detail = data?.error?.original?.error || data?.error?.original?.errors?.[0] || data?.error || text.slice(0, 160);
+    throw new Error(`iNaturalist ${response.status}: ${typeof detail === "string" ? detail : JSON.stringify(detail)}`);
+  }
+  return data;
+}
+
+async function resolveTaxonId(scientificName) {
+  const name = scientificName.trim();
+  if (taxonIds.has(name)) return taxonIds.get(name);
+  const response = await fetch(`${INAT_API}/taxa?q=${encodeURIComponent(name)}&rank=species,subspecies&per_page=30`);
+  const data = await response.json();
+  // Exact name, or a name iNaturalist lists as a synonym (Corvus monedula -> Coloeus monedula).
+  // Never "the first result": for Pica pica it is a Brazilian woodpecker ("pica-pau").
+  const wanted = name.toLowerCase();
+  const results = (data.results || []).filter((item) => item.is_active !== false);
+  const taxon = results.find((item) => item.name.toLowerCase() === wanted)
+    || results.find((item) => String(item.matched_term || "").toLowerCase() === wanted);
+  if (!taxon) throw new Error(`specie "${name}" non trovata su iNaturalist`);
+  taxonIds.set(name, taxon.id);
+  return taxon.id;
+}
+
+function localDateTime(iso) {
+  // "YYYY-MM-DD HH:MM:SS" in local time, like the CSV the importer used to send
+  const date = new Date(iso);
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} `
+    + `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
+// observation: a row with species and clips (OBSERVATION_SELECT); updated in place
+async function uploadObservationToInat(observation, onProgress = () => {}) {
+  if (!inatToken()) throw new Error("collega iNaturalist dal pannello iNat");
+  const name = observation.corrected_scientific_name || observation.scientific_name;
+  const clips = (observation.clips || [])
+    .filter((clip) => clip.review !== "wrong")
+    .sort((a, b) => b.confidence - a.confidence)
+    .slice(0, INAT_MAX_SOUNDS);
+  if (!clips.length) throw new Error("nessuna clip da caricare (sono tutte scartate)");
+
+  if (!observation.inat_observation_id) {
+    onProgress(`creo l'osservazione di ${name}`);
+    const taxonId = await resolveTaxonId(name);
+    const notes = String(observation.notes || "").trim();
+    const fields = {
+      taxon_id: taxonId,
+      species_guess: name,
+      observed_on_string: localDateTime(observation.observed_at),
+      place_guess: observation.place_name,
+      description: [notes, `Rilevato con BirdNET (confidenza max ${Number(observation.max_confidence).toFixed(3)}) `
+        + "e verificato a orecchio. Registrazione automatica con Bird Audio Suite."].filter(Boolean).join("\n\n"),
+      tag_list: "audio,birdnet",
+    };
+    if (observation.latitude != null && observation.longitude != null) {
+      fields.latitude = observation.latitude;
+      fields.longitude = observation.longitude;
+    }
+    const geoprivacy = storageGet(INAT_GEOPRIVACY_KEY);
+    if (geoprivacy) fields.geoprivacy = geoprivacy;
+    const created = await inatRequest("/observations", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ observation: fields }),
+    });
+    const record = Array.isArray(created) ? created[0] : created?.results?.[0] || created;
+    if (!record?.id) throw new Error("iNaturalist non ha restituito l'id dell'osservazione");
+    // saved at once: if the sounds fail, the next attempt reuses this observation
+    const { error } = await state.client.from("observations")
+      .update({ inat_observation_id: record.id, inat_uuid: record.uuid || null })
+      .eq("id", observation.id);
+    if (error) throw error;
+    observation.inat_observation_id = record.id;
+    observation.inat_uuid = record.uuid || null;
+  }
+
+  for (const [index, clip] of clips.entries()) {
+    if (clip.inat_sound_id != null) continue; // already online
+    onProgress(`${name}: suono ${index + 1} di ${clips.length}`);
+    const audio = await fetch(clip.audio_url);
+    if (!audio.ok) throw new Error(`audio non scaricabile (${audio.status})`);
+    const form = new FormData();
+    form.append("observation_sound[observation_id]", String(observation.inat_observation_id));
+    form.append("file", await audio.blob(), clip.id.replace(/\.wav$/i, ".mp3"));
+    const sound = await inatRequest("/observation_sounds", { method: "POST", body: form });
+    const soundId = Array.isArray(sound) ? sound[0]?.id : sound?.id;
+    const { error } = await state.client.from("clips").update({ inat_sound_id: soundId || 0 }).eq("id", clip.id);
+    if (error) throw error;
+    clip.inat_sound_id = soundId || 0;
+  }
+
+  const { error } = await state.client.from("observations")
+    .update({ status: "uploaded", reviewed_at: new Date().toISOString() })
+    .eq("id", observation.id);
+  if (error) throw error;
+  observation.status = "uploaded";
+  return observation.inat_observation_id;
+}
+
+$("#inat-toggle").addEventListener("click", () => {
+  const panel = $("#inat-panel");
+  panel.classList.toggle("hidden");
+  if (!panel.classList.contains("hidden")) {
+    renderInatPanel().catch((error) => setStatus(`Errore: ${error.message}`, true));
+  }
+});
+
+$("#inat-geoprivacy").addEventListener("change", (event) => storageSet(INAT_GEOPRIVACY_KEY, event.target.value));
+
+$("#inat-token-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  let token = $("#inat-token").value.trim();
+  try {
+    token = JSON.parse(token).api_token || token; // the page shows {"api_token":"..."}
+  } catch {
+    // pasted the bare token
+  }
+  if (!token) return;
+  setStatus("Controllo il token…");
+  const response = await fetch(`${INAT_API}/users/me`, { headers: { Authorization: `Bearer ${token}` } });
+  if (!response.ok) {
+    setStatus("Token non valido: copialo di nuovo dalla pagina del token.", true);
+    return;
+  }
+  const me = await response.json();
+  storageSet(INAT_TOKEN_KEY, token);
+  storageSet(INAT_LOGIN_KEY, me.results?.[0]?.login || "");
+  $("#inat-token").value = "";
+  setStatus("iNaturalist collegato.");
+  renderInatPanel();
+});
+
+$("#inat-upload-all").addEventListener("click", async () => {
+  const button = $("#inat-upload-all");
+  const log = $("#inat-log");
+  button.disabled = true;
+  log.innerHTML = "";
+  try {
+    const { data, error } = await state.client.from("observations").select(OBSERVATION_SELECT)
+      .eq("status", "confirmed").order("day").limit(200);
+    if (error) throw error;
+    let done = 0;
+    for (const [index, observation] of data.entries()) {
+      const label = `${observation.species?.italian_name || observation.scientific_name}, ${formatDay(observation.day)}`;
+      try {
+        await uploadObservationToInat(observation, (step) => setStatus(`iNaturalist ${index + 1}/${data.length}: ${step}`));
+        done += 1;
+        log.insertAdjacentHTML("beforeend", `<li>✓ <a href="https://www.inaturalist.org/observations/${Number(observation.inat_observation_id)}"
+          target="_blank" rel="noopener">${escapeHtml(label)}</a></li>`);
+      } catch (uploadError) {
+        log.insertAdjacentHTML("beforeend", `<li class="error">✗ ${escapeHtml(label)}: ${escapeHtml(uploadError.message)}</li>`);
+        if (/token/.test(uploadError.message)) break; // no point going on without a valid token
+      }
+    }
+    setStatus(`iNaturalist: caricate ${done} di ${data.length}.`, done < data.length);
+  } catch (error) {
+    setStatus(`iNaturalist: ${error.message}`, true);
+  }
+  await refreshCounts();
+  await renderInatPanel();
+  if (state.view !== "report" && state.view !== "trash") renderObservations();
 });
 
 // ---------------------------------------------------------------- report
