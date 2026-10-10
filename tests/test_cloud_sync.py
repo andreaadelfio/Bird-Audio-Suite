@@ -7,6 +7,8 @@ import unittest
 from datetime import datetime
 from pathlib import Path
 
+import csv
+
 import numpy as np
 import soundfile
 
@@ -33,10 +35,14 @@ class FakeCatalog:
 
 
 class FakeRest:
-    def __init__(self, deleted: list[str] | None = None) -> None:
+    def __init__(self, deleted: list[str] | None = None, existing: dict | None = None) -> None:
         self.calls: list[tuple[str, list[dict], str]] = []
         self.next_id = 1
         self.deleted = deleted or []
+        self.existing = existing  # observation already on Supabase for the same day and species
+
+    def get_observation(self, day, scientific_name):
+        return self.existing
 
     def select_column(self, table, column):
         assert (table, column) == ("deleted_clips", "id")
@@ -78,6 +84,11 @@ def make_detections(root: Path) -> None:
         longitude=13.5,
         audio_file_name=clip.name,
     )
+
+
+def read_rows(csv_path: Path) -> list[dict]:
+    with csv_path.open(encoding="utf-8", newline="") as handle:
+        return list(csv.DictReader(handle))
 
 
 def fake_render(audio_path: Path, output_path: Path) -> Path:
@@ -202,14 +213,13 @@ class DetectionSyncTests(unittest.TestCase):
             root, cache = Path(directory) / "detections", Path(directory) / "cache"
             make_detections(root)
             report = self.run_sync(root, cache, FakeRest(), FakeUploader(), delete_local=True)
-            wavs_left = list(root.rglob("*.wav"))
-            csv_kept = (root / "20261009" / "inaturalist_import_20261009.csv").exists()
+            left = sorted(str(path.relative_to(root)) for path in root.rglob("*") if path.name != ".lock")
             rest = FakeRest()
             again = self.run_sync(root, cache, rest, FakeUploader(), delete_local=True)
 
-        self.assertEqual((report.local_deleted, wavs_left, csv_kept), (1, [], True))
-        # next run: the clip still counts as part of its observation, nothing is re-sent
-        self.assertEqual((again.observations_total, again.observations_synced, again.errors), (1, 0, []))
+        # transit folder: WAV, CSV and day folder are gone once online
+        self.assertEqual((report.local_deleted, report.csv_removed, left), (1, 1, []))
+        self.assertEqual((again.observations_total, again.observations_synced, again.errors), (0, 0, []))
 
     def test_wavs_stay_when_the_option_is_off_or_the_mp3_is_not_reachable(self) -> None:
         for delete_local, remote_ok in ((False, True), (True, False)):
@@ -218,6 +228,87 @@ class DetectionSyncTests(unittest.TestCase):
                 make_detections(root)
                 report = self.run_sync(root, cache, FakeRest(), FakeUploader(), delete_local=delete_local, remote_ok=remote_ok)
                 self.assertEqual((report.local_deleted, len(list(root.rglob("*.wav")))), (0, 1))
+
+    def test_transit_keeps_what_is_not_online_yet(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root, cache = Path(directory) / "detections", Path(directory) / "cache"
+            make_detections(root)
+            day = root / "20261009"
+            # the live service has just recorded a second species, its clip is still open
+            append_inaturalist_csv_row(
+                day / "inaturalist_import_20261009.csv",
+                taxon_name="Strix aluco",
+                observed_at=datetime(2026, 10, 9, 7, 30),
+                english_name="Tawny Owl",
+                italian_name="Allocco",
+                german_name="Waldkauz",
+                confidence=0.8,
+                place_name="Monfalcone",
+                latitude=45.8,
+                longitude=13.5,
+            )
+            self.run_sync(root, cache, FakeRest(), FakeUploader(), delete_local=True)
+            rows = read_rows(day / "inaturalist_import_20261009.csv")
+
+        self.assertEqual([row["Nome del taxon"] for row in rows], ["Strix aluco"])
+
+    def test_a_clip_that_failed_to_upload_stays_with_its_row(self) -> None:
+        class FailingUploader(FakeUploader):
+            def upload(self, path, public_id, resource_type):
+                raise RuntimeError("no network")
+
+        with tempfile.TemporaryDirectory() as directory:
+            root, cache = Path(directory) / "detections", Path(directory) / "cache"
+            make_detections(root)
+            report = self.run_sync(root, cache, FakeRest(), FailingUploader(), delete_local=True)
+            rows = read_rows(root / "20261009" / "inaturalist_import_20261009.csv")
+            wavs = list(root.rglob("*.wav"))
+
+        self.assertEqual((len(report.errors), len(rows), len(wavs)), (1, 1, 1))
+        self.assertIn("audio_files=Merlo_20261009_065500_0.910.wav", rows[0]["Descrizione"])
+
+    def test_a_later_detection_adds_to_the_observation_online(self) -> None:
+        existing = {
+            "max_confidence": 0.97,
+            "observed_at": "2026-10-09T03:00:00+00:00",  # 05:00 local, before the 06:55 detection
+            "place_name": "Grado",
+            "latitude": 45.68,
+            "longitude": 13.38,
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root, cache = Path(directory) / "detections", Path(directory) / "cache"
+            make_detections(root)
+            rest = FakeRest(existing=existing)
+            self.run_sync(root, cache, rest, FakeUploader(), delete_local=True)
+
+        row = rest.calls[1][1][0]
+        # 0.91 heard now does not lower the 0.97 already online; time moves on; place stays
+        self.assertEqual(row["max_confidence"], 0.97)
+        self.assertTrue(row["observed_at"].startswith("2026-10-09T06:55:00"))
+        self.assertEqual((row["place_name"], row["latitude"]), ("Grado", 45.68))
+
+    def test_old_csvs_of_wavs_already_removed_are_emptied(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root, cache = Path(directory) / "detections", Path(directory) / "cache"
+            make_detections(root)
+            # previous version: WAV removed after upload, CSV kept
+            self.run_sync(root, cache, FakeRest(), FakeUploader(), delete_local=False)
+            next(root.rglob("*.wav")).unlink()
+            report = self.run_sync(root, cache, FakeRest(), FakeUploader(), delete_local=True)
+            left = [path for path in root.rglob("*") if path.name != ".lock"]
+
+        self.assertEqual((report.csv_removed, left), (1, []))
+
+    def test_rows_of_clips_deleted_from_the_cestino_leave_the_transit_folder(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root, cache = Path(directory) / "detections", Path(directory) / "cache"
+            make_detections(root)
+            next(root.rglob("*.wav")).unlink()  # WAV already gone, its row still listed
+            rest = FakeRest(deleted=["Merlo_20261009_065500_0.910.wav"])
+            report = self.run_sync(root, cache, rest, FakeUploader(), delete_local=True)
+            left = [path for path in root.rglob("*") if path.name != ".lock"]
+
+        self.assertEqual((report.csv_removed, left), (1, []))
 
     def test_wavs_deleted_from_the_cestino_are_removed_locally_too(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

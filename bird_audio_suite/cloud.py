@@ -19,6 +19,7 @@ Settings live outside the repository, in ``~/.config/bird-audio-suite/cloud.env`
 
 from __future__ import annotations
 
+import csv
 import hashlib
 import json
 import re
@@ -30,6 +31,7 @@ from pathlib import Path
 
 import requests
 
+from .audio import detections_lock
 from .repair import ObservationPlan, build_repair_plan
 
 DEFAULT_CLOUD_CONFIG = Path.home() / ".config" / "bird-audio-suite" / "cloud.env"
@@ -159,9 +161,10 @@ def supabase_auth_headers(key: str) -> dict[str, str]:
 
 
 class SupabaseRest:
-    def __init__(self, config: CloudConfig, session: requests.Session | None = None) -> None:
+    def __init__(self, config: CloudConfig, session: requests.Session | None = None, timeout: float = 60) -> None:
         if not config.supabase_url or not config.supabase_key:
             raise RuntimeError("SUPABASE_URL e SUPABASE_KEY mancano in cloud.env")
+        self.timeout = timeout
         self.base = f"{config.supabase_url}{config.rest_path}"
         self.session = session or requests.Session()
         self.session.headers.update(
@@ -172,6 +175,23 @@ class SupabaseRest:
                 "Content-Type": "application/json",
             }
         )
+
+    def get(self, table: str, params: dict) -> list[dict]:
+        response = self.session.get(f"{self.base}/{table}", params=params, timeout=self.timeout)
+        if response.status_code >= 400:
+            raise RuntimeError(f"Supabase {table} read failed ({response.status_code}): {response.text[:300]}")
+        return response.json()
+
+    def get_observation(self, day: str, scientific_name: str) -> dict | None:
+        rows = self.get(
+            "observations",
+            {
+                "select": "max_confidence,observed_at,place_name,latitude,longitude",
+                "day": f"eq.{day}",
+                "scientific_name": f"eq.{scientific_name}",
+            },
+        )
+        return rows[0] if rows else None
 
     def select_column(self, table: str, column: str, page_size: int = 1000) -> list:
         values: list = []
@@ -262,6 +282,61 @@ def audio_duration(path: Path) -> float:
 # ---------------------------------------------------------------- sync
 
 
+def merge_with_existing(row: dict, existing: dict | None) -> dict:
+    """The transit folder only holds what is not online yet, so a later detection of the same
+    species and day must add to the observation, not overwrite it: highest confidence, latest
+    time, and the place where it was first heard."""
+    if not existing:
+        return row
+    merged = dict(row)
+    merged["max_confidence"] = max(float(row["max_confidence"]), float(existing.get("max_confidence") or 0))
+    if existing.get("observed_at"):
+        merged["observed_at"] = max(
+            (row["observed_at"], existing["observed_at"]),
+            key=lambda value: datetime.fromisoformat(str(value).replace("Z", "+00:00")),
+        )
+    if existing.get("latitude") is not None and existing.get("longitude") is not None:
+        for column in ("place_name", "latitude", "longitude"):
+            merged[column] = existing[column]
+    return merged
+
+
+_AUDIO_FILES = re.compile(r"(audio_files=)([^;]*)")
+
+
+def remove_synced_from_csv(csv_path: Path, synced: set[str]) -> int:
+    """Drop uploaded clips from a day CSV (call it under detections_lock); return rows left.
+
+    A row whose clips are all online goes; a row with no clips yet (the live service writes
+    the observation first and adds the clip when it closes) stays. An empty CSV is deleted."""
+    from .audio import INATURALIST_CSV_HEADER
+
+    with csv_path.open("r", encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    kept = []
+    for row in rows:
+        description = row.get("Descrizione") or ""
+        match = _AUDIO_FILES.search(description)
+        if match is None:
+            kept.append(row)
+            continue
+        names = [name for name in match.group(2).split(",") if name]
+        remaining = [name for name in names if name not in synced]
+        if names and not remaining:
+            continue
+        row["Descrizione"] = description[: match.start()] + "audio_files=" + ",".join(remaining) + description[match.end():]
+        kept.append(row)
+    if not kept:
+        csv_path.unlink()
+        return 0
+    if len(kept) != len(rows) or kept != rows:
+        with csv_path.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=INATURALIST_CSV_HEADER)
+            writer.writeheader()
+            writer.writerows({key: row.get(key, "") for key in INATURALIST_CSV_HEADER} for row in kept)
+    return len(kept)
+
+
 @dataclass
 class SyncReport:
     observations_total: int = 0
@@ -270,6 +345,7 @@ class SyncReport:
     species_synced: int = 0
     local_deleted: int = 0
     local_bytes_freed: int = 0
+    csv_removed: int = 0
     errors: list[str] = field(default_factory=list)
 
 
@@ -451,7 +527,11 @@ class DetectionSync:
 
         for index, (key, row, observation) in enumerate(pending, start=1):
             try:
-                stored = self.rest.upsert("observations", [row], on_conflict="day,scientific_name", returning=True)
+                upsert_row = row
+                if self.config.delete_local_audio:
+                    # earlier clips of this day may already be online and gone from here
+                    upsert_row = merge_with_existing(row, self.rest.get_observation(row["day"], row["scientific_name"]))
+                stored = self.rest.upsert("observations", [upsert_row], on_conflict="day,scientific_name", returning=True)
                 observation_id = stored[0]["id"]
                 clip_rows = []
                 for clip in observation.clips:
@@ -478,25 +558,67 @@ class DetectionSync:
                 self.log(f"  {index}/{len(pending)} osservazioni")
 
         if self.config.delete_local_audio and self.uploader is not None:
-            for clip in self._removable_local_clips(plan, verify=True) + trashed_on_disk:
-                report.local_bytes_freed += clip.source.stat().st_size
-                clip.source.unlink()
-                report.local_deleted += 1
+            self._empty_transit(plan, trashed_on_disk, deleted, report)
+        return report
+
+    def _empty_transit(self, plan, trashed_on_disk: list, deleted: set[str], report: SyncReport) -> None:
+        """detections/ as a transit folder: whatever is safely online (or deleted from the
+        Cestino) leaves the laptop."""
+        removable = self._removable_local_clips(plan, verify=True)
+        gone = {clip.source.name for clip in removable + trashed_on_disk} | deleted
+        # clips already removed earlier (WAV gone, still listed in a CSV) are online too
+        gone |= {
+            clip.source.name
+            for observation in plan.observations
+            for clip in observation.clips
+            if not clip.on_disk and self._observation_synced(observation)
+        }
+        with detections_lock(self.detections_dir):
+            for clip in removable + trashed_on_disk:
+                if clip.source.exists():
+                    report.local_bytes_freed += clip.source.stat().st_size
+                    clip.source.unlink()
+                    report.local_deleted += 1
                 try:
-                    clip.source.parent.rmdir()  # species folder, once empty (the day CSV stays)
+                    clip.source.parent.rmdir()  # species folder, once empty
                 except OSError:
                     pass
-        return report
+            for csv_path in sorted(self.detections_dir.glob("*/inaturalist_import_*.csv")):
+                if remove_synced_from_csv(csv_path, gone) == 0:
+                    report.csv_removed += 1
+            # empty species and day folders, deepest first (WAVs may have gone in earlier runs)
+            for folder in sorted((path for path in self.detections_dir.rglob("*") if path.is_dir()), reverse=True):
+                try:
+                    folder.rmdir()
+                except OSError:
+                    pass  # not empty: something still waits for a sync
+            still_listed = self._clips_listed_locally()
+        # forget what only Supabase holds now: the state stays as small as the transit folder
+        self.state["media"] = {name: media for name, media in self.state["media"].items() if name in still_listed}
+        days_left = {path.name for path in self.detections_dir.glob("*/") if path.is_dir()}
+        self.state["observations"] = {
+            key: value for key, value in self.state["observations"].items()
+            if key.split("|", 1)[0].replace("-", "") in days_left
+        }
+        self._save_state()
+
+    def _clips_listed_locally(self) -> set[str]:
+        names: set[str] = set()
+        for csv_path in self.detections_dir.glob("*/inaturalist_import_*.csv"):
+            for match in _AUDIO_FILES.finditer(csv_path.read_text(encoding="utf-8")):
+                names.update(name for name in match.group(2).split(",") if name)
+        return names
+
+    def _observation_synced(self, observation) -> bool:
+        row = _observation_row(observation)
+        key = f"{row['day']}|{row['scientific_name']}"
+        return self.state["observations"].get(key) == _fingerprint(row, [clip.source.name for clip in observation.clips])
 
     def _removable_local_clips(self, plan, *, verify: bool) -> list:
         """WAVs whose observation is fully on Supabase and whose MP3 is really downloadable."""
         removable = []
         for observation in plan.observations:
-            if not observation.clips:
-                continue
-            row = _observation_row(observation)
-            key = f"{row['day']}|{row['scientific_name']}"
-            if self.state["observations"].get(key) != _fingerprint(row, [clip.source.name for clip in observation.clips]):
+            if not observation.clips or not self._observation_synced(observation):
                 continue  # not (fully) synced yet: keep everything
             for clip in observation.clips:
                 media = self.state["media"].get(clip.source.name)

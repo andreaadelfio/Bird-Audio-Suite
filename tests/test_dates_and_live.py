@@ -374,6 +374,32 @@ class DeviceSelectionTests(unittest.TestCase):
         self.assertEqual(selected, 16)
 
 
+class LiveSummaryTests(unittest.TestCase):
+    def test_supabase_and_transit_rows_become_one_row_per_species(self) -> None:
+        stats = {
+            "Pica pica": {"english_name": "Magpie", "italian_name": "Gazza", "german_name": "Elster",
+                          "rarity": "rare", "daily_average": "0.16"},
+            "Strix aluco": {"english_name": "Tawny Owl", "italian_name": "Allocco", "german_name": "Waldkauz",
+                            "rarity": "common", "daily_average": "1.10"},
+        }
+        remote = [{"scientific_name": "Pica pica", "max_confidence": 0.99, "last_heard": "2026-10-10T08:00:00+00:00"}]
+        local = [
+            {"taxon_name": "Pica pica", "time": "2026-10-10 23:30:00",
+             "description": "Magpie, Gazza, Elster; birdnet_confidence=0.800"},
+            {"taxon_name": "Strix aluco", "time": "2026-10-10 22:00:00",
+             "description": "Tawny Owl, Allocco, Waldkauz; birdnet_confidence=0.910"},
+        ]
+
+        rows = cli.merge_daily_records(local, remote, stats)
+
+        self.assertEqual([row["taxon_name"] for row in rows], ["Pica pica", "Strix aluco"])
+        magpie = rows[0]
+        # latest time from the transit folder, highest confidence from Supabase
+        self.assertEqual(magpie["time"], "2026-10-10 23:30:00")
+        self.assertIn("birdnet_confidence=0.990", magpie["description"])
+        self.assertEqual((magpie["rarity"], magpie["avg_counts"]), ("rare", "0.16/day"))
+
+
 class RepairTests(unittest.TestCase):
     def test_multi_day_folder_is_split_by_clip_date(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

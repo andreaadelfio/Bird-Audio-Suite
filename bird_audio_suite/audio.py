@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import csv
+import fcntl
 import re
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -207,6 +209,20 @@ def parse_timestamp_from_name(name: str) -> datetime | None:
     return None
 
 
+@contextmanager
+def detections_lock(detections_dir: Path):
+    """Exclusive lock on the transit folder: the live service appends to the day CSVs while
+    `sync` removes what it has uploaded, and neither may lose the other's changes."""
+    detections_dir = Path(detections_dir)
+    detections_dir.mkdir(parents=True, exist_ok=True)
+    with (detections_dir / ".lock").open("a") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+
+
 def day_folder_name(when: datetime) -> str:
     return when.strftime("%Y%m%d")
 
@@ -234,6 +250,52 @@ def append_inaturalist_csv_row(
 ) -> None:
     csv_path = Path(csv_path)
     csv_path.parent.mkdir(parents=True, exist_ok=True)
+    with detections_lock(csv_path.parent.parent):
+        _append_inaturalist_csv_row(
+            csv_path,
+            taxon_name=taxon_name,
+            observed_at=observed_at,
+            english_name=english_name,
+            italian_name=italian_name,
+            german_name=german_name,
+            confidence=confidence,
+            place_name=place_name,
+            latitude=latitude,
+            longitude=longitude,
+            tags=tags,
+            geoprivacy=geoprivacy,
+            audio_file_name=audio_file_name,
+        )
+
+
+INATURALIST_CSV_HEADER = [
+    "Nome del taxon",
+    "Data osservazione",
+    "Descrizione",
+    "Nome del luogo",
+    "Latitudine / coord y / nord",
+    "Longitudine / coord x / est",
+    "Etichette",
+    "Geoprivacy",
+]
+
+
+def _append_inaturalist_csv_row(
+    csv_path: Path,
+    *,
+    taxon_name: str,
+    observed_at: datetime,
+    english_name: str,
+    italian_name: str,
+    german_name: str,
+    confidence: float,
+    place_name: str,
+    latitude: float | None,
+    longitude: float | None,
+    tags: str,
+    geoprivacy: str,
+    audio_file_name: str,
+) -> None:
     header = [
         "Nome del taxon",
         "Data osservazione",

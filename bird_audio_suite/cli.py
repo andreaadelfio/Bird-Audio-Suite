@@ -4,6 +4,7 @@ import argparse
 import csv
 import json
 import queue
+import re
 import shlex
 import signal
 import subprocess
@@ -954,8 +955,79 @@ def load_species_frequency_stats(species_file: Path = DEFAULT_SPECIES_FILE) -> d
             stats[scientific_name] = {
                 "rarity": (row.get("rarity") or "unseen").strip(),
                 "daily_average": (row.get("daily_average") or "0.000").strip(),
+                "english_name": (row.get("english_name") or "").strip(),
+                "italian_name": (row.get("italian_name") or "").strip(),
+                "german_name": (row.get("german_name") or "").strip(),
             }
     return stats
+
+
+_REMOTE_SUMMARY: dict = {"loaded": False, "client": None}
+
+
+def remote_daily_rows(day: str) -> list[dict] | None:
+    """Observations of `day` (YYYY-MM-DD) on Supabase, rejected excluded; None if not configured
+    or unreachable. Short timeout: it runs in the live loop."""
+    if not _REMOTE_SUMMARY["loaded"]:
+        _REMOTE_SUMMARY["loaded"] = True
+        try:
+            from .cloud import DEFAULT_CLOUD_CONFIG, CloudConfig, SupabaseRest
+
+            config = CloudConfig.load(DEFAULT_CLOUD_CONFIG)
+            if config.supabase_url and config.supabase_key and config.storage_backend != "local":
+                _REMOTE_SUMMARY["client"] = SupabaseRest(config, timeout=4)
+        except Exception:
+            _REMOTE_SUMMARY["client"] = None
+    client = _REMOTE_SUMMARY["client"]
+    if client is None:
+        return None
+    try:
+        return client.get(
+            "daily_summary",
+            {
+                "select": "scientific_name,max_confidence,last_heard",
+                "day": f"eq.{day}",
+                "status": "neq.rejected",
+            },
+        )
+    except Exception:
+        return None
+
+
+def merge_daily_records(local: list[dict[str, str]], remote: list[dict], stats: dict) -> list[dict[str, str]]:
+    """One row per species: what is on Supabase plus what still waits in the transit folder,
+    with the latest time and the highest confidence."""
+    merged: dict[str, dict[str, str]] = {}
+
+    def add(taxon: str, time_text: str, confidence: float) -> None:
+        names = stats.get(taxon, {})
+        current = merged.get(taxon)
+        if current is None:
+            merged[taxon] = {
+                "taxon_name": taxon,
+                "time": time_text,
+                "description": f"{names.get('english_name', '')}, {names.get('italian_name', '')}, "
+                f"{names.get('german_name', '')}; birdnet_confidence={confidence:.3f}",
+                "rarity": names.get("rarity", "unseen"),
+                "avg_counts": f"{float(names.get('daily_average', '0') or 0):.2f}/day",
+                "_confidence": f"{confidence:.6f}",
+            }
+            return
+        best = max(confidence, float(current["_confidence"]))
+        current["time"] = max(current["time"], time_text)
+        current["_confidence"] = f"{best:.6f}"
+        current["description"] = re.sub(r"birdnet_confidence=[0-9.]+", f"birdnet_confidence={best:.3f}", current["description"])
+
+    for row in remote:
+        heard = datetime.fromisoformat(str(row["last_heard"]).replace("Z", "+00:00")).astimezone()
+        add(row["scientific_name"], heard.strftime("%Y-%m-%d %H:%M:%S"), float(row.get("max_confidence") or 0))
+    for record in local:
+        _en, _it, _de, confidence = split_description(record.get("description", ""))
+        add(record["taxon_name"], record["time"], float(confidence or 0))
+    rows = sorted(merged.values(), key=lambda row: row["time"], reverse=True)
+    for row in rows:
+        row.pop("_confidence", None)
+    return rows
 
 
 def load_daily_observation_rows(
@@ -1022,6 +1094,12 @@ def print_daily_detection_summary(
     species_file: Path = DEFAULT_SPECIES_FILE,
 ) -> None:
     records = load_daily_observation_rows(day_dir, species_file)
+    # detections/ is only a transit folder: what is already online comes from Supabase
+    day_name = Path(day_dir).name
+    if len(day_name) == 8 and day_name.isdigit():
+        remote = remote_daily_rows(f"{day_name[:4]}-{day_name[4:6]}-{day_name[6:]}")
+        if remote is not None:
+            records = merge_daily_records(records, remote, load_species_frequency_stats(species_file))
 
     # Always emit clear/resize escapes, even under systemd: the journal is shown in a
     # terminal (journalctl -f, Ctrl+Alt+L shortcut) that executes them, leaving only the table.
@@ -1735,6 +1813,8 @@ def run_sync(args: argparse.Namespace) -> int:
     if config.delete_local_audio:
         verb = "da eliminare" if args.dry_run else "eliminati"
         print(f"WAV locali {verb}: {report.local_deleted} ({report.local_bytes_freed / 1e6:.0f} MB)")
+        if not args.dry_run:
+            print(f"CSV svuotati e tolti da detections/: {report.csv_removed}")
     for error in report.errors:
         print(f"  errore: {error}")
     return 1 if report.errors else 0
