@@ -126,17 +126,24 @@ async function updateClip(id, review) {
 
 // ---------------------------------------------------------------- observation cards
 
-// where to check a species: reference recordings first, then descriptions and photos
+// where to check a species: icons, the name stays in the tooltip and for screen readers
+const SPECIES_LINK_ICONS = {
+  wikipedia: `<svg viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="15" fill="#fff" stroke="#c8ccd1"/>
+    <text x="16" y="22" text-anchor="middle" font-family="Georgia, 'Times New Roman', serif" font-size="17" fill="#202122">W</text></svg>`,
+  inaturalist: `<svg viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="15" fill="#74ac00"/>
+    <text x="16" y="21" text-anchor="middle" font-family="system-ui, sans-serif" font-size="13" font-weight="700" fill="#fff">iN</text></svg>`,
+};
+
 function speciesLinks(scientificName) {
   const name = String(scientificName || "").trim();
   if (!name) return "";
   const links = [
-    ["xeno-canto", `https://xeno-canto.org/species/${name.replace(/ /g, "-")}`, "Registrazioni di riferimento"],
-    ["Wikipedia", `https://it.wikipedia.org/wiki/${encodeURIComponent(name.replace(/ /g, "_"))}`, "Voce di Wikipedia"],
-    ["iNaturalist", `https://www.inaturalist.org/taxa/search?q=${encodeURIComponent(name)}`, "Specie su iNaturalist"],
+    ["wikipedia", `https://it.wikipedia.org/wiki/${encodeURIComponent(name.replace(/ /g, "_"))}`, `${name} su Wikipedia`],
+    ["inaturalist", `https://www.inaturalist.org/taxa/search?q=${encodeURIComponent(name)}`, `${name} su iNaturalist`],
   ];
   return `<span class="species-links">${links
-    .map(([label, url, title]) => `<a href="${escapeHtml(url)}" target="_blank" rel="noopener" title="${title}">${label}</a>`)
+    .map(([icon, url, label]) => `<a href="${escapeHtml(url)}" target="_blank" rel="noopener"
+      title="${escapeHtml(label)}" aria-label="${escapeHtml(label)}">${SPECIES_LINK_ICONS[icon]}</a>`)
     .join("")}</span>`;
 }
 

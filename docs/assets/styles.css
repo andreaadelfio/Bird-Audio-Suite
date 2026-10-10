@@ -207,19 +207,12 @@ button.small { padding: 0.1rem 0.5rem; font-size: 0.8rem; }
 
 .meta, .corrected { margin: 0.3rem 0 0.6rem; color: var(--ink-soft); }
 
-/* xeno-canto · Wikipedia · iNaturalist under the species name */
-.species-links { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-top: 0.35rem; }
+/* Wikipedia and iNaturalist icons under the species name */
+.species-links { display: flex; gap: 0.4rem; margin-top: 0.35rem; }
 .corrected .species-links { display: inline-flex; margin: 0 0 0 0.4rem; vertical-align: middle; }
-.species-links a {
-  padding: 0.15rem 0.6rem;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  background: var(--bg);
-  color: var(--accent-deep);
-  font-size: 0.8rem;
-  text-decoration: none;
-}
-.species-links a:hover { border-color: var(--accent); }
+.species-links a { display: block; width: 1.75rem; height: 1.75rem; border-radius: 999px; }
+.species-links svg { display: block; width: 100%; height: 100%; }
+.species-links a:hover, .species-links a:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
 .clips {
   display: grid;
@@ -416,7 +409,8 @@ button.small { padding: 0.1rem 0.5rem; font-size: 0.8rem; }
   .observation { padding: 0.75rem; }
   .observation header { flex-wrap: wrap; }
   .observation h2 { font-size: 1.05rem; }
-  .species-links a { padding: 0.35rem 0.75rem; font-size: 0.85rem; }
+  .species-links { gap: 0.6rem; }
+  .species-links a { width: 2.25rem; height: 2.25rem; }
   .clips { grid-template-columns: 1fr; }
   .spectrogram { height: 130px; }
 
