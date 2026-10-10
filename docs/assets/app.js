@@ -125,6 +125,20 @@ async function updateClip(id, review) {
 
 // ---------------------------------------------------------------- observation cards
 
+// where to check a species: reference recordings first, then descriptions and photos
+function speciesLinks(scientificName) {
+  const name = String(scientificName || "").trim();
+  if (!name) return "";
+  const links = [
+    ["xeno-canto", `https://xeno-canto.org/species/${name.replace(/ /g, "-")}`, "Registrazioni di riferimento"],
+    ["Wikipedia", `https://it.wikipedia.org/wiki/${encodeURIComponent(name.replace(/ /g, "_"))}`, "Voce di Wikipedia"],
+    ["iNaturalist", `https://www.inaturalist.org/taxa/search?q=${encodeURIComponent(name)}`, "Specie su iNaturalist"],
+  ];
+  return `<span class="species-links">${links
+    .map(([label, url, title]) => `<a href="${escapeHtml(url)}" target="_blank" rel="noopener" title="${title}">${label}</a>`)
+    .join("")}</span>`;
+}
+
 function clipHtml(clip, folded = false) {
   const recorded = timeFormat.format(new Date(clip.recorded_at));
   return `
@@ -153,7 +167,8 @@ function observationHtml(observation) {
   const first = clips[0] ? timeFormat.format(new Date(clips[0].recorded_at)) : "";
   const last = clips.length > 1 ? `–${timeFormat.format(new Date(clips[clips.length - 1].recorded_at))}` : "";
   const corrected = observation.corrected_scientific_name
-    ? `<p class="corrected">Corretta in <i>${escapeHtml(observation.corrected_scientific_name)}</i></p>`
+    ? `<p class="corrected">Corretta in <i>${escapeHtml(observation.corrected_scientific_name)}</i>
+        ${speciesLinks(observation.corrected_scientific_name)}</p>`
     : "";
   return `
     <article class="observation status-${observation.status}" data-id="${observation.id}">
@@ -162,6 +177,7 @@ function observationHtml(observation) {
           <small><i>${escapeHtml(observation.scientific_name)}</i> · ${escapeHtml(species.english_name || "")}</small></h2>
         <span class="badge">${STATUS_LABELS[observation.status] || observation.status}</span>
       </header>
+      ${speciesLinks(observation.scientific_name)}
       <p class="meta">${formatDay(observation.day)} · ${first}${last} · ${escapeHtml(observation.place_name)} ·
         confidenza max ${Number(observation.max_confidence).toFixed(3)} · ${clips.length} clip</p>
       ${corrected}
@@ -338,6 +354,7 @@ function trashCardHtml(observation, whole) {
           <small><i>${escapeHtml(observation.scientific_name)}</i></small></h2>
         <span class="badge">${whole ? "osservazione scartata" : `${clips.length} clip scartate`}</span>
       </header>
+      ${speciesLinks(observation.scientific_name)}
       <p class="meta">${formatDay(observation.day)} · ${escapeHtml(observation.place_name)} ·
         ${whole ? `tutte le ${clips.length} clip` : "il resto dell'osservazione resta"}</p>
       <div class="clips">${clips.map((clip, index) => clipHtml(clip, index >= VISIBLE_CLIPS)).join("")}</div>
