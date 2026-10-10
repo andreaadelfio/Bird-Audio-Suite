@@ -267,7 +267,24 @@ button.small { padding: 0.1rem 0.5rem; font-size: 0.8rem; }
 
 .more { display: block; margin: 0 auto 1rem; }
 .empty { color: var(--ink-soft); text-align: center; padding: 2rem; }
-.status-line { color: var(--ink-soft); min-height: 1.2em; }
+/* messages as a toast above the bottom edge: visible wherever the page is scrolled */
+.status-line:not(:empty) {
+  position: fixed;
+  left: 50%;
+  bottom: calc(0.8rem + env(safe-area-inset-bottom));
+  z-index: 20;
+  width: min(calc(100% - 1.2rem), 640px);
+  margin: 0;
+  padding: 0.6rem 0.8rem;
+  transform: translateX(-50%);
+  border-radius: var(--radius);
+  background: var(--ink);
+  color: var(--bg);
+  text-align: center;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+}
+
+.status-line.error:not(:empty) { background: var(--negative); color: #fff; }
 .error { color: var(--negative); }
 
 /* report */
@@ -364,23 +381,6 @@ button.small { padding: 0.1rem 0.5rem; font-size: 0.8rem; }
   .actions [data-status="pending"] { grid-column: 1 / -1; }
 
   .more, .show-clips { width: 100%; min-height: 3rem; }
-
-  /* messages as a toast above the bottom edge */
-  .status-line:not(:empty) {
-    position: fixed;
-    left: 0.6rem;
-    right: 0.6rem;
-    bottom: calc(0.6rem + env(safe-area-inset-bottom));
-    z-index: 20;
-    margin: 0;
-    padding: 0.6rem 0.8rem;
-    border-radius: var(--radius);
-    background: var(--ink);
-    color: var(--bg);
-    text-align: center;
-  }
-
-  .status-line.error:not(:empty) { background: var(--negative); color: #fff; }
 
   .report-head { flex-wrap: wrap; gap: 0.5rem; }
   .report-head h2 { font-size: 1.1rem; margin: 0.4rem 0; }
