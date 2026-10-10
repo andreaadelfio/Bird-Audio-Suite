@@ -451,6 +451,9 @@ function isoDaysAgo(days) {
 async function renderReport(days = Number(localStorage.getItem("reportDays") || 7)) {
   setStatus("Carico…");
   const from = isoDaysAgo(days - 1);
+  // a species name opens its observations of exactly this period
+  const speciesLink = (row) => `<button type="button" class="species-link" data-species="${escapeHtml(row.scientific_name)}"
+    data-from="${from}" title="Vedi le osservazioni di questo periodo">${escapeHtml(row.italian_name)}</button>`;
   const [{ data: rows, error }, { data: clips, error: clipsError }] = await Promise.all([
     state.client.from("daily_summary").select("*").gte("day", from).neq("status", "rejected"),
     state.client.from("clips").select("recorded_at, observations!inner(status,day)")
@@ -488,7 +491,7 @@ async function renderReport(days = Number(localStorage.getItem("reportDays") || 
       <div class="tile"><b>${totalMinutes}</b><span>minuti di audio</span></div>
       <div class="tile"><b>${newSpecies.length}</b><span>specie nuove</span></div>
     </div>
-    ${newSpecies.length ? `<p class="new-species">Prima volta: ${newSpecies.map((row) => escapeHtml(row.italian_name)).join(", ")}</p>` : ""}
+    ${newSpecies.length ? `<p class="new-species">Prima volta: ${newSpecies.map(speciesLink).join(", ")}</p>` : ""}
     <h3>Attività per ora</h3>
     <div class="hours">${hours.map((count, hour) => `
       <div class="hour" title="${hour}:00 · ${count} clip">
@@ -500,7 +503,7 @@ async function renderReport(days = Number(localStorage.getItem("reportDays") || 
       <thead><tr><th>Specie</th><th>Giorni</th><th>Clip</th><th>Conf. max</th><th>Ultima volta</th></tr></thead>
       <tbody>${speciesRows.map((row) => `
         <tr>
-          <td>${escapeHtml(row.italian_name)} <small><i>${escapeHtml(row.scientific_name)}</i></small></td>
+          <td>${speciesLink(row)} <small><i>${escapeHtml(row.scientific_name)}</i></small></td>
           <td>${row.days}</td><td>${row.clips}</td><td>${row.best.toFixed(3)}</td>
           <td>${row.last_heard ? dayFormat.format(new Date(row.last_heard)) : ""}</td>
         </tr>`).join("")}</tbody>
@@ -509,11 +512,27 @@ async function renderReport(days = Number(localStorage.getItem("reportDays") || 
 }
 
 content.addEventListener("click", (event) => {
+  const speciesButton = event.target.closest("[data-species]");
+  if (speciesButton) {
+    showSpeciesObservations(speciesButton.dataset.species, speciesButton.dataset.from);
+    return;
+  }
   const button = event.target.closest("[data-days]");
   if (!button) return;
   localStorage.setItem("reportDays", button.dataset.days);
   renderReport(Number(button.dataset.days)).catch((error) => setStatus(`Errore: ${error.message}`, true));
 });
+
+function showSpeciesObservations(scientificName, fromDay) {
+  $("#filter-status").value = "";
+  $("#filter-species").value = scientificName;
+  $("#filter-from").value = fromDay;
+  $("#filter-to").value = new Date().toISOString().slice(0, 10);
+  $("#filters").open = true;
+  state.view = "all";
+  window.scrollTo(0, 0);
+  render();
+}
 
 // ---------------------------------------------------------------- navigation
 

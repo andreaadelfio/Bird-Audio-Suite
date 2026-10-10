@@ -189,7 +189,6 @@ button.small { padding: 0.1rem 0.5rem; font-size: 0.8rem; }
 .clip.folded { display: none; }
 .show-clips { display: block; width: 100%; margin-top: 0.6rem; color: var(--accent-deep); }
 
-.clip.review-correct { outline: 2px solid var(--positive); }
 .clip.review-wrong { outline: 2px solid var(--negative); opacity: 0.7; }
 
 .spectrogram-box { position: relative; cursor: pointer; background: #000; }
@@ -288,6 +287,21 @@ button.small { padding: 0.1rem 0.5rem; font-size: 0.8rem; }
 .tile b { font-size: 1.6rem; color: var(--accent-deep); }
 .tile span { color: var(--ink-soft); }
 .new-species { color: var(--positive); }
+
+/* species names in the report open their observations of the period */
+.species-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent-deep);
+  font: inherit;
+  text-align: left;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.new-species .species-link { color: var(--positive); }
 
 .hours {
   display: grid;
