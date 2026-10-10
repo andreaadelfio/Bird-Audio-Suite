@@ -131,11 +131,10 @@ async function fetchObservations() {
   return data;
 }
 
-// changes: { status, notes, corrected }; a missing field is left as it is, "" clears the correction
+// changes: { status, corrected }; a missing field is left as it is, "" clears the correction
 async function updateObservation(id, changes) {
   const row = { reviewed_at: new Date().toISOString() };
   if (changes.status !== undefined) row.status = changes.status;
-  if (changes.notes !== undefined) row.notes = changes.notes;
   if (changes.corrected !== undefined) row.corrected_scientific_name = changes.corrected.trim() || null;
   const { error } = await state.client.from("observations").update(row).eq("id", id);
   if (error) throw error;
@@ -155,6 +154,21 @@ const SPECIES_LINK_ICONS = {
   inaturalist: `<svg viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="15" fill="#74ac00"/>
     <text x="16" y="21" text-anchor="middle" font-family="system-ui, sans-serif" font-size="13" font-weight="700" fill="#fff">iN</text></svg>`,
 };
+
+// "Pica pica  W iN  status" over "Gazza · Eurasian Magpie"
+function speciesHeaderHtml(observation, badge) {
+  const species = observation.species || {};
+  const names = [species.italian_name, species.english_name].filter(Boolean).map(escapeHtml).join(" · ");
+  return `
+      <header>
+        <div class="title-row">
+          <h2><i>${escapeHtml(observation.scientific_name)}</i></h2>
+          ${speciesLinks(observation.scientific_name)}
+          <span class="badge">${badge}</span>
+        </div>
+        ${names ? `<p class="common-names">${names}</p>` : ""}
+      </header>`;
+}
 
 function speciesLinks(scientificName) {
   const name = String(scientificName || "").trim();
@@ -241,7 +255,7 @@ function clipHtml(clip, folded = false) {
         <button type="button" class="small" data-player="clear-selection">Annulla</button>
       </div>
       <figcaption>
-        <span>${recorded} · ${Number(clip.confidence).toFixed(3)} · ${Math.round(clip.duration_s || 0)} s${trimmed
+        <span>${recorded} · clip_conf ${Number(clip.confidence).toFixed(3)} · ${Math.round(clip.duration_s || 0)} s${trimmed
           ? ` · tagliata ${Number(clip.trim_start_s).toFixed(1)}–${Number(clip.trim_end_s).toFixed(1)} s
             <button type="button" class="link-button" data-player="untrim">togli taglio</button>` : ""}</span>
         <span class="clip-actions">
@@ -255,7 +269,6 @@ function clipHtml(clip, folded = false) {
 }
 
 function observationHtml(observation) {
-  const species = observation.species || {};
   const facts = observationFacts(observation);
   const clips = facts.clips;
   const first = facts.firstHeard ? timeFormat.format(new Date(facts.firstHeard)) : "";
@@ -266,21 +279,15 @@ function observationHtml(observation) {
     : "";
   return `
     <article class="observation status-${observation.status}" data-id="${observation.id}">
-      <header>
-        <h2>${escapeHtml(species.italian_name || observation.scientific_name)}
-          <small><i>${escapeHtml(observation.scientific_name)}</i> · ${escapeHtml(species.english_name || "")}</small></h2>
-        <span class="badge">${STATUS_LABELS[observation.status] || observation.status}</span>
-      </header>
-      ${speciesLinks(observation.scientific_name)}
+      ${speciesHeaderHtml(observation, STATUS_LABELS[observation.status] || observation.status)}
       <p class="meta">${formatDay(observation.day)} · ${first}${last} · ${escapeHtml(facts.place)} ·
-        confidenza max ${facts.maxConfidence.toFixed(3)} · ${clips.length} clip</p>
+        max_obs_conf ${facts.maxConfidence.toFixed(3)} · ${clips.length} clip</p>
       ${corrected}
       <div class="clips">${clips.map((clip, index) => clipHtml(clip, index >= VISIBLE_CLIPS)).join("")}</div>
       ${clips.length > VISIBLE_CLIPS
         ? `<button type="button" class="show-clips" data-show-clips>Mostra altre ${clips.length - VISIBLE_CLIPS} clip</button>`
         : ""}
       <footer>
-        <label class="grow">Note <textarea data-field="notes" rows="1">${escapeHtml(observation.notes)}</textarea></label>
         <label>Specie corretta <input data-field="corrected" list="species-list" placeholder="se BirdNET ha sbagliato"
           value="${escapeHtml(observation.corrected_scientific_name || "")}"></label>
         <div class="actions">
@@ -368,9 +375,7 @@ content.addEventListener("click", async (event) => {
   const statusButton = event.target.closest("[data-status]");
   if (statusButton) {
     const changes = { status: statusButton.dataset.status };
-    const notes = card.querySelector('[data-field="notes"]');
     const corrected = card.querySelector('[data-field="corrected"]');
-    if (notes) changes.notes = notes.value;
     if (corrected) changes.corrected = corrected.value; // "" clears a previous correction
     try {
       await updateObservation(id, changes);
@@ -628,18 +633,6 @@ document.addEventListener("keydown", (event) => {
   }
 });
 
-// save notes when leaving the field, without changing the status
-content.addEventListener("change", async (event) => {
-  if (event.target.dataset.field !== "notes") return;
-  const card = event.target.closest(".observation");
-  try {
-    await updateObservation(Number(card.dataset.id), { notes: event.target.value });
-    setStatus("Note salvate.");
-  } catch (error) {
-    setStatus(`Errore: ${error.message}`, true);
-  }
-});
-
 async function renderObservations(append = false) {
   if (!append) {
     state.offset = 0;
@@ -673,16 +666,10 @@ async function fetchTrash() {
 }
 
 function trashCardHtml(observation, whole) {
-  const species = observation.species || {};
   const clips = [...(observation.clips || [])].sort((a, b) => a.recorded_at.localeCompare(b.recorded_at));
   return `
     <article class="observation trash status-${observation.status}" data-id="${observation.id}">
-      <header>
-        <h2>${escapeHtml(species.italian_name || observation.scientific_name)}
-          <small><i>${escapeHtml(observation.scientific_name)}</i></small></h2>
-        <span class="badge">${whole ? "osservazione scartata" : `${clips.length} clip scartate`}</span>
-      </header>
-      ${speciesLinks(observation.scientific_name)}
+      ${speciesHeaderHtml(observation, whole ? "osservazione scartata" : `${clips.length} clip scartate`)}
       <p class="meta">${formatDay(observation.day)} · ${escapeHtml(observationFacts(observation).place)} ·
         ${whole ? `tutte le ${clips.length} clip` : "il resto dell'osservazione resta"}</p>
       <div class="clips">${clips.map((clip, index) => clipHtml(clip, index >= VISIBLE_CLIPS)).join("")}</div>
@@ -936,14 +923,13 @@ async function uploadObservationToInat(observation, onProgress = () => {}) {
   if (!observation.inat_observation_id) {
     onProgress(`creo l'osservazione di ${name}`);
     const taxonId = await resolveTaxonId(name);
-    const notes = String(observation.notes || "").trim();
     const fields = {
       taxon_id: taxonId,
       species_guess: name,
       observed_on_string: localDateTime(facts.firstHeard),
       place_guess: facts.place,
-      description: [notes, `Rilevato con BirdNET (confidenza max ${facts.maxConfidence.toFixed(3)}) `
-        + "e verificato a orecchio. Registrazione automatica con Bird Audio Suite."].filter(Boolean).join("\n\n"),
+      description: `Rilevato con BirdNET (confidenza max ${facts.maxConfidence.toFixed(3)}) `
+        + "e verificato a orecchio. Registrazione automatica con Bird Audio Suite.",
       tag_list: "audio,birdnet",
     };
     if (facts.latitude != null && facts.longitude != null) {
