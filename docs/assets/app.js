@@ -169,23 +169,86 @@ function speciesLinks(scientificName) {
     .join("")}</span>`;
 }
 
+// ---------------------------------------------------------------- clip player
+
+const ICON_PLAY = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>';
+const ICON_PAUSE = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5h4v14H6zm8 0h4v14h-4z"/></svg>';
+const ICON_TRASH = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3h6l1 2h4v2H4V5h4l1-2zM6 9h12l-1 12H7L6 9zm4 2v8h2v-8h-2zm4 0v8h2v-8h-2z"/></svg>';
+const SKIP_SECONDS = 2;
+const BAND_PADDING_SECONDS = 0.5;
+
+function formatSeconds(seconds) {
+  const value = Math.max(0, Number(seconds) || 0);
+  return `${Math.floor(value / 60)}:${String(Math.floor(value % 60)).padStart(2, "0")}`;
+}
+
+function percentOf(seconds, duration) {
+  return `${(Math.min(Math.max(seconds / duration, 0), 1) * 100).toFixed(3)}%`;
+}
+
+function clipSegments(clip) {
+  return Array.isArray(clip.segments) ? clip.segments : [];
+}
+
+function isTrimmed(clip) {
+  return clip.trim_start_s != null && clip.trim_end_s != null;
+}
+
+// the clip object (and its observation) behind a figure, from what the page loaded
+function findClip(clipId) {
+  for (const observation of state.observations.values()) {
+    const clip = (observation.clips || []).find((item) => item.id === clipId);
+    if (clip) return { clip, observation, observationId: observation.id };
+  }
+  for (const [observationId, entry] of state.trash.entries()) {
+    const clip = entry.clips.find((item) => item.id === clipId);
+    if (clip) return { clip, observation: null, observationId };
+  }
+  return null;
+}
+
 function clipHtml(clip, folded = false) {
+  const urls = mediaUrls(clip.media_path);
+  const duration = Number(clip.duration_s) || 1;
   const recorded = timeFormat.format(new Date(clip.recorded_at));
+  const segments = clipSegments(clip);
+  const trimmed = isTrimmed(clip);
   return `
-    <figure class="clip review-${clip.review}${folded ? " folded" : ""}" data-clip="${escapeHtml(clip.id)}">
-      ${clip.media_path
-        ? `<div class="spectrogram-box" title="Tocca per ascoltare">
-             <img class="spectrogram" src="${escapeHtml(mediaUrls(clip.media_path).spectrogram)}" alt="Spettrogramma" loading="lazy">
-             <span class="playhead"></span>
-             <span class="play-badge" aria-hidden="true"></span>
-           </div>`
-        : ""}
-      <audio controls preload="none" src="${escapeHtml(mediaUrls(clip.media_path).audio)}"></audio>
+    <figure class="clip review-${clip.review}${folded ? " folded" : ""}" data-clip="${escapeHtml(clip.id)}" data-duration="${duration}">
+      <div class="spectrogram-box" title="Tocca per ascoltare da lì, trascina in orizzontale per selezionare">
+        <img class="spectrogram" src="${escapeHtml(urls.spectrogram)}" alt="Spettrogramma" loading="lazy" draggable="false">
+        ${segments.map(([start, end, confidence]) => `<span class="band" style="left:${percentOf(start, duration)};width:${percentOf(end - start, duration)};--strength:${confidence}"
+          title="BirdNET ${Number(confidence).toFixed(2)} · ${Number(start).toFixed(1)}–${Number(end).toFixed(1)} s"></span>`).join("")}
+        ${trimmed ? `<span class="trim-shade" style="left:0;width:${percentOf(clip.trim_start_s, duration)}"></span>
+          <span class="trim-shade" style="left:${percentOf(clip.trim_end_s, duration)};right:0"></span>` : ""}
+        <span class="selection hidden"></span>
+        <span class="playhead"></span>
+      </div>
+      <audio preload="none" src="${escapeHtml(urls.audio)}"></audio>
+      <div class="player">
+        <button type="button" class="play-button" data-player="toggle" aria-label="Riproduci">${ICON_PLAY}</button>
+        <span class="player-time">0:00 / ${formatSeconds(duration)}</span>
+        <button type="button" class="small" data-player="back" title="Indietro di ${SKIP_SECONDS} secondi">−${SKIP_SECONDS} s</button>
+        <button type="button" class="small" data-player="speed" title="Rallenta per sentire i dettagli">1×</button>
+        <button type="button" class="small" data-player="loop" title="Ripeti in continuazione">Ripeti</button>
+      </div>
+      ${segments.length ? `<div class="band-chips" aria-label="Dove BirdNET la sente">${segments.map(([start, end, confidence], index) => `
+        <button type="button" class="chip" data-band="${index}" title="BirdNET ${Number(confidence).toFixed(2)}">▶ ${Number(start).toFixed(1)}–${Number(end).toFixed(1)} s</button>`).join("")}</div>` : ""}
+      <div class="selection-actions hidden">
+        <span class="selection-label"></span>
+        <button type="button" class="small" data-player="play-selection">Ascolta selezione</button>
+        <button type="button" class="small primary" data-player="trim">Taglia qui</button>
+        <button type="button" class="small" data-player="clear-selection">Annulla</button>
+      </div>
       <figcaption>
-        <span>${recorded} · ${Number(clip.confidence).toFixed(3)} · ${Math.round(clip.duration_s || 0)} s</span>
+        <span>${recorded} · ${Number(clip.confidence).toFixed(3)} · ${Math.round(clip.duration_s || 0)} s${trimmed
+          ? ` · tagliata ${Number(clip.trim_start_s).toFixed(1)}–${Number(clip.trim_end_s).toFixed(1)} s
+            <button type="button" class="link-button" data-player="untrim">togli taglio</button>` : ""}</span>
         <span class="clip-actions">
           <button type="button" class="small ${clip.review === "wrong" ? "on" : ""}" data-clip-review="wrong"
             title="Questa clip non contiene la specie: finisce nel Cestino">${clip.review === "wrong" ? "Ripristina clip" : "Scarta clip"}</button>
+          <button type="button" class="icon-button trash-button" data-delete-clip
+            title="Elimina definitivamente questa clip" aria-label="Elimina definitivamente questa clip">${ICON_TRASH}</button>
         </span>
       </figcaption>
     </figure>`;
@@ -235,23 +298,6 @@ function observationHtml(observation) {
 }
 
 content.addEventListener("click", async (event) => {
-  const spectrogram = event.target.closest(".spectrogram-box");
-  if (spectrogram) {
-    const audio = spectrogram.closest(".clip").querySelector("audio");
-    if (audio.paused) {
-      // tapping where the call is on the spectrogram starts from there
-      const box = spectrogram.getBoundingClientRect();
-      const fraction = Math.min(Math.max((event.clientX - box.left) / box.width, 0), 1);
-      if (Number.isFinite(audio.duration) && audio.duration > 0 && fraction > 0.02) {
-        audio.currentTime = fraction * audio.duration;
-      }
-      audio.play();
-    } else {
-      audio.pause();
-    }
-    return;
-  }
-
   const card = event.target.closest(".observation");
   if (!card) return;
   const id = Number(card.dataset.id);
@@ -297,6 +343,21 @@ content.addEventListener("click", async (event) => {
     return;
   }
 
+  const deleteClipButton = event.target.closest("[data-delete-clip]");
+  if (deleteClipButton) {
+    const figure = deleteClipButton.closest(".clip");
+    const found = findClip(figure.dataset.clip);
+    if (!found) return;
+    figure.querySelector("audio").pause();
+    const deleted = await deleteForGood([{ observationId: found.observationId, whole: false, clips: [found.clip] }]);
+    if (deleted && state.view !== "trash") {
+      if (found.observation) found.observation.clips = found.observation.clips.filter((clip) => clip.id !== found.clip.id);
+      figure.remove();
+      if (!card.querySelector(".clip")) card.remove(); // it was its last clip: the observation is gone too
+    }
+    return;
+  }
+
   const deleteButton = event.target.closest("[data-delete]");
   if (deleteButton) {
     const entry = state.trash.get(id);
@@ -332,27 +393,240 @@ content.addEventListener("click", async (event) => {
   }
 });
 
-// one clip at a time, with a playhead moving over its spectrogram
+// one clip at a time; every playback runs over a range: the kept part (trim), a BirdNET band,
+// the selection or from a tapped point; "Ripeti" loops over it
+const players = new WeakMap();
+
+function playerState(figure) {
+  if (!players.has(figure)) players.set(figure, { range: null, loop: false, selection: null });
+  return players.get(figure);
+}
+
+function keptRange(figure) {
+  const found = findClip(figure.dataset.clip);
+  const duration = Number(figure.dataset.duration) || 0;
+  if (found && isTrimmed(found.clip)) return { start: Number(found.clip.trim_start_s), end: Number(found.clip.trim_end_s) };
+  return { start: 0, end: duration };
+}
+
+function seekWhenReady(audio, seconds) {
+  if (audio.readyState >= 1) {
+    audio.currentTime = seconds;
+  } else {
+    audio.addEventListener("loadedmetadata", () => { audio.currentTime = seconds; }, { once: true });
+  }
+}
+
+function playRange(figure, start, end) {
+  const audio = figure.querySelector("audio");
+  playerState(figure).range = { start, end };
+  state.currentFigure = figure;
+  seekWhenReady(audio, start);
+  audio.play().catch((error) => setStatus(`Audio: ${error.message}`, true));
+}
+
+function togglePlayback(figure) {
+  const audio = figure.querySelector("audio");
+  state.currentFigure = figure;
+  if (!audio.paused) {
+    audio.pause();
+    return;
+  }
+  const kept = keptRange(figure);
+  const range = playerState(figure).range || kept;
+  const resume = audio.currentTime > range.start && audio.currentTime < range.end - 0.05 ? audio.currentTime : range.start;
+  playRange(figure, resume, range.end);
+  playerState(figure).range = range;
+}
+
+function skip(figure, seconds) {
+  const audio = figure.querySelector("audio");
+  const kept = keptRange(figure);
+  audio.currentTime = Math.min(Math.max(audio.currentTime + seconds, kept.start), kept.end);
+}
+
 content.addEventListener("play", (event) => {
   document.querySelectorAll("#content audio").forEach((audio) => {
     if (audio !== event.target) audio.pause();
   });
-  event.target.closest(".clip")?.classList.add("playing");
+  const figure = event.target.closest(".clip");
+  figure?.classList.add("playing");
+  if (figure) figure.querySelector(".play-button").innerHTML = ICON_PAUSE;
 }, true);
 
 for (const type of ["pause", "ended"]) {
   content.addEventListener(type, (event) => {
-    event.target.closest(".clip")?.classList.remove("playing");
+    const figure = event.target.closest(".clip");
+    if (!figure) return;
+    const player = playerState(figure);
+    if (type === "ended" && player.loop && player.range) {
+      playRange(figure, player.range.start, player.range.end);
+      return;
+    }
+    figure.classList.remove("playing");
+    figure.querySelector(".play-button").innerHTML = ICON_PLAY;
   }, true);
 }
 
 content.addEventListener("timeupdate", (event) => {
   const audio = event.target;
-  const clip = audio.closest(".clip");
-  if (clip && audio.duration > 0) {
-    clip.style.setProperty("--progress", String(audio.currentTime / audio.duration));
+  const figure = audio.closest(".clip");
+  if (!figure) return;
+  const duration = Number(figure.dataset.duration) || audio.duration || 1;
+  figure.style.setProperty("--progress", String(Math.min(audio.currentTime / duration, 1)));
+  figure.querySelector(".player-time").textContent = `${formatSeconds(audio.currentTime)} / ${formatSeconds(duration)}`;
+  const player = playerState(figure);
+  if (player.range && audio.currentTime >= player.range.end) {
+    if (player.loop) {
+      audio.currentTime = player.range.start;
+    } else {
+      audio.pause();
+      audio.currentTime = player.range.start;
+    }
   }
 }, true);
+
+// spectrogram: a tap plays from there, a horizontal drag selects a part
+let drag = null;
+
+function fractionAt(box, clientX) {
+  const rect = box.getBoundingClientRect();
+  return Math.min(Math.max((clientX - rect.left) / rect.width, 0), 1);
+}
+
+function showSelection(figure, start, end) {
+  const duration = Number(figure.dataset.duration) || 1;
+  const mark = figure.querySelector(".selection");
+  mark.classList.remove("hidden");
+  mark.style.left = percentOf(start, duration);
+  mark.style.width = percentOf(end - start, duration);
+}
+
+function clearSelection(figure) {
+  playerState(figure).selection = null;
+  figure.querySelector(".selection").classList.add("hidden");
+  figure.querySelector(".selection-actions").classList.add("hidden");
+}
+
+content.addEventListener("pointerdown", (event) => {
+  const box = event.target.closest(".spectrogram-box");
+  if (!box || event.button > 0) return;
+  drag = { box, figure: box.closest(".clip"), x: event.clientX, from: fractionAt(box, event.clientX), moved: false };
+  box.setPointerCapture(event.pointerId);
+});
+
+content.addEventListener("pointermove", (event) => {
+  if (!drag) return;
+  if (!drag.moved && Math.abs(event.clientX - drag.x) < 8) return;
+  drag.moved = true;
+  const duration = Number(drag.figure.dataset.duration) || 1;
+  const to = fractionAt(drag.box, event.clientX);
+  showSelection(drag.figure, Math.min(drag.from, to) * duration, Math.max(drag.from, to) * duration);
+});
+
+content.addEventListener("pointerup", (event) => {
+  if (!drag) return;
+  const { figure, box, from, moved } = drag;
+  drag = null;
+  const duration = Number(figure.dataset.duration) || 1;
+  if (!moved) {
+    const kept = keptRange(figure);
+    const at = Math.min(Math.max(from * duration, kept.start), kept.end);
+    clearSelection(figure);
+    playRange(figure, at, kept.end);
+    return;
+  }
+  const to = fractionAt(box, event.clientX);
+  const start = Math.min(from, to) * duration;
+  const end = Math.max(from, to) * duration;
+  if (end - start < 0.3) {
+    clearSelection(figure);
+    return;
+  }
+  playerState(figure).selection = { start, end };
+  showSelection(figure, start, end);
+  figure.querySelector(".selection-label").textContent = `${start.toFixed(1)}–${end.toFixed(1)} s`;
+  figure.querySelector(".selection-actions").classList.remove("hidden");
+});
+
+content.addEventListener("pointercancel", () => { drag = null; });
+
+async function saveTrim(figure, start, end) {
+  const found = findClip(figure.dataset.clip);
+  if (!found) return;
+  const values = { trim_start_s: start == null ? null : Number(start.toFixed(2)), trim_end_s: end == null ? null : Number(end.toFixed(2)) };
+  const { error } = await state.client.from("clips").update(values).eq("id", found.clip.id);
+  if (error) throw error;
+  Object.assign(found.clip, values);
+  const folded = figure.classList.contains("folded");
+  figure.querySelector("audio").pause();
+  figure.outerHTML = clipHtml(found.clip, folded);
+  setStatus(start == null ? "Taglio tolto." : `Clip tagliata: ${values.trim_start_s}–${values.trim_end_s} s (il file resta intero).`);
+}
+
+content.addEventListener("click", async (event) => {
+  const figure = event.target.closest(".clip");
+  if (!figure) return;
+  const control = event.target.closest("[data-player]");
+  const band = event.target.closest("[data-band]");
+  if (band) {
+    const found = findClip(figure.dataset.clip);
+    const [start, end] = clipSegments(found.clip)[Number(band.dataset.band)];
+    const kept = keptRange(figure);
+    playRange(figure, Math.max(kept.start, start - BAND_PADDING_SECONDS), Math.min(kept.end, end + BAND_PADDING_SECONDS));
+    return;
+  }
+  if (!control) return;
+  const audio = figure.querySelector("audio");
+  const player = playerState(figure);
+  try {
+    switch (control.dataset.player) {
+      case "toggle":
+        togglePlayback(figure);
+        break;
+      case "back":
+        skip(figure, -SKIP_SECONDS);
+        break;
+      case "speed":
+        audio.playbackRate = audio.playbackRate === 1 ? 0.5 : 1;
+        control.textContent = audio.playbackRate === 1 ? "1×" : "½×";
+        control.classList.toggle("on", audio.playbackRate !== 1);
+        break;
+      case "loop":
+        player.loop = !player.loop;
+        control.classList.toggle("on", player.loop);
+        break;
+      case "play-selection":
+        if (player.selection) playRange(figure, player.selection.start, player.selection.end);
+        break;
+      case "clear-selection":
+        clearSelection(figure);
+        break;
+      case "trim":
+        if (player.selection) await saveTrim(figure, player.selection.start, player.selection.end);
+        break;
+      case "untrim":
+        await saveTrim(figure, null, null);
+        break;
+    }
+  } catch (error) {
+    setStatus(`Errore: ${error.message}`, true);
+  }
+});
+
+// keyboard on a computer: space plays/pauses the last clip used, arrows move by 2 s
+document.addEventListener("keydown", (event) => {
+  if (event.target.closest("input, textarea, select, button") || event.metaKey || event.ctrlKey || event.altKey) return;
+  const figure = state.currentFigure?.isConnected ? state.currentFigure : content.querySelector(".clip:not(.folded)");
+  if (!figure) return;
+  if (event.key === " ") {
+    event.preventDefault();
+    togglePlayback(figure);
+  } else if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+    event.preventDefault();
+    skip(figure, event.key === "ArrowLeft" ? -SKIP_SECONDS : SKIP_SECONDS);
+  }
+});
 
 // save notes when leaving the field, without changing the status
 content.addEventListener("change", async (event) => {
@@ -451,13 +725,14 @@ function chunks(items, size) {
   return result;
 }
 
-// entries: [{ observationId, whole, clips }]
+// entries: [{ observationId, whole, clips }]; true once deleted
 async function deleteForGood(entries) {
   const clips = entries.flatMap((entry) => entry.clips);
   const wholeCount = entries.filter((entry) => entry.whole).length;
   const question = `Eliminare definitivamente ${clips.length} clip${wholeCount ? ` (${wholeCount} osservazioni intere)` : ""}?\n\n`
     + "Audio e spettrogrammi vengono cancellati da Supabase e non si possono recuperare dal sito. I WAV sul PC restano.";
-  if (!clips.length || !window.confirm(question)) return;
+  if (!clips.length || !window.confirm(question)) return false;
+  let deleted = false;
 
   setStatus("Elimino…");
   try {
@@ -493,11 +768,13 @@ async function deleteForGood(entries) {
       if (error) throw error;
     }
     setStatus(`Eliminate ${clips.length} clip.`);
+    deleted = true;
   } catch (error) {
     setStatus(`Errore durante l'eliminazione: ${error.message}`, true);
   }
   await refreshCounts();
   if (state.view === "trash") await renderTrash();
+  return deleted;
 }
 
 content.addEventListener("click", (event) => {
@@ -610,6 +887,33 @@ async function resolveTaxonId(scientificName) {
   return taxon.id;
 }
 
+// the trimmed part of a clip as a 16-bit mono WAV, built in the browser from its MP3
+async function trimmedWav(url, start, end) {
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`audio non scaricabile (${response.status})`);
+  const decoded = await new OfflineAudioContext(1, 1, 48000).decodeAudioData(await response.arrayBuffer());
+  const rate = decoded.sampleRate;
+  const samples = decoded.getChannelData(0).subarray(Math.floor(start * rate), Math.min(decoded.length, Math.ceil(end * rate)));
+  const buffer = new ArrayBuffer(44 + samples.length * 2);
+  const view = new DataView(buffer);
+  const text = (offset, value) => [...value].forEach((char, index) => view.setUint8(offset + index, char.charCodeAt(0)));
+  text(0, "RIFF");
+  view.setUint32(4, 36 + samples.length * 2, true);
+  text(8, "WAVE");
+  text(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true); // PCM
+  view.setUint16(22, 1, true); // mono
+  view.setUint32(24, rate, true);
+  view.setUint32(28, rate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  text(36, "data");
+  view.setUint32(40, samples.length * 2, true);
+  samples.forEach((sample, index) => view.setInt16(44 + index * 2, Math.max(-1, Math.min(1, sample)) * 0x7fff, true));
+  return new Blob([buffer], { type: "audio/wav" });
+}
+
 function localDateTime(iso) {
   // "YYYY-MM-DD HH:MM:SS" in local time, like the CSV the importer used to send
   const date = new Date(iso);
@@ -667,11 +971,17 @@ async function uploadObservationToInat(observation, onProgress = () => {}) {
   for (const [index, clip] of clips.entries()) {
     if (clip.inat_sound_id != null) continue; // already online
     onProgress(`${name}: suono ${index + 1} di ${clips.length}`);
-    const audio = await fetch(mediaUrls(clip.media_path).audio);
-    if (!audio.ok) throw new Error(`audio non scaricabile (${audio.status})`);
     const form = new FormData();
     form.append("observation_sound[observation_id]", String(observation.inat_observation_id));
-    form.append("file", await audio.blob(), clip.id.replace(/\.wav$/i, ".mp3"));
+    if (isTrimmed(clip)) {
+      // only the part kept on the site
+      const wav = await trimmedWav(mediaUrls(clip.media_path).audio, Number(clip.trim_start_s), Number(clip.trim_end_s));
+      form.append("file", wav, clip.id);
+    } else {
+      const audio = await fetch(mediaUrls(clip.media_path).audio);
+      if (!audio.ok) throw new Error(`audio non scaricabile (${audio.status})`);
+      form.append("file", await audio.blob(), clip.id.replace(/\.wav$/i, ".mp3"));
+    }
     const sound = await inatRequest("/observation_sounds", { method: "POST", body: form });
     const soundId = Array.isArray(sound) ? sound[0]?.id : sound?.id;
     const { error } = await state.client.from("clips").update({ inat_sound_id: soundId || 0 }).eq("id", clip.id);

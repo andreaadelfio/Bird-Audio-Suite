@@ -8,7 +8,7 @@ Ascolta gli uccelli dal microfono del portatile con BirdNET, salva ogni detectio
 - **`detections/` e' solo di passaggio.** Un thread del live manda ogni clip a Supabase appena si chiude (e comunque ogni minuto, per quando torna la rete) e poi la cancella dal PC. Senza rete le clip aspettano li'. Il timer `sync` ogni 15 minuti fa lo stesso, come rete di sicurezza.
 - **Supabase e' l'unico posto dove vivono i dati**, progetto "progetti" (`supabase/birds_schema.sql`). Ogni informazione sta in un posto solo:
   - Storage, bucket pubblico `bird-audio`: i file, `<media_path>.mp3` e `<media_path>-spectrogram.jpg`;
-  - `birds.clips`: una riga per detection, con la sua ora, la sua confidenza, il luogo e il `media_path` dei file (gli URL si ricavano, non si salvano);
+  - `birds.clips`: una riga per detection, con la sua ora, la sua confidenza, il luogo e il `media_path` dei file (gli URL si ricavano, non si salvano), i secondi in cui BirdNET ha sentito la specie (`segments`) e l'eventuale taglio deciso sul sito (`trim_start_s`/`trim_end_s`, il file resta intero);
   - `birds.observations` (specie x giorno): solo quello che decidi tu (stato, note, specie corretta, iNaturalist);
   - `birds.species`: solo i nomi;
   - viste `daily_summary`, `species_stats`, `hourly_activity`: tutto quello che si calcola (confidenza massima del giorno, prima/ultima volta, conteggi, giorni, rarita').
@@ -55,6 +55,7 @@ python bird_audio_cli.py live --min-confidence 0.6 --verbose
 python bird_audio_cli.py live --backend sounddevice --device-index -1 --device-probe-seconds 1
 ```
 
+- Per ogni clip vengono salvati i tratti esatti (in secondi dall'inizio della clip, con la confidenza) in cui BirdNET ha sentito la specie, anche quelli piu' deboli (da 0.5) dentro una clip gia' aperta: sul sito diventano bande evidenziate sullo spettrogramma.
 - Una clip parte 3 s prima della prima detection e continua finche' la specie viene sentita; si chiude dopo 3 finestre senza detection (pause fino a ~15 s non la spezzano), dura almeno 10 s e al massimo 120 s.
 - La tabella del giorno (scorciatoia Ctrl+Alt+L, che segue il log del servizio) unisce Supabase (anche le revisioni fatte dal sito), le clip ancora in `detections/` e quello che il live ha appena sentito; si aggiorna a ogni detection e ogni minuto. Senza rete mostra solo i dati del PC.
 - Con `--device-index -1` prova ogni ingresso in un processo separato (alcuni plugin ALSA vanno in segfault), scarta il "click" iniziale e sceglie quello con segnale, preferendo 44.1/48 kHz e il server audio (PipeWire/PulseAudio). La scelta resta in `.bird_audio_device.json`.
@@ -76,6 +77,13 @@ python bird_audio_cli.py sync            # manda quello che aspetta in detection
 python bird_audio_cli.py sync --limit 5
 ```
 
+Per le clip caricate prima che si salvassero i secondi delle detection:
+
+```bash
+python bird_audio_cli.py backfill-segments            # riascolta le clip su Supabase con BirdNET e salva i tratti
+python bird_audio_cli.py backfill-segments --limit 20
+```
+
 Clip lasciate dalla versione precedente (cartelle del giorno con il CSV) vengono convertite e mandate al primo sync.
 
 ### Denoise
@@ -88,7 +96,12 @@ python bird_audio_cli.py denoise --input ./recording.wav --noise-ref ./noise.wav
 
 `docs/`, pubblicato con GitHub Pages da `main` (cartella `/docs`), installabile come app.
 
-- **Da rivedere**: per ogni osservazione (una per specie al giorno) le clip con spettrogramma (tocca per ascoltare da quel punto) e player. **Conferma** / **Scarta** valgono per l'intera osservazione; **Scarta clip** solo per le singole clip sbagliate dentro un'osservazione che tieni. Si puo' correggere la specie e aggiungere note. Icone per Wikipedia e iNaturalist della specie.
+- **Da rivedere**: per ogni osservazione (una per specie al giorno) le clip con spettrogramma e player. **Conferma** / **Scarta** valgono per l'intera osservazione; **Scarta clip** solo per le singole clip sbagliate dentro un'osservazione che tieni. Si puo' correggere la specie e aggiungere note. Icone per Wikipedia e iNaturalist della specie.
+- **Ogni clip**:
+  - bande gialle sullo spettrogramma dove BirdNET ha sentito la specie (piu' intense = piu' sicure), e sotto un pulsante per ciascuna che fa ascoltare solo quel tratto;
+  - tocca lo spettrogramma per ascoltare da quel punto, trascina per selezionare un tratto: **Ascolta selezione** o **Taglia qui**; la parte tagliata resta ombreggiata, **togli taglio** la ripristina; il file su Supabase resta intero, ma su iNaturalist viene caricata solo la parte tenuta;
+  - player: play/pausa, −2 s, velocita' 1×/½×, **Ripeti** (in loop il tratto o la selezione); da tastiera spazio e frecce;
+  - cestino rosso: elimina definitivamente quella clip (con conferma), senza passare dal Cestino.
 - **Tutte**: con filtri per stato, specie e date.
 - **Report**: 7/30/90 giorni, specie (cliccabili, aprono le loro osservazioni del periodo), clip, minuti di audio, specie nuove, attivita' per ora.
 - **Cestino**: osservazioni e clip scartate, da riascoltare e ripristinare o eliminare definitivamente (con conferma). L'eliminazione cancella righe e file da Supabase e annota le clip in `birds.deleted_clips`, cosi' il PC non le rimanda.

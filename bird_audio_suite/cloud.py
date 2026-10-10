@@ -131,6 +131,13 @@ class SupabaseRest:
         )
         self._check(response, f"{table} upsert")
 
+    def update(self, table: str, filters: dict, values: dict) -> None:
+        response = self.session.patch(
+            f"{self.base}/{table}", params=filters, data=json.dumps(values),
+            headers={"Prefer": "return=minimal"}, timeout=self.timeout,
+        )
+        self._check(response, f"{table} update")
+
     def observation_id(self, day: str, scientific_name: str) -> int:
         """The observation (species x day), created if missing; review columns never touched."""
         query = {"select": "id", "day": f"eq.{day}", "scientific_name": f"eq.{scientific_name}"}
@@ -400,6 +407,7 @@ class Outbox:
                     "latitude": data.get("latitude"),
                     "longitude": data.get("longitude"),
                     "media_path": media_path,
+                    "segments": data.get("segments"),  # where BirdNET heard it, seconds from the clip start
                 }
             ],
             on_conflict="id",

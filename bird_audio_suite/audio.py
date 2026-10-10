@@ -153,6 +153,45 @@ def aggregate_detections_by_species(
     return grouped
 
 
+Segment = tuple[float, float, float]  # start s, end s, confidence
+
+
+def merge_segments(segments: list[Segment], gap: float = 0.05) -> list[Segment]:
+    """Join overlapping (or touching) bands, keeping the highest confidence."""
+    merged: list[list[float]] = []
+    for start, end, confidence in sorted(segments):
+        if merged and start <= merged[-1][1] + gap:
+            merged[-1][1] = max(merged[-1][1], end)
+            merged[-1][2] = max(merged[-1][2], confidence)
+        else:
+            merged.append([start, end, confidence])
+    return [(start, end, confidence) for start, end, confidence in merged]
+
+
+def detection_segments(detections: list[dict], min_confidence: float) -> dict[str, list[Segment]]:
+    """Where BirdNET heard each species (its 3 s chunks), in the time of the analysed audio."""
+    by_species: dict[str, list[Segment]] = {}
+    for detection in detections:
+        confidence = float(detection.get("confidence", 0.0))
+        if confidence < min_confidence:
+            continue
+        by_species.setdefault(detection.get("scientific_name", ""), []).append(
+            (float(detection.get("start_time", 0.0)), float(detection.get("end_time", 0.0)), confidence)
+        )
+    return {name: merge_segments(segments) for name, segments in by_species.items()}
+
+
+def clip_relative_segments(segments: list[Segment], clip_start: float, clip_end: float) -> list[list[float]]:
+    """Bands inside a clip, in seconds from its start (what the spectrogram highlights)."""
+    relative = []
+    for start, end, confidence in merge_segments(segments):
+        if end <= clip_start or start >= clip_end:
+            continue
+        relative.append([round(max(start, clip_start) - clip_start, 2), round(min(end, clip_end) - clip_start, 2),
+                         round(confidence, 3)])
+    return relative
+
+
 def apply_clip_span_policy(
     grouped_detections: dict[str, tuple[float, float, float, str]],
     duration_seconds: float,
@@ -237,8 +276,12 @@ def export_detection_clips(
     longitude: float | None = None,
     place_name: str = "",
     observed_at: datetime | None = None,
+    segments: dict[str, list[Segment]] | None = None,
 ) -> list[Path]:
     """Write one clip per species into the transit folder, ready for Supabase.
+
+    ``segments`` (per species, in the time of ``samples``) are where BirdNET heard it: they
+    are stored relative to the clip, so the site highlights them on the spectrogram.
 
     Each clip is a WAV plus a JSON with what Supabase needs (species, time, confidence,
     place). The JSON is written last and atomically: an uploader never sees half a clip.
@@ -274,6 +317,8 @@ def export_detection_clips(
             "place_name": place_name,
             "latitude": latitude,
             "longitude": longitude,
+            "segments": clip_relative_segments((segments or {}).get(scientific_name, []), float(start_sec),
+                                               end_index / float(sample_rate)),
         }
         partial_json = output_path.with_suffix(".json.part")
         partial_json.write_text(json.dumps(sidecar, ensure_ascii=False), encoding="utf-8")

@@ -233,10 +233,42 @@ button.small { padding: 0.1rem 0.5rem; font-size: 0.8rem; }
 
 .clip.review-wrong { outline: 2px solid var(--negative); opacity: 0.7; }
 
-.spectrogram-box { position: relative; cursor: pointer; background: #000; }
-.spectrogram { display: block; width: 100%; height: 110px; object-fit: fill; }
+.spectrogram-box {
+  position: relative;
+  cursor: pointer;
+  background: #000;
+  /* horizontal drags select a part, vertical ones still scroll the page */
+  touch-action: pan-y;
+  user-select: none;
+  -webkit-user-select: none;
+}
 
-/* where the audio is, over the spectrogram */
+.spectrogram { display: block; width: 100%; height: 110px; object-fit: fill; pointer-events: none; }
+
+/* where BirdNET heard the species: the stronger, the more visible */
+.band {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: rgba(255, 214, 102, calc(0.12 + 0.28 * var(--strength, 0.5)));
+  border-left: 2px solid rgba(255, 214, 102, 0.95);
+  border-right: 2px solid rgba(255, 214, 102, 0.95);
+  pointer-events: none;
+}
+
+/* outside the trimmed part */
+.trim-shade { position: absolute; top: 0; bottom: 0; background: rgba(0, 0, 0, 0.62); pointer-events: none; }
+
+.selection {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: rgba(255, 255, 255, 0.18);
+  border: 2px solid #fff;
+  border-radius: 4px;
+  pointer-events: none;
+}
+
 .playhead {
   position: absolute;
   top: 0;
@@ -248,39 +280,45 @@ button.small { padding: 0.1rem 0.5rem; font-size: 0.8rem; }
   pointer-events: none;
 }
 
-.clip.playing .playhead { opacity: 0.9; }
+.clip.playing .playhead { opacity: 0.95; }
 
-.play-badge {
-  position: absolute;
-  right: 0.4rem;
-  bottom: 0.4rem;
-  width: 1.9rem;
-  height: 1.9rem;
+.player {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.4rem 0.5rem 0;
+}
+
+.play-button {
+  display: grid;
+  place-items: center;
+  width: 2.4rem;
+  height: 2.4rem;
+  padding: 0;
   border-radius: 999px;
-  background: rgba(0, 0, 0, 0.55);
-  pointer-events: none;
+  background: var(--accent);
+  border-color: var(--accent);
 }
 
-.play-badge::before {
-  content: "";
-  position: absolute;
-  left: 0.72rem;
-  top: 0.55rem;
-  border-left: 0.6rem solid #fff;
-  border-top: 0.4rem solid transparent;
-  border-bottom: 0.4rem solid transparent;
+.play-button svg { width: 1.3rem; height: 1.3rem; fill: #fff; }
+.player-time { min-width: 6.5em; font-variant-numeric: tabular-nums; color: var(--ink-soft); font-size: 0.85rem; }
+.player .small.on, .chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+.band-chips { display: flex; flex-wrap: wrap; gap: 0.3rem; padding: 0.4rem 0.5rem 0; }
+.chip {
+  padding: 0.15rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  border-color: rgba(201, 151, 0, 0.6);
+  background: rgba(255, 214, 102, 0.18);
 }
 
-.clip.playing .play-badge::before {
-  left: 0.6rem;
-  top: 0.55rem;
-  width: 0.2rem;
-  height: 0.8rem;
-  border: 0;
-  border-left: 0.2rem solid #fff;
-  border-right: 0.2rem solid #fff;
-}
-.clip audio { display: block; width: 100%; height: 36px; }
+.selection-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; padding: 0.4rem 0.5rem 0; }
+.selection-label { font-weight: 600; font-variant-numeric: tabular-nums; }
+
+.trash-button { width: 2rem; height: 2rem; border-color: transparent; background: transparent; }
+.trash-button svg { fill: var(--negative); width: 1.1rem; height: 1.1rem; }
+.trash-button:hover { border-color: var(--negative); }
 
 .clip figcaption {
   display: flex;
@@ -412,7 +450,11 @@ button.small { padding: 0.1rem 0.5rem; font-size: 0.8rem; }
   .species-links { gap: 0.6rem; }
   .species-links a { width: 2.25rem; height: 2.25rem; }
   .clips { grid-template-columns: 1fr; }
-  .spectrogram { height: 130px; }
+  .spectrogram { height: 140px; }
+  .play-button { width: 2.9rem; height: 2.9rem; }
+  .player .small, .selection-actions .small { min-height: 2.6rem; padding: 0 0.7rem; }
+  .chip { min-height: 2.2rem; font-size: 0.85rem; }
+  .trash-button { width: 2.75rem; height: 2.75rem; }
 
   .clip figcaption { flex-wrap: wrap; }
   .clip-actions { display: flex; gap: 0.4rem; width: 100%; }

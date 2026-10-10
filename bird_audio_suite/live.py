@@ -20,10 +20,12 @@ class ActiveDetection:
     english_name: str
     confidence: float
     clip_start_time: datetime
+    clip_start_sample: int
     last_end_sample: int
     samples: list[np.ndarray] = field(default_factory=list)
     sample_count: int = 0
     missing_windows: int = 0
+    bands: list[tuple[float, float, float]] = field(default_factory=list)  # BirdNET, in stream seconds
 
     def append(self, samples: np.ndarray) -> None:
         if samples.size:
@@ -74,10 +76,18 @@ class LiveDetectionTracker:
         working_samples: np.ndarray,
         window_start_sample: int,
         window_start_time: datetime,
+        segments: dict[str, list[tuple[float, float, float]]] | None = None,
     ) -> list[Path]:
         exported: list[Path] = []
         window_len = int(len(working_samples))
         window_end_sample = window_start_sample + window_len
+        window_offset = window_start_sample / float(self.sample_rate)
+
+        def add_bands(scientific_name: str, active: ActiveDetection) -> None:
+            # every band of an open species counts, also the weaker ones of windows that
+            # would not have started a clip by themselves
+            for start, end, confidence in (segments or {}).get(scientific_name, []):
+                active.bands.append((window_offset + start, window_offset + end, confidence))
 
         for scientific_name, (start_sec, _end_sec, confidence, english_name) in grouped.items():
             active = self.active.get(scientific_name)
@@ -93,10 +103,12 @@ class LiveDetectionTracker:
                     english_name=english_name,
                     confidence=confidence,
                     clip_start_time=window_start_time + timedelta(seconds=start_offset / self.sample_rate),
+                    clip_start_sample=window_start_sample + start_offset,
                     last_end_sample=window_end_sample,
                 )
                 active.append(working_samples[start_offset:])
                 self.active[scientific_name] = active
+                add_bands(scientific_name, active)
             else:
                 append_from = max(0, active.last_end_sample - window_start_sample)
                 if append_from < window_len:
@@ -104,6 +116,7 @@ class LiveDetectionTracker:
                 active.last_end_sample = max(active.last_end_sample, window_end_sample)
                 active.confidence = max(active.confidence, confidence)
                 active.missing_windows = 0
+                add_bands(scientific_name, active)
 
             if active.sample_count >= self.max_clip_samples:
                 # Long choruses: cut the clip but keep the species active, so it is not
@@ -112,12 +125,16 @@ class LiveDetectionTracker:
                 active.samples = []
                 active.sample_count = 0
                 active.clip_start_time = window_start_time + timedelta(seconds=window_len / self.sample_rate)
+                active.clip_start_sample = active.last_end_sample
+                next_start = active.clip_start_sample / float(self.sample_rate)
+                active.bands = [band for band in active.bands if band[1] > next_start]
 
         for scientific_name in list(self.active):
             if scientific_name in grouped:
                 continue
             active = self.active[scientific_name]
             active.missing_windows += 1
+            add_bands(scientific_name, active)
             if active.sample_count < self.min_clip_samples:
                 # too short to be useful: borrow the audio that follows the last detection
                 append_from = max(0, active.last_end_sample - window_start_sample)
@@ -143,6 +160,8 @@ class LiveDetectionTracker:
         if not active.samples:
             return []
         clip = np.concatenate(active.samples, axis=0)
+        clip_start = active.clip_start_sample / float(self.sample_rate)
+        bands = [(start - clip_start, end - clip_start, confidence) for start, end, confidence in active.bands]
         group = {
             scientific_name: (
                 0.0,
@@ -158,6 +177,7 @@ class LiveDetectionTracker:
             self.species_names,
             self.detections_dir,
             observed_at=active.clip_start_time,
+            segments={scientific_name: bands},
             **self.export_kwargs,
         )
 
@@ -196,8 +216,10 @@ def run_sliding_window_loop(
                 break
             window, window_start_sample, window_start_time = item
             try:
-                grouped, working_samples = detect_window(window)
-                result_queue.put((grouped, working_samples, window_start_sample, window_start_time))
+                result = detect_window(window)  # (grouped, samples[, BirdNET bands per species])
+                grouped, working_samples = result[0], result[1]
+                bands = result[2] if len(result) > 2 else None
+                result_queue.put((grouped, working_samples, window_start_sample, window_start_time, bands))
             except Exception as exc:
                 result_queue.put(exc)
 

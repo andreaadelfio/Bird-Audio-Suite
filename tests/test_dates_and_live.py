@@ -14,6 +14,8 @@ import scipy.io.wavfile as wavfile
 
 from bird_audio_suite import cli
 from bird_audio_suite.audio import (
+    clip_relative_segments,
+    merge_segments,
     export_detection_clips,
     parse_timestamp_from_name,
 )
@@ -78,6 +80,16 @@ class TimestampParsingTests(unittest.TestCase):
 
         self.assertEqual(started_at, datetime(2026, 5, 1, 6, 59, 0))
         self.assertEqual(source, "file modification time")
+
+
+class SegmentTests(unittest.TestCase):
+    def test_overlapping_bands_merge_and_keep_the_best_confidence(self) -> None:
+        self.assertEqual(merge_segments([(3.0, 6.0, 0.7), (0.0, 3.0, 0.8), (5.0, 8.0, 0.9), (12.0, 15.0, 0.6)]),
+                         [(0.0, 8.0, 0.9), (12.0, 15.0, 0.6)])
+
+    def test_bands_are_cut_to_the_clip(self) -> None:
+        self.assertEqual(clip_relative_segments([(1.0, 4.0, 0.8), (9.0, 12.0, 0.7), (20.0, 23.0, 0.9)], 3.0, 10.0),
+                         [[0.0, 1.0, 0.8], [6.0, 7.0, 0.7]])
 
 
 class ExportTimeTests(unittest.TestCase):
@@ -164,6 +176,34 @@ class LiveTrackerTests(unittest.TestCase):
 
         # starts 3s before the detection (8s -> 5s) and is extended to 10s with the following audio
         self.assertAlmostEqual(len(clip) / SAMPLE_RATE, 10.0)
+
+    def test_birdnet_bands_are_stored_relative_to_the_clip(self) -> None:
+        window = 10 * SAMPLE_RATE
+        step = window // 2
+        start = datetime(2026, 9, 1, 12, 0, 0)
+        observations: list = []
+        # window 1: heard at 6-9 s; window 2 (starts at 5 s): the same call at 1-4 s, plus a weaker
+        # one at 7-10 s; window 3 (starts at 10 s): only a weak band at 0.5-1.5 s (below the clip
+        # threshold, but the clip is open)
+        results = [
+            ({"Turdus merula": (6.0, 9.0, 0.8, "Blackbird")}, {"Turdus merula": [(6.0, 9.0, 0.8)]}),
+            ({"Turdus merula": (1.0, 4.0, 0.9, "Blackbird")}, {"Turdus merula": [(1.0, 4.0, 0.9), (7.0, 10.0, 0.55)]}),
+            ({}, {"Turdus merula": [(0.5, 1.5, 0.6)]}),
+            ({}, {}),
+            ({}, {}),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            tracker = self.make_tracker(Path(directory), observations)
+            exported: list[Path] = []
+            for index, (grouped, bands) in enumerate(results):
+                offset = index * step
+                exported += tracker.handle_result(grouped, np.zeros(window, dtype=np.float32), offset,
+                                                  start + timedelta(seconds=offset / SAMPLE_RATE), bands)
+            data = json.loads(exported[0].with_suffix(".json").read_text())
+
+        # the clip runs 3-15 s of the stream (pre-roll before 6 s): 6-9 twice -> 3-6 s with the best
+        # 0.9, 10.5-11.5 -> 7.5-8.5, 12-15 -> 9-12
+        self.assertEqual(data["segments"], [[3.0, 6.0, 0.9], [7.5, 8.5, 0.6], [9.0, 12.0, 0.55]])
 
     def test_open_clips_are_flushed_on_shutdown(self) -> None:
         observations: list = []

@@ -142,7 +142,8 @@ class PushTests(unittest.TestCase):
         # no URLs, no review columns: only what the clip is
         self.assertEqual(
             sorted(first),
-            ["confidence", "duration_s", "id", "latitude", "longitude", "media_path", "observation_id", "place_name", "recorded_at"],
+            ["confidence", "duration_s", "id", "latitude", "longitude", "media_path", "observation_id", "place_name",
+             "recorded_at", "segments"],
         )
         self.assertEqual(sorted(storage.objects), [
             "20261009/merlo_20261009_065500_0-910-spectrogram.jpg", "20261009/merlo_20261009_065500_0-910.mp3",

@@ -16,6 +16,7 @@ from pathlib import Path
 from .audio import (
     apply_clip_span_policy,
     aggregate_detections_by_species,
+    detection_segments,
     denoise_signal,
     export_detection_clips,
     load_audio,
@@ -60,6 +61,7 @@ BIRDNET_SAMPLE_RATE = 48000
 AUDIO_STALL_TIMEOUT_SECONDS = 30.0
 LIVE_MAX_CLIP_SECONDS = 120.0
 OUTBOX_RETRY_SECONDS = 60.0
+SEGMENT_MIN_CONFIDENCE = 0.5  # bands highlighted on the spectrogram
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -300,6 +302,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Settings file. Default: ~/.config/bird-audio-suite/cloud.env",
     )
     sync_parser.add_argument("--limit", type=int, help="Send at most N clips (to try it out).")
+
+    backfill_parser = subparsers.add_parser(
+        "backfill-segments",
+        help="Find with BirdNET where the species is heard in clips that were saved without it.",
+    )
+    backfill_parser.add_argument("--limit", type=int, help="At most N clips.")
 
     return parser
 
@@ -1129,7 +1137,7 @@ def run_batch(args: argparse.Namespace) -> int:
                 latitude=args.lat,
                 longitude=args.lon,
                 when=recording_start,
-                min_confidence=args.min_confidence,
+                min_confidence=min(args.min_confidence, SEGMENT_MIN_CONFIDENCE),
             )
             grouped = aggregate_detections_by_species(
                 detections,
@@ -1167,6 +1175,7 @@ def run_batch(args: argparse.Namespace) -> int:
                     longitude=args.lon,
                     place_name=args.place_name,
                     observed_at=recording_start,
+                    segments=detection_segments(detections, SEGMENT_MIN_CONFIDENCE),
                 )
                 for path in exported:
                     print(f"  exported {path.name}")
@@ -1212,11 +1221,13 @@ def detect_live_slice(
             latitude=args.lat,
             longitude=args.lon,
             when=datetime.now(),
-            min_confidence=args.min_confidence,
+            # lower than the clip threshold: weaker calls of a species already heard are
+            # still highlighted on its spectrogram; clips start only above args.min_confidence
+            min_confidence=min(args.min_confidence, SEGMENT_MIN_CONFIDENCE),
         )
 
     detections = detect(working_samples)
-    if not detections and not args.disable_denoise:
+    if not any(float(d.get("confidence", 0)) >= args.min_confidence for d in detections) and not args.disable_denoise:
         processing_mode = "raw-fallback"
         working_samples = raw_samples
         detections = detect(working_samples)
@@ -1227,7 +1238,7 @@ def detect_live_slice(
             f"mode={processing_mode} "
             f"raw_rms={rms_level(raw_samples):.4f} "
             f"used_rms={rms_level(working_samples):.4f} "
-            f"detections={len(detections)}"
+            f"detections={sum(1 for d in detections if float(d.get('confidence', 0)) >= args.min_confidence)}"
         )
 
     duration_seconds = len(working_samples) / float(sample_rate)
@@ -1236,12 +1247,12 @@ def detect_live_slice(
         duration_seconds=duration_seconds,
         min_confidence=args.min_confidence,
     )
-    return grouped, working_samples
+    return grouped, working_samples, detection_segments(detections, SEGMENT_MIN_CONFIDENCE)
 
 
 def print_live_header(args: argparse.Namespace, device_label: str, sample_rate: int) -> None:
     print(f"{datetime.now():%H:%M:%S} - Working directory: {Path.cwd()}")
-    print(f"{datetime.now():%H:%M:%S} - Saving detections to: {args.detections_dir}/YYYYMMDD")
+    print(f"{datetime.now():%H:%M:%S} - Transit folder (clips wait here until they are on Supabase): {args.detections_dir}")
     print(f"{datetime.now():%H:%M:%S} - Device: {device_label}")
     print(f"{datetime.now():%H:%M:%S} - Recorder sample rate: {sample_rate}")
     print(f"{datetime.now():%H:%M:%S} - Slice duration: {(args.frame_length * args.slice_interval) / float(sample_rate):.2f}s")
@@ -1654,6 +1665,61 @@ def run_sync(args: argparse.Namespace) -> int:
     return 1 if report.errors else 0
 
 
+def run_backfill_segments(args: argparse.Namespace) -> int:
+    """Clips saved before BirdNET's bands were kept: analyse their MP3 again and store where the
+    clip's own species is heard. Clips with nothing found get an empty list (not retried)."""
+    import requests
+    import soundfile
+
+    from .cloud import CloudConfig, SupabaseRest, SupabaseStorage
+
+    config = CloudConfig.load()
+    rest, storage = SupabaseRest(config), SupabaseStorage(config)
+    clips = rest.get(
+        "clips",
+        {
+            "select": "id,media_path,recorded_at,latitude,longitude,observations(scientific_name)",
+            "segments": "is.null",
+            "order": "recorded_at",
+            "limit": str(args.limit or 100000),
+        },
+    )
+    print(f"Clip senza bande: {len(clips)}")
+    detector = BirdNetDetector()
+    done = empty = 0
+    for index, clip in enumerate(clips, start=1):
+        species = clip["observations"]["scientific_name"]
+        try:
+            response = requests.get(storage.public_url(f"{clip['media_path']}.mp3"), timeout=60)
+            response.raise_for_status()
+            with tempfile.NamedTemporaryFile(suffix=".mp3") as handle:
+                handle.write(response.content)
+                handle.flush()
+                samples, sample_rate = soundfile.read(handle.name, dtype="float32")
+            if samples.ndim > 1:
+                samples = samples.mean(axis=1)
+            detections = detector.detect_samples(
+                samples, sample_rate,
+                latitude=clip["latitude"] if clip["latitude"] is not None else DEFAULT_LATITUDE,
+                longitude=clip["longitude"] if clip["longitude"] is not None else DEFAULT_LONGITUDE,
+                when=datetime.fromisoformat(clip["recorded_at"]),
+                min_confidence=SEGMENT_MIN_CONFIDENCE,
+            )
+            bands = detection_segments(detections, SEGMENT_MIN_CONFIDENCE).get(species, [])
+            duration = len(samples) / float(sample_rate)
+            segments = [[round(start, 2), round(min(end, duration), 2), round(confidence, 3)]
+                        for start, end, confidence in bands]
+            rest.update("clips", {"id": f"eq.{clip['id']}"}, {"segments": segments})
+            done += 1
+            empty += 0 if segments else 1
+        except Exception as exc:
+            print(f"  {clip['id']}: {exc}")
+        if index % 25 == 0:
+            print(f"  {index}/{len(clips)}")
+    print(f"Fatto: {done} clip aggiornate, {empty} senza bande sopra {SEGMENT_MIN_CONFIDENCE}.")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -1674,6 +1740,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_denoise(args)
     if args.command == "sync":
         return run_sync(args)
+    if args.command == "backfill-segments":
+        return run_backfill_segments(args)
 
     parser.error("Unknown command.")
     return 2

@@ -58,6 +58,9 @@ create table if not exists birds.clips (
   latitude       double precision,
   longitude      double precision,
   media_path     text,             -- in the bucket: <media_path>.mp3, <media_path>-spectrogram.jpg
+  segments       jsonb,            -- where BirdNET heard the species: [[start_s, end_s, confidence], ...]
+  trim_start_s   real,             -- kept part of the clip (set on the site, the file is untouched)
+  trim_end_s     real,
   review         text not null default 'unreviewed'
                  check (review in ('unreviewed', 'correct', 'wrong')),
   inat_sound_id  bigint,           -- set once uploaded to iNaturalist, so uploads resume
@@ -86,6 +89,9 @@ alter table birds.clips add column if not exists latitude double precision;
 alter table birds.clips add column if not exists longitude double precision;
 alter table birds.clips add column if not exists media_path text;
 alter table birds.clips add column if not exists inat_sound_id bigint;
+alter table birds.clips add column if not exists segments jsonb;
+alter table birds.clips add column if not exists trim_start_s real;
+alter table birds.clips add column if not exists trim_end_s real;
 
 do $$
 begin
