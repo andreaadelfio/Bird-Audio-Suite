@@ -67,6 +67,12 @@ class CliTests(unittest.TestCase):
         self.assertFalse(parser.parse_args(["live"]).list_devices)
         self.assertTrue(parser.parse_args(["live", "--list-devices"]).list_devices)
 
+    def test_playback_subtraction_is_on_by_default_but_can_be_disabled(self) -> None:
+        parser = build_parser()
+
+        self.assertTrue(parser.parse_args(["live"]).enable_playback_subtraction)
+        self.assertFalse(parser.parse_args(["live", "--disable-playback-subtraction"]).enable_playback_subtraction)
+
     def test_auto_device_chooses_highest_rms(self) -> None:
         measurements = [
             {"index": 3, "rms": 0.02, "peak": 0.2},

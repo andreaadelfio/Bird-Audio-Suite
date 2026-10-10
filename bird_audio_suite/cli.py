@@ -10,6 +10,7 @@ import sys
 import tempfile
 import threading
 import traceback
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -33,6 +34,7 @@ from .config import (
     DEFAULT_DENOISE_REDUCTION_FACTOR,
     DEFAULT_DEVICE_MIN_RMS,
     DEFAULT_ENABLE_AUTO_LOCATION,
+    DEFAULT_ENABLE_PLAYBACK_SUBTRACTION,
     DEFAULT_FRAME_LENGTH,
     DEFAULT_HIGH_PASS_HZ,
     DEFAULT_LATITUDE,
@@ -50,6 +52,7 @@ from .config import (
     DEFAULT_NOISE_REDUCTION_FACTOR,
 )
 from .detector import BirdNetDetector
+from .echo import PlaybackMonitor, PlaybackSubtractor
 from .geolocation import resolve_location
 from .health import HeartbeatWriter
 from .live import LiveDetectionTracker, run_sliding_window_loop
@@ -253,6 +256,19 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_LIVE_CLIP_SPAN,
         help=f"Span for exported live clips. Default: {DEFAULT_LIVE_CLIP_SPAN}",
     )
+    live_parser.add_argument(
+        "--enable-playback-subtraction",
+        dest="enable_playback_subtraction",
+        action="store_true",
+        default=DEFAULT_ENABLE_PLAYBACK_SUBTRACTION,
+        help="Subtract what the PC is playing from the microphone before detection.",
+    )
+    live_parser.add_argument(
+        "--disable-playback-subtraction",
+        dest="enable_playback_subtraction",
+        action="store_false",
+        help="Do not subtract PC playback from the microphone.",
+    )
 
     denoise_parser = subparsers.add_parser(
         "denoise",
@@ -337,6 +353,7 @@ def get_default_live_args() -> argparse.Namespace:
         device_probe_seconds=1.0,
         list_devices=False,
         enable_denoise=False,
+        enable_playback_subtraction=DEFAULT_ENABLE_PLAYBACK_SUBTRACTION,
         noise_ref=None,
         high_pass_hz=DEFAULT_HIGH_PASS_HZ,
         noise_reduction_factor=DEFAULT_NOISE_REDUCTION_FACTOR,
@@ -817,6 +834,10 @@ def interactive_args() -> argparse.Namespace:
             device_probe_seconds=1.0,
             list_devices=False,
             enable_denoise=use_denoise,
+            enable_playback_subtraction=prompt_bool(
+                "Sottrarre l'audio riprodotto dal PC dal microfono",
+                DEFAULT_ENABLE_PLAYBACK_SUBTRACTION,
+            ),
             noise_ref=noise_ref,
             high_pass_hz=high_pass_hz,
             noise_reduction_factor=noise_reduction_factor,
@@ -1261,6 +1282,8 @@ def print_live_header(args: argparse.Namespace, device_label: str, sample_rate: 
     print(f"{datetime.now():%H:%M:%S} - Recorder sample rate: {sample_rate}")
     print(f"{datetime.now():%H:%M:%S} - Slice duration: {(args.frame_length * args.slice_interval) / float(sample_rate):.2f}s")
     print(f"{datetime.now():%H:%M:%S} - Denoise live: {'off' if args.disable_denoise else 'on'}")
+    playback_mode = "on" if getattr(args, "enable_playback_subtraction", DEFAULT_ENABLE_PLAYBACK_SUBTRACTION) else "off"
+    print(f"{datetime.now():%H:%M:%S} - Sottrazione audio PC: {playback_mode}")
 
 
 def push_outbox(detections_dir: Path, species_names: SpeciesNames, limit: int | None = None):
@@ -1297,6 +1320,29 @@ def start_outbox_worker(detections_dir: Path, species_names: SpeciesNames, verbo
 
     threading.Thread(target=work, name="outbox", daemon=True).start()
     return wake, stop
+
+
+def subtract_playback_from_frames(frames, sample_rate: int, args: argparse.Namespace):
+    """Yield live frames after subtracting the default output monitor, when available."""
+    if not getattr(args, "enable_playback_subtraction", DEFAULT_ENABLE_PLAYBACK_SUBTRACTION):
+        yield from frames
+        return
+
+    if not PlaybackMonitor.available():
+        if getattr(args, "verbose", False):
+            print(f"{datetime.now():%H:%M:%S} - parec non trovato: niente sottrazione audio PC")
+        yield from frames
+        return
+
+    log = lambda message: print(f"{datetime.now():%H:%M:%S} - {message}")
+    subtractor = PlaybackSubtractor(sample_rate, log=log if getattr(args, "verbose", False) else None)
+    if getattr(args, "verbose", False):
+        print(f"{datetime.now():%H:%M:%S} - Sottrazione audio PC attiva")
+    try:
+        for frame in frames:
+            yield subtractor.process(frame, time.monotonic())
+    finally:
+        subtractor.close()
 
 
 def run_live_detection(
@@ -1351,6 +1397,7 @@ def run_live_detection(
 
     stop_refresh = start_location_refresh(args, on_location_change, DEFAULT_LOCATION_REFRESH_SECONDS)
     print_daily_detection_summary(args.detections_dir, species_names)
+    frames = subtract_playback_from_frames(frames, sample_rate, args)
     try:
         run_sliding_window_loop(
             frames,
