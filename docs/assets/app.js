@@ -13,6 +13,28 @@ const STATUS_LABELS = {
 };
 
 const BUCKET = "bird-audio";
+// files live in Storage: the database keeps only their path (clips.media_path)
+const MEDIA_BASE = config.mediaBaseUrl || `${config.supabaseUrl}/storage/v1/object/public/${BUCKET}`;
+
+function mediaUrls(mediaPath) {
+  const base = `${MEDIA_BASE}/${String(mediaPath || "").split("/").map(encodeURIComponent).join("/")}`;
+  return { audio: `${base}.mp3`, spectrogram: `${base}-spectrogram.jpg` };
+}
+
+// everything about an observation that is computed from its clips, never stored
+function observationFacts(observation) {
+  const clips = [...(observation.clips || [])].sort((a, b) => a.recorded_at.localeCompare(b.recorded_at));
+  const first = clips[0] || {};
+  return {
+    clips,
+    maxConfidence: clips.reduce((best, clip) => Math.max(best, Number(clip.confidence) || 0), 0),
+    firstHeard: first.recorded_at || null,
+    lastHeard: clips.length ? clips[clips.length - 1].recorded_at : null,
+    place: first.place_name || "",
+    latitude: first.latitude ?? null,
+    longitude: first.longitude ?? null,
+  };
+}
 const OBSERVATION_SELECT = "*, species(italian_name,english_name,german_name), clips(*)";
 
 const state = {
@@ -60,7 +82,7 @@ function createClient() {
 
 async function loadSpecies() {
   const { data, error } = await state.client
-    .from("species")
+    .from("species_stats")
     .select("scientific_name,italian_name,english_name,first_seen_date");
   if (error) throw error;
   state.species = new Map(data.map((row) => [row.scientific_name, row]));
@@ -94,7 +116,7 @@ async function fetchObservations() {
     .from("observations")
     .select(OBSERVATION_SELECT)
     .order("day", { ascending: false })
-    .order("observed_at", { ascending: false })
+    .order("id", { ascending: false })
     .range(state.offset, state.offset + PAGE_SIZE - 1);
 
   const status = state.view === "review" ? "pending" : $("#filter-status").value;
@@ -151,14 +173,14 @@ function clipHtml(clip, folded = false) {
   const recorded = timeFormat.format(new Date(clip.recorded_at));
   return `
     <figure class="clip review-${clip.review}${folded ? " folded" : ""}" data-clip="${escapeHtml(clip.id)}">
-      ${clip.spectrogram_url
+      ${clip.media_path
         ? `<div class="spectrogram-box" title="Tocca per ascoltare">
-             <img class="spectrogram" src="${escapeHtml(clip.spectrogram_url)}" alt="Spettrogramma" loading="lazy">
+             <img class="spectrogram" src="${escapeHtml(mediaUrls(clip.media_path).spectrogram)}" alt="Spettrogramma" loading="lazy">
              <span class="playhead"></span>
              <span class="play-badge" aria-hidden="true"></span>
            </div>`
         : ""}
-      <audio controls preload="none" src="${escapeHtml(clip.audio_url)}"></audio>
+      <audio controls preload="none" src="${escapeHtml(mediaUrls(clip.media_path).audio)}"></audio>
       <figcaption>
         <span>${recorded} · ${Number(clip.confidence).toFixed(3)} · ${Math.round(clip.duration_s || 0)} s</span>
         <span class="clip-actions">
@@ -171,9 +193,10 @@ function clipHtml(clip, folded = false) {
 
 function observationHtml(observation) {
   const species = observation.species || {};
-  const clips = [...(observation.clips || [])].sort((a, b) => a.recorded_at.localeCompare(b.recorded_at));
-  const first = clips[0] ? timeFormat.format(new Date(clips[0].recorded_at)) : "";
-  const last = clips.length > 1 ? `–${timeFormat.format(new Date(clips[clips.length - 1].recorded_at))}` : "";
+  const facts = observationFacts(observation);
+  const clips = facts.clips;
+  const first = facts.firstHeard ? timeFormat.format(new Date(facts.firstHeard)) : "";
+  const last = clips.length > 1 ? `–${timeFormat.format(new Date(facts.lastHeard))}` : "";
   const corrected = observation.corrected_scientific_name
     ? `<p class="corrected">Corretta in <i>${escapeHtml(observation.corrected_scientific_name)}</i>
         ${speciesLinks(observation.corrected_scientific_name)}</p>`
@@ -186,8 +209,8 @@ function observationHtml(observation) {
         <span class="badge">${STATUS_LABELS[observation.status] || observation.status}</span>
       </header>
       ${speciesLinks(observation.scientific_name)}
-      <p class="meta">${formatDay(observation.day)} · ${first}${last} · ${escapeHtml(observation.place_name)} ·
-        confidenza max ${Number(observation.max_confidence).toFixed(3)} · ${clips.length} clip</p>
+      <p class="meta">${formatDay(observation.day)} · ${first}${last} · ${escapeHtml(facts.place)} ·
+        confidenza max ${facts.maxConfidence.toFixed(3)} · ${clips.length} clip</p>
       ${corrected}
       <div class="clips">${clips.map((clip, index) => clipHtml(clip, index >= VISIBLE_CLIPS)).join("")}</div>
       ${clips.length > VISIBLE_CLIPS
@@ -386,7 +409,7 @@ function trashCardHtml(observation, whole) {
         <span class="badge">${whole ? "osservazione scartata" : `${clips.length} clip scartate`}</span>
       </header>
       ${speciesLinks(observation.scientific_name)}
-      <p class="meta">${formatDay(observation.day)} · ${escapeHtml(observation.place_name)} ·
+      <p class="meta">${formatDay(observation.day)} · ${escapeHtml(observationFacts(observation).place)} ·
         ${whole ? `tutte le ${clips.length} clip` : "il resto dell'osservazione resta"}</p>
       <div class="clips">${clips.map((clip, index) => clipHtml(clip, index >= VISIBLE_CLIPS)).join("")}</div>
       ${clips.length > VISIBLE_CLIPS
@@ -422,12 +445,6 @@ async function renderTrash() {
   setStatus("");
 }
 
-function storagePath(url) {
-  const marker = `/storage/v1/object/public/${BUCKET}/`;
-  const index = String(url || "").indexOf(marker);
-  return index >= 0 ? decodeURIComponent(url.slice(index + marker.length)) : null;
-}
-
 function chunks(items, size) {
   const result = [];
   for (let i = 0; i < items.length; i += size) result.push(items.slice(i, i + size));
@@ -452,7 +469,8 @@ async function deleteForGood(entries) {
       if (error) throw error;
     }
     // 2. files in the bucket
-    const paths = clips.flatMap((clip) => [storagePath(clip.audio_url), storagePath(clip.spectrogram_url)]).filter(Boolean);
+    // the files of each clip, from its path (none when the site runs on local files: make web-dev)
+    const paths = config.mediaBaseUrl ? [] : clips.flatMap((clip) => [`${clip.media_path}.mp3`, `${clip.media_path}-spectrogram.jpg`]);
     for (const part of chunks(paths, 100)) {
       const { error } = await state.client.storage.from(BUCKET).remove(part);
       if (error) throw error;
@@ -604,6 +622,7 @@ function localDateTime(iso) {
 async function uploadObservationToInat(observation, onProgress = () => {}) {
   if (!inatToken()) throw new Error("collega iNaturalist dal pannello iNat");
   const name = observation.corrected_scientific_name || observation.scientific_name;
+  const facts = observationFacts(observation);
   const clips = (observation.clips || [])
     .filter((clip) => clip.review !== "wrong")
     .sort((a, b) => b.confidence - a.confidence)
@@ -617,15 +636,15 @@ async function uploadObservationToInat(observation, onProgress = () => {}) {
     const fields = {
       taxon_id: taxonId,
       species_guess: name,
-      observed_on_string: localDateTime(observation.observed_at),
-      place_guess: observation.place_name,
-      description: [notes, `Rilevato con BirdNET (confidenza max ${Number(observation.max_confidence).toFixed(3)}) `
+      observed_on_string: localDateTime(facts.firstHeard),
+      place_guess: facts.place,
+      description: [notes, `Rilevato con BirdNET (confidenza max ${facts.maxConfidence.toFixed(3)}) `
         + "e verificato a orecchio. Registrazione automatica con Bird Audio Suite."].filter(Boolean).join("\n\n"),
       tag_list: "audio,birdnet",
     };
-    if (observation.latitude != null && observation.longitude != null) {
-      fields.latitude = observation.latitude;
-      fields.longitude = observation.longitude;
+    if (facts.latitude != null && facts.longitude != null) {
+      fields.latitude = facts.latitude;
+      fields.longitude = facts.longitude;
     }
     const geoprivacy = storageGet(INAT_GEOPRIVACY_KEY);
     if (geoprivacy) fields.geoprivacy = geoprivacy;
@@ -648,7 +667,7 @@ async function uploadObservationToInat(observation, onProgress = () => {}) {
   for (const [index, clip] of clips.entries()) {
     if (clip.inat_sound_id != null) continue; // already online
     onProgress(`${name}: suono ${index + 1} di ${clips.length}`);
-    const audio = await fetch(clip.audio_url);
+    const audio = await fetch(mediaUrls(clip.media_path).audio);
     if (!audio.ok) throw new Error(`audio non scaricabile (${audio.status})`);
     const form = new FormData();
     form.append("observation_sound[observation_id]", String(observation.inat_observation_id));

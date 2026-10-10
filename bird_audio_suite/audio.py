@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import csv
 import fcntl
+import json
 import re
 from contextlib import contextmanager
 from datetime import datetime, timedelta
@@ -210,221 +210,44 @@ def parse_timestamp_from_name(name: str) -> datetime | None:
 
 
 @contextmanager
-def detections_lock(detections_dir: Path):
-    """Exclusive lock on the transit folder: the live service appends to the day CSVs while
-    `sync` removes what it has uploaded, and neither may lose the other's changes."""
+def detections_lock(detections_dir: Path, blocking: bool = True):
+    """Exclusive lock on the transit folder, so two uploaders (the live service and the `sync`
+    timer) never send the same clip at once. Non-blocking: yields False if it is taken."""
     detections_dir = Path(detections_dir)
     detections_dir.mkdir(parents=True, exist_ok=True)
     with (detections_dir / ".lock").open("a") as handle:
-        fcntl.flock(handle, fcntl.LOCK_EX)
         try:
-            yield
+            fcntl.flock(handle, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
+        except BlockingIOError:
+            yield False
+            return
+        try:
+            yield True
         finally:
             fcntl.flock(handle, fcntl.LOCK_UN)
-
-
-def day_folder_name(when: datetime) -> str:
-    return when.strftime("%Y%m%d")
-
-
-def day_csv_path(detections_dir: Path, when: datetime) -> Path:
-    day_name = day_folder_name(when)
-    return Path(detections_dir) / day_name / f"inaturalist_import_{day_name}.csv"
-
-
-def append_inaturalist_csv_row(
-    csv_path: Path,
-    *,
-    taxon_name: str,
-    observed_at: datetime,
-    english_name: str,
-    italian_name: str,
-    german_name: str,
-    confidence: float,
-    place_name: str,
-    latitude: float | None,
-    longitude: float | None,
-    tags: str = "",
-    geoprivacy: str = "",
-    audio_file_name: str = "",
-) -> None:
-    csv_path = Path(csv_path)
-    csv_path.parent.mkdir(parents=True, exist_ok=True)
-    with detections_lock(csv_path.parent.parent):
-        _append_inaturalist_csv_row(
-            csv_path,
-            taxon_name=taxon_name,
-            observed_at=observed_at,
-            english_name=english_name,
-            italian_name=italian_name,
-            german_name=german_name,
-            confidence=confidence,
-            place_name=place_name,
-            latitude=latitude,
-            longitude=longitude,
-            tags=tags,
-            geoprivacy=geoprivacy,
-            audio_file_name=audio_file_name,
-        )
-
-
-INATURALIST_CSV_HEADER = [
-    "Nome del taxon",
-    "Data osservazione",
-    "Descrizione",
-    "Nome del luogo",
-    "Latitudine / coord y / nord",
-    "Longitudine / coord x / est",
-    "Etichette",
-    "Geoprivacy",
-]
-
-
-def _append_inaturalist_csv_row(
-    csv_path: Path,
-    *,
-    taxon_name: str,
-    observed_at: datetime,
-    english_name: str,
-    italian_name: str,
-    german_name: str,
-    confidence: float,
-    place_name: str,
-    latitude: float | None,
-    longitude: float | None,
-    tags: str,
-    geoprivacy: str,
-    audio_file_name: str,
-) -> None:
-    header = [
-        "Nome del taxon",
-        "Data osservazione",
-        "Descrizione",
-        "Nome del luogo",
-        "Latitudine / coord y / nord",
-        "Longitudine / coord x / est",
-        "Etichette",
-        "Geoprivacy",
-    ]
-    rows: list[dict[str, str]] = []
-    observed_at_text = observed_at.strftime("%Y-%m-%d %H:%M:%S")
-
-    if csv_path.exists():
-        with csv_path.open("r", encoding="utf-8", newline="") as handle:
-            reader = csv.DictReader(handle)
-            for row in reader:
-                if row:
-                    rows.append({key: row.get(key, "") for key in header})
-
-    def build_description(
-        *,
-        current_confidence: float,
-        current_english_name: str,
-        current_italian_name: str,
-        current_german_name: str,
-        current_audio_files: list[str],
-    ) -> str:
-        parts = [
-            f"{current_english_name}, {current_italian_name}, {current_german_name}",
-            f"birdnet_confidence={current_confidence:.3f}",
-        ]
-        if current_audio_files:
-            parts.append(f"audio_files={','.join(current_audio_files)}")
-        return "; ".join(parts)
-
-    merged = False
-    for row in rows:
-        # consider rows matching by scientific name or any localized/common name
-        existing_taxon = (row.get("Nome del taxon") or "").strip()
-        if existing_taxon not in {taxon_name, english_name, italian_name, german_name}:
-            continue
-        # one observation per species per day: never merge detections of different days
-        if (row.get("Data osservazione") or "").strip()[:10] != observed_at_text[:10]:
-            continue
-
-        existing_files = ""
-        existing_confidence = 0.0
-        for part in row["Descrizione"].split("; "):
-            if part.startswith("birdnet_confidence="):
-                try:
-                    existing_confidence = float(part.split("=", 1)[1])
-                except ValueError:
-                    existing_confidence = 0.0
-            elif part.startswith("audio_files="):
-                existing_files = part.split("=", 1)[1]
-
-        file_names = [name for name in existing_files.split(",") if name]
-        if audio_file_name and audio_file_name not in file_names:
-            file_names.append(audio_file_name)
-
-        previous_observed_at = row["Data osservazione"].strip()
-        row["Data osservazione"] = max(filter(None, [previous_observed_at, observed_at_text]))
-        row["Descrizione"] = build_description(
-            current_confidence=max(existing_confidence, confidence),
-            current_english_name=english_name,
-            current_italian_name=italian_name,
-            current_german_name=german_name,
-            current_audio_files=file_names,
-        )
-        row["Nome del luogo"] = place_name
-        row["Latitudine / coord y / nord"] = f"{latitude:.6f}" if latitude is not None else ""
-        row["Longitudine / coord x / est"] = f"{longitude:.6f}" if longitude is not None else ""
-        row["Etichette"] = tags
-        row["Geoprivacy"] = geoprivacy
-        merged = True
-        break
-
-    if not merged:
-        file_names = [audio_file_name] if audio_file_name else []
-        rows.append(
-            {
-                "Nome del taxon": taxon_name,
-                "Data osservazione": observed_at_text,
-                "Descrizione": build_description(
-                    current_confidence=confidence,
-                    current_english_name=english_name,
-                    current_italian_name=italian_name,
-                    current_german_name=german_name,
-                    current_audio_files=file_names,
-                ),
-                "Nome del luogo": place_name,
-                "Latitudine / coord y / nord": f"{latitude:.6f}" if latitude is not None else "",
-                "Longitudine / coord x / est": f"{longitude:.6f}" if longitude is not None else "",
-                "Etichette": tags,
-                "Geoprivacy": geoprivacy,
-            }
-        )
-
-    rows.sort(key=lambda row: row["Data osservazione"], reverse=True)
-
-    with csv_path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=header)
-        writer.writeheader()
-        writer.writerows(rows)
 
 
 def export_detection_clips(
     samples: np.ndarray,
     sample_rate: int,
     grouped_detections: dict[str, tuple[float, float, float, str]],
-    species_catalog,
+    species_names,
     detections_dir: Path,
     latitude: float | None = None,
     longitude: float | None = None,
     place_name: str = "",
-    tags: str = "",
-    geoprivacy: str = "",
     observed_at: datetime | None = None,
 ) -> list[Path]:
-    """Write one clip per species and record it in the CSV of the day it was heard.
+    """Write one clip per species into the transit folder, ready for Supabase.
 
-    ``observed_at`` is the wall-clock time of the first sample of ``samples``; each
-    species is timestamped at ``observed_at + start_sec`` and routed to
-    ``detections_dir/YYYYMMDD`` of that moment, so a recording spanning midnight
-    never mixes days.
+    Each clip is a WAV plus a JSON with what Supabase needs (species, time, confidence,
+    place). The JSON is written last and atomically: an uploader never sees half a clip.
+    ``observed_at`` is the wall-clock time of the first sample of ``samples``; each species
+    is timestamped at ``observed_at + start_sec``.
     """
     exported_paths: list[Path] = []
     detections_dir = Path(detections_dir)
+    detections_dir.mkdir(parents=True, exist_ok=True)
     recording_start = observed_at or datetime.now()
     normalized = normalize_audio(samples)
 
@@ -434,28 +257,27 @@ def export_detection_clips(
         if end_index <= start_index:
             continue
 
-        species_time = recording_start + timedelta(seconds=float(start_sec))
-        csv_path = day_csv_path(detections_dir, species_time)
-        timestamp = species_time.strftime("%Y%m%d_%H%M%S")
-        italian_name, german_name, english_name = species_catalog.display_names(scientific_name, english_name)
+        heard_at = (recording_start + timedelta(seconds=float(start_sec))).astimezone()
+        italian_name, _german_name, english_name = species_names.display_names(scientific_name, english_name)
         clip_name = sanitize_filename(italian_name)
-        output_path = csv_path.parent / clip_name / f"{clip_name}_{timestamp}_{confidence:.3f}.wav"
-        write_wav_mono(output_path, normalized[start_index:end_index], sample_rate)
-        append_inaturalist_csv_row(
-            csv_path,
-            taxon_name=scientific_name,
-            observed_at=species_time,
-            english_name=english_name,
-            italian_name=italian_name,
-            german_name=german_name,
-            confidence=confidence,
-            place_name=place_name,
-            latitude=latitude,
-            longitude=longitude,
-            tags=tags,
-            geoprivacy=geoprivacy,
-            audio_file_name=output_path.name,
-        )
+        output_path = detections_dir / f"{clip_name}_{heard_at:%Y%m%d_%H%M%S}_{confidence:.3f}.wav"
+        partial_wav = output_path.with_suffix(".wav.part")
+        write_wav_mono(partial_wav, normalized[start_index:end_index], sample_rate)
+        partial_wav.replace(output_path)
+        sidecar = {
+            "id": output_path.name,
+            "scientific_name": scientific_name,
+            "english_name": english_name,
+            "recorded_at": heard_at.isoformat(),
+            "confidence": round(float(confidence), 3),
+            "duration_s": round((end_index - start_index) / float(sample_rate), 2),
+            "place_name": place_name,
+            "latitude": latitude,
+            "longitude": longitude,
+        }
+        partial_json = output_path.with_suffix(".json.part")
+        partial_json.write_text(json.dumps(sidecar, ensure_ascii=False), encoding="utf-8")
+        partial_json.replace(output_path.with_suffix(".json"))
         exported_paths.append(output_path)
 
     return exported_paths

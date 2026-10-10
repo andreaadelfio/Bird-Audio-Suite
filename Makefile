@@ -54,9 +54,10 @@ dev-stop:
 		echo "Nessun server trovato sulla porta $(PORT)"; \
 	fi
 
-# Review site on a local stand-in for Supabase (embedded Postgres + PostgREST): http://127.0.0.1:8010
+# Review site on a local stand-in for Supabase (embedded Postgres + PostgREST) with a read-only copy
+# of the real data: http://127.0.0.1:8010
 web-dev:
-	"$(PYTHON)" dev/local_stack.py --sync
+	"$(PYTHON)" dev/local_stack.py --snapshot
 
 install:
 	mkdir -p "$(SYSTEMD_USER_DIR)"

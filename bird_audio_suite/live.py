@@ -47,7 +47,7 @@ class LiveDetectionTracker:
         *,
         sample_rate: int,
         detections_dir: Path,
-        species_catalog,
+        species_names,
         record_observation: Callable[[str, str, float, datetime], None],
         export_kwargs: dict,
         clip_span: str = "from_detection",
@@ -58,7 +58,7 @@ class LiveDetectionTracker:
     ) -> None:
         self.sample_rate = int(sample_rate)
         self.detections_dir = Path(detections_dir)
-        self.species_catalog = species_catalog
+        self.species_names = species_names
         self.record_observation = record_observation
         self.export_kwargs = export_kwargs
         self.clip_span = clip_span
@@ -155,7 +155,7 @@ class LiveDetectionTracker:
             clip,
             self.sample_rate,
             group,
-            self.species_catalog,
+            self.species_names,
             self.detections_dir,
             observed_at=active.clip_start_time,
             **self.export_kwargs,

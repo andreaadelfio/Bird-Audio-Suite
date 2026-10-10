@@ -14,7 +14,6 @@ scipy>=1.10.0
 soundfile>=0.12.1
 resampy>=0.4.2
 requests>=2.31.0
-pyinaturalist>=0.20.0
 
 # ML inference: LiteRT runs the BirdNET .tflite model without TensorFlow (~550 MB less RAM).
 # birdnetlib still works with tensorflow installed instead, if you prefer.

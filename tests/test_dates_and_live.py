@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import csv
+import json
 import os
-import sys
 import tempfile
-import types
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -13,20 +12,13 @@ from unittest.mock import patch
 import numpy as np
 import scipy.io.wavfile as wavfile
 
-fake_pyinaturalist = types.ModuleType("pyinaturalist")
-fake_pyinaturalist.create_observation = lambda **kwargs: {}
-fake_pyinaturalist.update_observation = lambda *args, **kwargs: {}
-sys.modules.setdefault("pyinaturalist", fake_pyinaturalist)
-
-from bird_audio_suite import cli, inaturalist
+from bird_audio_suite import cli
 from bird_audio_suite.audio import (
-    append_inaturalist_csv_row,
     export_detection_clips,
     parse_timestamp_from_name,
 )
-from bird_audio_suite.repair import apply_repair_plan, build_repair_plan
 from bird_audio_suite.live import LiveDetectionTracker, run_sliding_window_loop
-from bird_audio_suite.species import SpeciesCatalog
+from bird_audio_suite.species import SpeciesNames
 
 
 SAMPLE_RATE = 1000
@@ -88,61 +80,24 @@ class TimestampParsingTests(unittest.TestCase):
         self.assertEqual(source, "file modification time")
 
 
-class CsvMergeTests(unittest.TestCase):
-    def test_same_day_detections_are_merged(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            csv_path = Path(directory) / "obs.csv"
-            append_inaturalist_csv_row(csv_path, observed_at=datetime(2026, 9, 1, 8), audio_file_name="a.wav", **csv_row_kwargs())
-            append_inaturalist_csv_row(csv_path, observed_at=datetime(2026, 9, 1, 9), audio_file_name="b.wav", **csv_row_kwargs())
-
-            rows = read_rows(csv_path)
-
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]["Data osservazione"], "2026-09-01 09:00:00")
-        self.assertIn("audio_files=a.wav,b.wav", rows[0]["Descrizione"])
-
-    def test_detections_of_different_days_are_never_merged(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            csv_path = Path(directory) / "obs.csv"
-            append_inaturalist_csv_row(csv_path, observed_at=datetime(2026, 8, 31, 15), audio_file_name="a.wav", **csv_row_kwargs())
-            append_inaturalist_csv_row(csv_path, observed_at=datetime(2026, 9, 2, 20), audio_file_name="b.wav", **csv_row_kwargs())
-
-            rows = read_rows(csv_path)
-
-        self.assertEqual([row["Data osservazione"][:10] for row in rows], ["2026-09-02", "2026-08-31"])
-
-
-class ExportRoutingTests(unittest.TestCase):
-    def test_clips_go_to_the_day_they_were_heard(self) -> None:
+class ExportTimeTests(unittest.TestCase):
+    def test_each_species_is_dated_when_it_was_heard_across_midnight(self) -> None:
         samples = np.zeros(30 * SAMPLE_RATE, dtype=np.float32)
         grouped = {
             "Turdus merula": (5.0, 8.0, 0.9, "Blackbird"),
             "Strix aluco": (15.0, 18.0, 0.8, "Tawny Owl"),
         }
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
             exported = export_detection_clips(
-                samples,
-                SAMPLE_RATE,
-                grouped,
-                FakeCatalog(),
-                root,
+                samples, SAMPLE_RATE, grouped, FakeCatalog(), Path(directory),
                 observed_at=datetime(2026, 9, 1, 23, 59, 50),
             )
+            times = {json.loads(path.with_suffix(".json").read_text())["scientific_name"]:
+                     json.loads(path.with_suffix(".json").read_text())["recorded_at"][:19] for path in exported}
 
-            names = sorted(str(path.relative_to(root)) for path in exported)
-            before = read_rows(root / "20260901" / "inaturalist_import_20260901.csv")
-            after = read_rows(root / "20260902" / "inaturalist_import_20260902.csv")
-
-        self.assertEqual(
-            names,
-            [
-                "20260901/Merlo/Merlo_20260901_235955_0.900.wav",
-                "20260902/Strix aluco/Strix aluco_20260902_000005_0.800.wav",
-            ],
-        )
-        self.assertEqual(before[0]["Data osservazione"], "2026-09-01 23:59:55")
-        self.assertEqual(after[0]["Nome del taxon"], "Strix aluco")
+        self.assertEqual(sorted(path.name for path in exported),
+                         ["Merlo_20260901_235955_0.900.wav", "Strix aluco_20260902_000005_0.800.wav"])
+        self.assertEqual(times, {"Turdus merula": "2026-09-01T23:59:55", "Strix aluco": "2026-09-02T00:00:05"})
 
 
 class LiveTrackerTests(unittest.TestCase):
@@ -150,7 +105,7 @@ class LiveTrackerTests(unittest.TestCase):
         return LiveDetectionTracker(
             sample_rate=SAMPLE_RATE,
             detections_dir=root,
-            species_catalog=FakeCatalog(),
+            species_names=FakeCatalog(),
             record_observation=lambda *args: observations.append(args),
             export_kwargs={},
             **kwargs,
@@ -269,55 +224,45 @@ class LiveTrackerTests(unittest.TestCase):
         # window ended at 00:00:02 and lasted 4s: the call at +1s was still on the 1st of September
         self.assertEqual(observations[0][3], datetime(2026, 9, 1, 23, 59, 59))
         self.assertEqual(len(wav_files), 1)
-        self.assertEqual(wav_files[0].parent.parent.name, "20260901")
+        self.assertIn("_20260901_", wav_files[0].name)
 
 
-class SpeciesCatalogDateTests(unittest.TestCase):
-    def make_catalog(self, directory: str) -> SpeciesCatalog:
-        catalog = SpeciesCatalog(Path(directory) / "species.csv")
-        catalog.lookup_italian_name = lambda name: "Merlo"
-        catalog.lookup_german_name = lambda name: "Amsel"
-        return catalog
-
-    def test_out_of_order_batch_dates_never_move_last_seen_backwards(self) -> None:
-        detection = {"scientific_name": "Turdus merula", "common_name": "Blackbird", "confidence": 0.9}
+class SpeciesNamesTests(unittest.TestCase):
+    def test_names_come_from_supabase_and_survive_offline_restarts(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            catalog = self.make_catalog(directory)
-            catalog.ensure_species([detection], observed_at=datetime(2026, 6, 10))
-            catalog.ensure_species([detection], observed_at=datetime(2026, 6, 1))
-            catalog.ensure_species([detection], observed_at=datetime(2026, 6, 1))
+            cache = Path(directory) / "names.json"
+            names = SpeciesNames(cache, lookup_online=False)
+            names.refresh_from([{"scientific_name": "Pica pica", "english_name": "Magpie",
+                                 "italian_name": "Gazza", "german_name": "Elster"}])
+            offline = SpeciesNames(cache, lookup_online=False)
 
-            record = catalog.records["Turdus merula"]
+        self.assertEqual(offline.display_names("Pica pica"), ("Gazza", "Elster", "Magpie"))
+        # never seen and no Wikipedia: English name, then the scientific one
+        self.assertEqual(offline.display_names("Strix aluco", "Tawny Owl"), ("Tawny Owl", "Tawny Owl", "Tawny Owl"))
+        self.assertEqual(offline.species_row("Pica pica")["italian_name"], "Gazza")
 
-        self.assertEqual((record.first_seen_date, record.last_seen_date), ("2026-06-01", "2026-06-10"))
-        self.assertEqual(record.observed_days, 2)
-
-    def test_daily_average_uses_the_whole_monitoring_period(self) -> None:
-        common = {"scientific_name": "Apus apus", "common_name": "Common Swift", "confidence": 0.9}
-        burst = {"scientific_name": "Streptopelia turtur", "common_name": "Turtle-Dove", "confidence": 0.9}
+    def test_a_new_species_is_looked_up_once(self) -> None:
+        calls = []
         with tempfile.TemporaryDirectory() as directory:
-            catalog = self.make_catalog(directory)
-            catalog.ensure_species([common], observed_at=datetime(2026, 6, 1))
-            catalog.ensure_species([common], observed_at=datetime(2026, 6, 10))
-            catalog.ensure_species([burst] * 5, observed_at=datetime(2026, 6, 5))
+            names = SpeciesNames(Path(directory) / "names.json")
+            names.lookup = lambda language, name: calls.append(language) or {"it": "Merlo", "de": "Amsel"}[language]
+            first = names.ensure("Turdus merula", "Blackbird")
+            names.ensure("Turdus merula", "Blackbird")
 
-            record = catalog.records["Streptopelia turtur"]
-
-        # 5 detections over 10 monitored days, not 5 per day
-        self.assertAlmostEqual(record.daily_average, 0.5)
-        self.assertEqual(record.rarity, "uncommon")
+        self.assertEqual(first, {"english_name": "Blackbird", "italian_name": "Merlo", "german_name": "Amsel"})
+        self.assertEqual(calls, ["it", "de"])
 
     def test_wikipedia_errors_do_not_break_detection(self) -> None:
         class BrokenWiki:
             def page(self, name):
                 raise ConnectionError("offline")
 
-        self.assertIsNone(SpeciesCatalog._lookup_localized_name(BrokenWiki(), "Turdus merula"))
+        self.assertIsNone(SpeciesNames._lookup_localized_name(BrokenWiki(), "Turdus merula"))
 
     def test_localized_names_are_cleaned(self) -> None:
-        self.assertEqual(SpeciesCatalog._clean_localized_name("rondone, "), "Rondone")
-        self.assertEqual(SpeciesCatalog._clean_localized_name("cuculo o"), "Cuculo")
-        self.assertEqual(SpeciesCatalog._clean_localized_name("gallinella d'acqua"), "Gallinella D'Acqua")
+        self.assertEqual(SpeciesNames._clean_localized_name("rondone, "), "Rondone")
+        self.assertEqual(SpeciesNames._clean_localized_name("cuculo o"), "Cuculo")
+        self.assertEqual(SpeciesNames._clean_localized_name("gallinella d'acqua"), "Gallinella D'Acqua")
 
 
 class DeviceProbeTests(unittest.TestCase):
@@ -375,88 +320,25 @@ class DeviceSelectionTests(unittest.TestCase):
 
 
 class LiveSummaryTests(unittest.TestCase):
-    def test_supabase_and_transit_rows_become_one_row_per_species(self) -> None:
-        stats = {
-            "Pica pica": {"english_name": "Magpie", "italian_name": "Gazza", "german_name": "Elster",
-                          "rarity": "rare", "daily_average": "0.16"},
-            "Strix aluco": {"english_name": "Tawny Owl", "italian_name": "Allocco", "german_name": "Waldkauz",
-                            "rarity": "common", "daily_average": "1.10"},
-        }
-        remote = [{"scientific_name": "Pica pica", "max_confidence": 0.99, "last_heard": "2026-10-10T08:00:00+00:00"}]
+    def test_supabase_transit_and_memory_become_one_row_per_species(self) -> None:
+        remote = [{"scientific_name": "Pica pica", "english_name": "Magpie", "italian_name": "Gazza",
+                   "german_name": "Elster", "max_confidence": 0.99, "last_heard": "2026-10-10T08:00:00+00:00",
+                   "rarity": "rare", "daily_average": 0.16}]
+        late = datetime(2026, 10, 10, 23, 30).astimezone()
         local = [
-            {"taxon_name": "Pica pica", "time": "2026-10-10 23:30:00",
-             "description": "Magpie, Gazza, Elster; birdnet_confidence=0.800"},
-            {"taxon_name": "Strix aluco", "time": "2026-10-10 22:00:00",
-             "description": "Tawny Owl, Allocco, Waldkauz; birdnet_confidence=0.910"},
+            {"scientific_name": "Pica pica", "english_name": "Magpie", "time": late, "confidence": 0.80},
+            {"scientific_name": "Turdus merula", "english_name": "Blackbird", "time": late, "confidence": 0.91},
         ]
 
-        rows = cli.merge_daily_records(local, remote, stats)
+        rows = cli.merge_daily_records(remote, local, FakeCatalog())
 
-        self.assertEqual([row["taxon_name"] for row in rows], ["Pica pica", "Strix aluco"])
-        magpie = rows[0]
-        # latest time from the transit folder, highest confidence from Supabase
-        self.assertEqual(magpie["time"], "2026-10-10 23:30:00")
-        self.assertIn("birdnet_confidence=0.990", magpie["description"])
-        self.assertEqual((magpie["rarity"], magpie["avg_counts"]), ("rare", "0.16/day"))
-
-
-class RepairTests(unittest.TestCase):
-    def test_multi_day_folder_is_split_by_clip_date(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            old_dir = root / "20260831"
-            clips = ["Merlo_20260831_150000_0.800.wav", "Merlo_20260902_070000_0.950.wav"]
-            for clip in clips:
-                (old_dir / "Merlo").mkdir(parents=True, exist_ok=True)
-                (old_dir / "Merlo" / clip).write_bytes(b"RIFF")
-            # what the old code wrote: one row for both days, dated at the last one
-            for clip, when in zip(clips, [datetime(2026, 8, 31, 15), datetime(2026, 8, 31, 16)]):
-                append_inaturalist_csv_row(
-                    old_dir / "inaturalist_import_20260831.csv",
-                    observed_at=when,
-                    audio_file_name=clip,
-                    **csv_row_kwargs(),
-                )
-
-            plan = build_repair_plan(root, FakeCatalog())
-            self.assertEqual(len(plan.moves), 1)
-            apply_repair_plan(plan)
-
-            first = read_rows(root / "20260831" / "inaturalist_import_20260831.csv")
-            second = read_rows(root / "20260902" / "inaturalist_import_20260902.csv")
-            moved = (root / "20260902" / "Merlo" / clips[1]).exists()
-
-        self.assertTrue(moved)
-        self.assertEqual(first[0]["Data osservazione"], "2026-08-31 15:00:00")
-        self.assertIn(f"audio_files={clips[0]}", first[0]["Descrizione"])
-        self.assertEqual(second[0]["Data osservazione"], "2026-09-02 07:00:00")
-        self.assertIn("birdnet_confidence=0.950", second[0]["Descrizione"])
-
-
-class InaturalistStateTests(unittest.TestCase):
-    def test_state_is_saved_before_a_later_row_fails(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            csv_path = Path(directory) / "inaturalist_import_20260901.csv"
-            for taxon in ("Turdus merula", "Strix aluco"):
-                append_inaturalist_csv_row(csv_path, observed_at=datetime(2026, 9, 1, 8), **csv_row_kwargs(taxon_name=taxon, italian_name=taxon))
-
-            class FlakyClient:
-                def __init__(self, *args, **kwargs):
-                    self.calls = 0
-
-                def create_observation(self, row, sounds=None):
-                    self.calls += 1
-                    if self.calls == 2:
-                        raise RuntimeError("network down")
-                    return inaturalist.ObservationRef(observation_id=1, observation_uuid="uuid-1")
-
-            with patch.object(inaturalist, "INaturalistClient", FlakyClient):
-                with self.assertRaises(RuntimeError):
-                    inaturalist.import_csv(csv_path, jwt_token="token")
-
-            state = inaturalist._load_state(csv_path.with_suffix(".state.json"))
-
-        self.assertEqual(list(state), ["Turdus merula"])
+        self.assertEqual([row["taxon_name"] for row in rows], ["Pica pica", "Turdus merula"])
+        magpie, blackbird = rows
+        # latest time from the laptop, highest confidence and rarity from Supabase
+        self.assertEqual((magpie["time"], magpie["conf"], magpie["rarity"], magpie["avg_counts"]),
+                         ("23:30:00", "0.990", "rare", "0.16/day"))
+        # not on Supabase yet: shown at once, names from the local catalog
+        self.assertEqual((blackbird["taxon_ita"], blackbird["conf"], blackbird["rarity"]), ("Merlo", "0.910", "-"))
 
 
 if __name__ == "__main__":

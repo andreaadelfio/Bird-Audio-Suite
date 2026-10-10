@@ -1,20 +1,13 @@
 from __future__ import annotations
 
-import sys
-import types
 import tempfile
 import unittest
-from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
 import numpy as np
 
 
-fake_pyinaturalist = types.ModuleType("pyinaturalist")
-fake_pyinaturalist.create_observation = lambda **kwargs: {}
-fake_pyinaturalist.update_observation = lambda *args, **kwargs: {}
-sys.modules.setdefault("pyinaturalist", fake_pyinaturalist)
 
 from bird_audio_suite.audio import (
     aggregate_detections_by_species,
@@ -24,7 +17,6 @@ from bird_audio_suite.audio import (
 from bird_audio_suite.cli import build_parser
 from bird_audio_suite.cli import choose_loudest_sounddevice_index
 from bird_audio_suite.cli import select_sounddevice_index
-from bird_audio_suite.species import SpeciesCatalog
 
 
 class AudioTests(unittest.TestCase):
@@ -113,30 +105,6 @@ class CliTests(unittest.TestCase):
 
             self.assertEqual(selected_index, 13)
             probe.assert_called_once_with([devices[0]], 1.0)
-
-
-class SpeciesCatalogTests(unittest.TestCase):
-    def test_observed_days_use_observation_dates(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            catalog = SpeciesCatalog(Path(temporary_directory) / "species.csv")
-            detection = {
-                "scientific_name": "Turdus merula",
-                "common_name": "Blackbird",
-                "confidence": 0.9,
-            }
-            with patch.object(catalog, "lookup_italian_name", return_value="Merlo"), patch.object(
-                catalog,
-                "lookup_german_name",
-                return_value="Amsel",
-            ):
-                catalog.ensure_species([detection], observed_at=datetime(2026, 1, 1))
-                catalog.ensure_species([detection], observed_at=datetime(2026, 1, 3))
-
-            record = catalog.records["Turdus merula"]
-            self.assertEqual(record.first_seen_date, "2026-01-01")
-            self.assertEqual(record.last_seen_date, "2026-01-03")
-            self.assertEqual(record.observed_days, 2)
-            self.assertAlmostEqual(record.daily_average, 2 / 3)
 
 
 if __name__ == "__main__":

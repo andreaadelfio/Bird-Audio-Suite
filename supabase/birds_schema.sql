@@ -1,12 +1,23 @@
 -- Bird Audio Suite: schema `birds` in the Supabase project "progetti".
 --
--- The laptop (`bird_audio_cli.py sync`) inserts species, observations and clips and only
--- ever updates the "machine" columns; the review site (GitHub Pages) changes the review
--- columns. Both use the publishable key. Access is deliberately open to `anon`, like MyFinance:
--- whoever has the site URL can read (coordinates included) and write.
+-- Every piece of information lives in one place only:
+--   * storage (bucket `bird-audio`): the files, <media_path>.mp3 and <media_path>-spectrogram.jpg;
+--   * birds.clips: one row per detection, with its own time, confidence, place and the
+--     media_path of its files (URLs are built from it, never stored);
+--   * birds.observations (species x day): only what you decide while reviewing;
+--   * birds.species: only the names.
+-- Everything computed (max confidence of the day, first/last heard, counts, rarity) comes
+-- from the views at the bottom, never from stored copies.
 --
--- Safe to re-run: it never drops data.
--- After the first run: Project Settings -> API -> "Exposed schemas": add `birds`.
+-- The laptop (`bird_audio_cli.py`, live service and `sync`) inserts species, observations and
+-- clips; the review site changes the review columns. Both use the publishable key: access is
+-- deliberately open to `anon`, like MyFinance.
+--
+-- Safe to re-run, also on the previous version: it moves the old data to its new place
+-- before dropping the duplicated columns, and aborts if anything would be lost.
+-- First run: Project Settings -> API -> "Exposed schemas": add `birds`.
+
+begin;
 
 create schema if not exists birds;
 
@@ -16,28 +27,14 @@ create table if not exists birds.species (
   scientific_name text primary key,
   english_name    text not null default '',
   italian_name    text not null default '',
-  german_name     text not null default '',
-  first_seen_date date,
-  last_seen_date  date,
-  observed_days   integer not null default 0,
-  total_count     integer not null default 0,
-  max_confidence  real not null default 0,
-  updated_at      timestamptz not null default now()
+  german_name     text not null default ''
 );
 
--- One observation per species per day, like a row of the daily iNaturalist CSV.
+-- species x day: the unit you confirm, reject or upload to iNaturalist
 create table if not exists birds.observations (
-  id                    bigint generated always as identity primary key,
-  day                   date not null,
-  scientific_name       text not null references birds.species (scientific_name) on update cascade,
-  observed_at           timestamptz not null,
-  place_name            text not null default '',
-  latitude              double precision,
-  longitude             double precision,
-  location_source       text not null default '',
-  positional_accuracy_m integer,
-  max_confidence        real not null default 0,
-  -- review: written by the site only
+  id                        bigint generated always as identity primary key,
+  day                       date not null,
+  scientific_name           text not null references birds.species (scientific_name) on update cascade,
   status                    text not null default 'pending'
                             check (status in ('pending', 'confirmed', 'rejected', 'uploaded')),
   corrected_scientific_name text,
@@ -50,35 +47,98 @@ create table if not exists birds.observations (
   unique (day, scientific_name)
 );
 
+-- one detection
 create table if not exists birds.clips (
-  id              text primary key, -- clip file name, unique: "<Nome>_YYYYMMDD_HHMMSS_<conf>.wav"
-  observation_id  bigint not null references birds.observations (id) on delete cascade,
-  recorded_at     timestamptz not null,
-  duration_s      real,
-  confidence      real not null,
-  audio_url       text not null,
-  audio_public_id text,
-  spectrogram_url text,
-  -- review: written by the site only
-  review          text not null default 'unreviewed'
-                  check (review in ('unreviewed', 'correct', 'wrong')),
-  created_at      timestamptz not null default now()
+  id             text primary key, -- "<Nome>_YYYYMMDD_HHMMSS_<conf>.wav", as written by the laptop
+  observation_id bigint not null references birds.observations (id) on delete cascade,
+  recorded_at    timestamptz not null,
+  confidence     real not null,
+  duration_s     real,
+  place_name     text not null default '',
+  latitude       double precision,
+  longitude      double precision,
+  media_path     text,             -- in the bucket: <media_path>.mp3, <media_path>-spectrogram.jpg
+  review         text not null default 'unreviewed'
+                 check (review in ('unreviewed', 'correct', 'wrong')),
+  inat_sound_id  bigint,           -- set once uploaded to iNaturalist, so uploads resume
+  created_at     timestamptz not null default now()
 );
 
--- Clips deleted for good from the site ("Cestino"): `sync` reads this list and never
--- uploads them again. The WAV files on the laptop are not touched.
+-- clips deleted for good from the site's Cestino: the laptop never uploads them again
 create table if not exists birds.deleted_clips (
-  id         text primary key, -- same id as birds.clips.id (the clip file name)
+  id         text primary key,
   deleted_at timestamptz not null default now()
 );
 
--- iNaturalist upload from the site: the sound id of each uploaded clip, so an interrupted
--- upload resumes without duplicates (the observation id is in observations.inat_observation_id)
-alter table birds.clips add column if not exists inat_sound_id bigint;
-
 create index if not exists clips_observation_idx on birds.clips (observation_id);
+create index if not exists clips_recorded_idx on birds.clips (recorded_at desc);
 create index if not exists observations_status_day_idx on birds.observations (status, day desc);
 
+-- ---------------------------------------------------------------- from the previous version
+
+-- the views depend on the columns that are about to change
+drop view if exists birds.daily_summary;
+drop view if exists birds.hourly_activity;
+drop view if exists birds.species_stats;
+
+alter table birds.clips add column if not exists place_name text not null default '';
+alter table birds.clips add column if not exists latitude double precision;
+alter table birds.clips add column if not exists longitude double precision;
+alter table birds.clips add column if not exists media_path text;
+alter table birds.clips add column if not exists inat_sound_id bigint;
+
+do $$
+begin
+  -- the place was stored once per observation: every clip of it gets it
+  if exists (select 1 from information_schema.columns
+             where table_schema = 'birds' and table_name = 'observations' and column_name = 'place_name') then
+    execute $sql$
+      update birds.clips c
+      set place_name = o.place_name, latitude = o.latitude, longitude = o.longitude
+      from birds.observations o
+      where o.id = c.observation_id and c.latitude is null and c.place_name = ''
+    $sql$;
+  end if;
+  -- full URLs were stored: keep only the path inside the bucket
+  if exists (select 1 from information_schema.columns
+             where table_schema = 'birds' and table_name = 'clips' and column_name = 'audio_url') then
+    execute $sql$
+      update birds.clips
+      set media_path = substring(audio_url from '/object/public/bird-audio/(.*)\.mp3$')
+      where media_path is null
+    $sql$;
+  end if;
+  if exists (select 1 from birds.clips where media_path is null) then
+    raise exception 'Ci sono clip senza percorso nel bucket: migrazione annullata, nessun dato toccato';
+  end if;
+end
+$$;
+
+alter table birds.clips alter column media_path set not null;
+
+-- the duplicated columns: their content now comes from birds.clips and the views
+alter table birds.observations
+  drop column if exists max_confidence,
+  drop column if exists observed_at,
+  drop column if exists place_name,
+  drop column if exists latitude,
+  drop column if exists longitude,
+  drop column if exists location_source,
+  drop column if exists positional_accuracy_m;
+alter table birds.clips
+  drop column if exists audio_url,
+  drop column if exists audio_public_id,
+  drop column if exists spectrogram_url;
+drop trigger if exists species_touch on birds.species;
+alter table birds.species
+  drop column if exists first_seen_date,
+  drop column if exists last_seen_date,
+  drop column if exists observed_days,
+  drop column if exists total_count,
+  drop column if exists max_confidence,
+  drop column if exists updated_at;
+drop table if exists birds.allowed_users;
+drop table if exists birds.settings;
 
 -- ---------------------------------------------------------------- triggers
 
@@ -94,31 +154,66 @@ drop trigger if exists observations_touch on birds.observations;
 create trigger observations_touch before update on birds.observations
   for each row execute function birds.touch_updated_at();
 
-drop trigger if exists species_touch on birds.species;
-create trigger species_touch before update on birds.species
-  for each row execute function birds.touch_updated_at();
+-- ---------------------------------------------------------------- views (everything computed)
 
--- ---------------------------------------------------------------- report views
-
--- security_invoker: the views apply the caller's RLS, they do not bypass it.
-create or replace view birds.daily_summary with (security_invoker = on) as
+-- per species, over the clips you kept (rejected observations and wrong clips excluded);
+-- the daily average uses the whole monitoring period, so one busy day is not "common"
+create view birds.species_stats with (security_invoker = on) as
+with heard as (
+  select o.scientific_name, o.day, c.confidence
+  from birds.clips c
+  join birds.observations o on o.id = c.observation_id
+  where o.status <> 'rejected' and c.review <> 'wrong'
+),
+period as (
+  select greatest(max(day) - min(day) + 1, 1) as days from heard
+)
 select
+  s.scientific_name,
+  s.english_name,
+  s.italian_name,
+  s.german_name,
+  min(h.day)                                                   as first_seen_date,
+  max(h.day)                                                   as last_seen_date,
+  count(distinct h.day)                                        as observed_days,
+  count(h.day)                                                 as total_count,
+  coalesce(max(h.confidence), 0)                               as max_confidence,
+  round(count(h.day)::numeric / (select days from period), 3)  as daily_average,
+  case
+    when count(h.day) = 0 then 'unseen'
+    when count(h.day) = 1 then 'unique'
+    when count(h.day)::numeric / (select days from period) < 0.25 then 'rare'
+    when count(h.day)::numeric / (select days from period) < 1 then 'uncommon'
+    else 'common'
+  end                                                          as rarity
+from birds.species s
+left join heard h using (scientific_name)
+group by s.scientific_name;
+
+-- per observation (species x day): what the report and the live table show
+create view birds.daily_summary with (security_invoker = on) as
+select
+  o.id                             as observation_id,
   o.day,
   o.scientific_name,
   s.italian_name,
   s.english_name,
+  s.german_name,
   o.status,
-  o.max_confidence,
+  max(c.confidence)                as max_confidence,
   count(c.id)                      as clips,
   coalesce(sum(c.duration_s), 0)   as seconds,
   min(c.recorded_at)               as first_heard,
-  max(c.recorded_at)               as last_heard
+  max(c.recorded_at)               as last_heard,
+  st.rarity,
+  st.daily_average
 from birds.observations o
 join birds.species s using (scientific_name)
+join birds.species_stats st using (scientific_name)
 left join birds.clips c on c.observation_id = o.id
-group by o.id, s.scientific_name;
+group by o.id, s.scientific_name, st.rarity, st.daily_average;
 
-create or replace view birds.hourly_activity with (security_invoker = on) as
+create view birds.hourly_activity with (security_invoker = on) as
 select
   extract(hour from c.recorded_at at time zone 'Europe/Rome')::int as hour,
   o.scientific_name,
@@ -129,24 +224,6 @@ where o.status <> 'rejected'
 group by 1, 2;
 
 -- ---------------------------------------------------------------- access (open)
-
--- earlier drafts: Supabase users, then a review passphrase
-drop policy if exists "allowed users read species" on birds.species;
-drop policy if exists "allowed users read observations" on birds.observations;
-drop policy if exists "allowed users review observations" on birds.observations;
-drop policy if exists "allowed users read clips" on birds.clips;
-drop policy if exists "allowed users review clips" on birds.clips;
-drop policy if exists "public read species" on birds.species;
-drop policy if exists "public read observations" on birds.observations;
-drop policy if exists "public read clips" on birds.clips;
-drop function if exists birds.is_allowed();
-drop function if exists birds.review_observation(text, bigint, text, text, text);
-drop function if exists birds.review_clip(text, text, text);
-drop function if exists birds.check_passphrase(text);
-drop function if exists birds.set_passphrase(text);
-drop function if exists birds.passphrase_ok(text);
-drop table if exists birds.allowed_users;
-drop table if exists birds.settings;
 
 do $$
 declare
@@ -167,11 +244,12 @@ grant usage on schema birds to anon, authenticated, service_role;
 grant select, insert, update, delete on all tables in schema birds to anon, authenticated;
 grant all on all tables in schema birds to service_role;
 grant usage, select on all sequences in schema birds to anon, authenticated, service_role;
+grant select on birds.species_stats, birds.daily_summary, birds.hourly_activity to anon, authenticated, service_role;
 
 -- ---------------------------------------------------------------- media (Supabase Storage)
 
--- Public bucket `bird-audio`: clip MP3s and spectrogram JPEGs uploaded by `sync`, open like
--- the tables. Skipped where Storage does not exist (local stand-in, `make web-dev`).
+-- Public bucket `bird-audio`, open like the tables. Skipped where Storage does not exist
+-- (the local stand-in of `make web-dev`).
 do $$
 begin
   if to_regclass('storage.buckets') is null then
@@ -188,3 +266,8 @@ begin
     with check (bucket_id = 'bird-audio');
 end
 $$;
+
+commit;
+
+-- the API sees the new columns and views at once
+notify pgrst, 'reload schema';

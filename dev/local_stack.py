@@ -1,12 +1,13 @@
 """Local stand-in for Supabase to try the review site before the release.
 
-    make web-dev            # or: python dev/local_stack.py --sync
+    make web-dev            # or: python dev/local_stack.py --snapshot
 
 Starts an embedded Postgres (pgserver) with birds_schema.sql, PostgREST on top of
 it (the same REST layer Supabase uses), and one HTTP server on http://127.0.0.1:8010 that
-serves docs/, proxies /rest/v1 to PostgREST, serves clips and spectrograms under /media
-and generates assets/config.js with local tokens. --sync first pushes the local
-detections into it with `bird_audio_cli.py sync`.
+serves docs/, proxies /rest/v1 to PostgREST and generates assets/config.js with local tokens.
+--snapshot copies the real data from Supabase (read only) into the local database, with the
+audio still played from the real bucket; --sync instead sends what waits in detections/,
+with its files in a local folder served under /media.
 
 Everything lives in ~/.cache/bird-audio-suite/local-supabase and is disposable.
 """
@@ -19,6 +20,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -35,6 +37,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from bird_audio_suite.cloud import DEFAULT_CACHE_DIR  # noqa: E402
 
 STACK_DIR = DEFAULT_CACHE_DIR / "local-supabase"
+MEDIA_DIR = STACK_DIR / "media"
 POSTGREST_VERSION = "v12.2.3"
 POSTGREST_URL = (
     f"https://github.com/PostgREST/postgrest/releases/download/{POSTGREST_VERSION}/"
@@ -114,10 +117,45 @@ def start_postgrest(server) -> subprocess.Popen:
     raise RuntimeError("PostgREST non parte")
 
 
+def load_snapshot(server) -> str:
+    """Copy the rows of the real project (read only, with the site's key); return its bucket URL."""
+    config_js = (PROJECT_ROOT / "docs" / "assets" / "config.js").read_text(encoding="utf-8")
+    url = re.search(r'supabaseUrl: "([^"]+)"', config_js).group(1)
+    key = re.search(r'supabaseKey: "([^"]+)"', config_js).group(1)
+    statements = ["truncate birds.clips, birds.observations, birds.species, birds.deleted_clips cascade;"]
+    for table in ("species", "observations", "clips", "deleted_clips"):
+        rows, start = [], 0
+        while True:
+            request = urllib.request.Request(
+                f"{url}/rest/v1/{table}?select=*",
+                headers={"apikey": key, "Authorization": f"Bearer {key}", "Accept-Profile": "birds",
+                         "Range": f"{start}-{start + 999}"},
+            )
+            page = json.load(urllib.request.urlopen(request, timeout=60))
+            rows += page
+            start += 1000
+            if len(page) < 1000:
+                break
+        if rows:
+            columns = list(rows[0])
+            values = ",".join(
+                "(" + ",".join("null" if row[c] is None else "'" + str(row[c]).replace("'", "''") + "'" for c in columns) + ")"
+                for row in rows
+            )
+            override = "overriding system value " if table == "observations" else ""
+            statements.append(f"insert into birds.{table} ({','.join(columns)}) {override}values {values};")
+        print(f"  {table}: {len(rows)}")
+    statements.append("select setval(pg_get_serial_sequence('birds.observations', 'id'), (select coalesce(max(id), 1) from birds.observations));")
+    output = server.psql("\n".join(statements))
+    if "ERROR" in output:
+        raise RuntimeError(output)
+    return f"{url}/storage/v1/object/public/bird-audio"
+
+
 def run_sync(detections_dir: Path, base_url: str) -> None:
     env_file = STACK_DIR / "cloud.env"
     env_file.write_text(
-        f"SUPABASE_URL={base_url}\nSUPABASE_KEY={SERVICE_TOKEN}\nMEDIA_STORAGE=local\nMEDIA_BASE_URL=media\n",
+        f"SUPABASE_URL={base_url}\nSUPABASE_KEY={SERVICE_TOKEN}\nMEDIA_STORAGE=local\nLOCAL_MEDIA_DIR={MEDIA_DIR}\n",
         encoding="utf-8",
     )
     subprocess.run(
@@ -128,14 +166,13 @@ def run_sync(detections_dir: Path, base_url: str) -> None:
 
 class Handler(SimpleHTTPRequestHandler):
     web_dir = PROJECT_ROOT / "docs"
-    detections_dir = PROJECT_ROOT / "detections"
+    media_base_url = "media"
     spectrograms_dir = DEFAULT_CACHE_DIR / "spectrograms"
 
     def translate_path(self, path: str) -> str:
         clean = urllib.request.url2pathname(path.split("?", 1)[0])
-        for prefix, root in (("/media/clips/", self.detections_dir), ("/media/spectrograms/", self.spectrograms_dir)):
-            if clean.startswith(prefix):
-                return str(root / clean[len(prefix):])
+        if clean.startswith("/media/"):
+            return str(MEDIA_DIR / clean[len("/media/"):])
         return str(self.web_dir / clean.lstrip("/"))
 
     def do_GET(self) -> None:
@@ -149,6 +186,7 @@ class Handler(SimpleHTTPRequestHandler):
                         "supabaseUrl": f"http://{self.headers['Host']}",
                         "supabaseKey": ANON_TOKEN,
                         "schema": "birds",
+                        "mediaBaseUrl": self.media_base_url,
                     }
                 )
                 + ";\n"
@@ -207,17 +245,23 @@ class Handler(SimpleHTTPRequestHandler):
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--port", type=int, default=8010)
-    parser.add_argument("--sync", action="store_true", help="Push local detections before serving.")
+    parser.add_argument("--sync", action="store_true", help="Send what waits in detections/ before serving.")
+    parser.add_argument("--snapshot", action="store_true", help="Copy the real data from Supabase (read only).")
+    parser.add_argument("--media-base-url", help="Where the site takes audio and spectrograms (default: local /media).")
     parser.add_argument("--reset", action="store_true", help="Delete the local database first.")
     parser.add_argument("--detections-dir", type=Path, default=PROJECT_ROOT / "detections")
     args = parser.parse_args()
 
     if args.reset:
         shutil.rmtree(STACK_DIR / "pgdata", ignore_errors=True)
-        (DEFAULT_CACHE_DIR / "sync_state.json").unlink(missing_ok=True)
+        shutil.rmtree(MEDIA_DIR, ignore_errors=True)
     server = start_database()
     postgrest = start_postgrest(server)
-    Handler.detections_dir = args.detections_dir
+    if args.media_base_url:
+        Handler.media_base_url = args.media_base_url.rstrip("/")
+    if args.snapshot:
+        print("Copio i dati veri da Supabase (sola lettura)...")
+        Handler.media_base_url = load_snapshot(server)
     httpd = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     base_url = f"http://127.0.0.1:{args.port}"
     try:
