@@ -5,7 +5,7 @@ Ascolta gli uccelli dal microfono del portatile con BirdNET, salva ogni detectio
 ## Come e' fatto
 
 - **Il portatile ascolta.** Il servizio live riconosce le specie con BirdNET e scrive ogni clip in `detections/` (un WAV piu' un piccolo JSON con specie, ora, confidenza e posizione).
-- **`detections/` e' solo di passaggio.** Un thread del live manda ogni clip a Supabase appena si chiude (e comunque ogni minuto, per quando torna la rete) e poi la cancella dal PC. Senza rete le clip aspettano li'. Il timer `sync` ogni 15 minuti fa lo stesso, come rete di sicurezza.
+- **`detections/` e' solo di passaggio.** Il live scrive solo la clip e basta. Un servizio a parte, `bird-audio-suite-sync` (`sync --watch`), guarda la cartella ogni 3 s: fa MP3 e spettrogramma, manda tutto a Supabase pochi secondi dopo la chiusura della clip e la cancella dal PC. Senza rete le clip aspettano li' e riprova ogni minuto. Essendo un altro processo, a priorita' bassa di CPU e disco, il lavoro pesante (lo spettrogramma di una clip lunga richiede secondi e oltre 100 MB) non rallenta mai l'ascolto.
 - **Supabase e' l'unico posto dove vivono i dati**, progetto "progetti" (`supabase/birds_schema.sql`). Ogni informazione sta in un posto solo:
   - Storage, bucket pubblico `bird-audio`: i file, `<media_path>.mp3` e `<media_path>-spectrogram.jpg`;
   - `birds.clips`: una riga per detection, con la sua ora, la sua confidenza, il luogo e il `media_path` dei file (gli URL si ricavano, non si salvano), i secondi in cui BirdNET ha sentito la specie (`segments`) e l'eventuale taglio deciso sul sito (`trim_start_s`/`trim_end_s`, il file resta intero);
@@ -40,11 +40,11 @@ SUPABASE_KEY=sb_publishable_...
 ```bash
 make install          # servizio live: ~/.config/systemd/user/bird-audio-suite.service
 make install-health   # ogni 5 minuti: notifica desktop se il live e' fermo, bloccato o sente solo silenzio
-make install-sync     # ogni 15 minuti: manda a Supabase quello che e' rimasto in detections/
-make start | stop | restart | status | log | log-follow
+make install-sync     # servizio di invio sempre attivo: detections/ -> Supabase (toglie il vecchio timer)
+make start | stop | restart | status | log | log-follow | log-sync
 ```
 
-Il controllo di salute avvisa se, per due controlli di fila, il servizio non e' attivo, non analizza audio da piu' di 5 minuti, il microfono da' solo silenzio digitale da 10 minuti, l'analisi e' indietro di piu' di 60 s o la RAM supera 1.2 GB; una notifica per problema e una quando si risolve. Prova: `python -m bird_audio_suite.health --test-notification`. Per far partire il servizio anche senza login grafico: `loginctl enable-linger $USER`.
+Il controllo di salute avvisa se, per due controlli di fila, il servizio non e' attivo, non analizza audio da piu' di 5 minuti, il microfono da' solo silenzio digitale da 10 minuti, l'analisi e' indietro di piu' di 60 s, la RAM supera 1.2 GB, il servizio di invio non gira o ci sono clip ferme in `detections/` da piu' di 2 ore; una notifica per problema e una quando si risolve. Prova: `python -m bird_audio_suite.health --test-notification`. Per far partire il servizio anche senza login grafico: `loginctl enable-linger $USER`.
 
 ## Uso
 
@@ -59,11 +59,11 @@ python bird_audio_cli.py live --backend sounddevice --device-index -1 --device-p
 - Per ogni clip vengono salvati i tratti esatti (in secondi dall'inizio della clip, con la confidenza) in cui BirdNET ha sentito la specie, anche quelli piu' deboli (da 0.5) dentro una clip gia' aperta: sul sito diventano bande evidenziate sullo spettrogramma.
 - Una clip parte 3 s prima della prima detection e continua finche' la specie viene sentita; si chiude dopo 3 finestre senza detection (pause fino a ~15 s non la spezzano), dura almeno 10 s e al massimo 120 s.
 - La tabella del giorno (scorciatoia Ctrl+Alt+L, che segue il log del servizio) unisce Supabase (anche le revisioni fatte dal sito), le clip ancora in `detections/` e quello che il live ha appena sentito; si aggiorna a ogni detection e ogni minuto. Senza rete mostra solo i dati del PC.
-- Sotto la tabella, due righe sulle prestazioni degli ultimi 10 minuti: quanto ci mette BirdNET per finestra e che parte del tempo disponibile usa (una finestra nuova ogni 4.8 s: sopra il 100% il live resta indietro), quanto e' indietro rispetto al microfono, RAM (ora e picco), CPU, costo della sottrazione dell'audio del PC e tempo di invio per clip. Gli stessi numeri vanno nel heartbeat: il controllo di salute avvisa se il live e' indietro di piu' di 60 s o supera 1.2 GB di RAM.
+- Sotto la tabella, due righe sulle prestazioni degli ultimi 10 minuti: quanto ci mette BirdNET per finestra e che parte del tempo disponibile usa (una finestra nuova ogni 4.8 s: sopra il 100% il live resta indietro), quanto e' indietro rispetto al microfono, RAM (ora e picco), CPU, costo della sottrazione dell'audio del PC e tempo di invio per clip. Gli stessi numeri vanno nel heartbeat: il controllo di salute avvisa se il live e' indietro di piu' di 60 s o supera 1.2 GB di RAM. Sotto ancora, lo stato del servizio di invio: clip in attesa, ultimo invio, secondi per clip, ultimo errore.
 - Con `--device-index -1` prova ogni ingresso in un processo separato (alcuni plugin ALSA vanno in segfault), scarta il "click" iniziale e sceglie quello con segnale, preferendo 44.1/48 kHz e il server audio (PipeWire/PulseAudio). La scelta resta in `.bird_audio_device.json`.
 - Se il PC sta riproducendo audio, il live ne legge il monitor (`pw-record` in modo passivo, che non tiene accese le casse quando il PC tace; `parec` senza PipeWire) e lo sottrae dal microfono con un filtro adattivo lineare; in piu' analizza il monitor e scarta le specie che arrivano dal PC, cosi' un merlo di YouTube non diventa osservazione. Si spegne con `--disable-playback-subtraction`.
 - Posizione: dall'IP, ricalcolata ogni 15 minuti (il portatile si sposta); offline resta l'ultima trovata (`.bird_audio_location.json`). `BIRD_AUDIO_LATITUDE`/`BIRD_AUDIO_LONGITUDE` la fissano a mano.
-- `Ctrl+C` o `make stop`: le clip ancora aperte vengono salvate e mandate prima di uscire.
+- `Ctrl+C` o `make stop`: le clip ancora aperte vengono salvate in `detections/`; il servizio di invio le manda.
 
 ### Analisi batch di registrazioni
 
@@ -76,7 +76,8 @@ Formati: `.wav`, `.flac`, `.mp3`, `.ogg`, `.m4a`. L'ora di inizio viene dal nome
 ### Sync a mano
 
 ```bash
-python bird_audio_cli.py sync            # manda quello che aspetta in detections/
+python bird_audio_cli.py sync            # manda quello che aspetta in detections/ (una volta)
+python bird_audio_cli.py sync --watch    # come il servizio: resta acceso e manda ogni clip appena c'e'
 python bird_audio_cli.py sync --limit 5
 ```
 

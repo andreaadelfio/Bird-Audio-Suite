@@ -3,7 +3,7 @@
 Over the last 10 minutes: how long BirdNET takes per window and how much of the available time
 that is (a new window comes every half slice: above 100% the live falls behind), how far behind
 the microphone the analysis is, memory (now and peak), CPU, what the PC-playback subtraction
-costs and how long sending a clip to Supabase takes. Shown under the live table, written into
+costs (sending the clips is another process: uploader.py). Shown under the live table, written into
 the heartbeat (the health check warns when the live falls behind or grows too big).
 """
 
@@ -43,11 +43,10 @@ class LiveMetrics:
         self.lock = threading.Lock()
         self.windows: deque[tuple[float, float, float, float]] = deque()  # (t, analysis, budget, lag)
         self.echo: deque[tuple[float, float, float]] = deque()  # (t, seconds spent, audio seconds)
-        self.uploads: deque[tuple[float, float, int]] = deque()  # (t, seconds, clips)
         self.cpu: deque[tuple[float, float]] = deque([(clock(), cpu_seconds())])
 
     def _trim(self, now: float) -> None:
-        for samples in (self.windows, self.echo, self.uploads):
+        for samples in (self.windows, self.echo):
             while samples and samples[0][0] < now - self.window_seconds:
                 samples.popleft()
         while len(self.cpu) > 1 and self.cpu[1][0] < now - self.window_seconds:
@@ -70,11 +69,6 @@ class LiveMetrics:
             else:
                 self.echo.append((now, seconds, audio_seconds))
 
-    def record_upload(self, seconds: float, clips: int) -> None:
-        if clips:
-            with self.lock:
-                self.uploads.append((self.clock(), seconds, clips))
-
     def snapshot(self) -> dict:
         """Numbers for the heartbeat; empty until the first window is analysed."""
         now = self.clock()
@@ -87,7 +81,6 @@ class LiveMetrics:
             (first_t, first_cpu), (last_t, last_cpu) = self.cpu[0], self.cpu[-1]
             echo_spent = sum(entry[1] for entry in self.echo)
             echo_audio = sum(entry[2] for entry in self.echo)
-            uploaded = sum(entry[2] for entry in self.uploads)
             rss, peak = memory_mb()
             return {
                 "windows": len(analysis),
@@ -100,7 +93,6 @@ class LiveMetrics:
                 "peak_rss_mb": round(peak),
                 "cpu_pct": round(100 * (last_cpu - first_cpu) / (last_t - first_t), 1) if last_t > first_t else None,
                 "echo_pct": round(100 * echo_spent / echo_audio, 2) if echo_audio else None,
-                "upload_s_per_clip": round(sum(entry[1] for entry in self.uploads) / uploaded, 2) if uploaded else None,
             }
 
     def summary_lines(self) -> list[str]:
@@ -116,6 +108,4 @@ class LiveMetrics:
             resources.append(f"CPU {data['cpu_pct']:.0f}%")
         if data["echo_pct"] is not None:
             resources.append(f"sottrazione PC {data['echo_pct']:.1f}% CPU")
-        if data["upload_s_per_clip"] is not None:
-            resources.append(f"invio {data['upload_s_per_clip']:.1f} s/clip")
         return [timing, " · ".join(resources)]

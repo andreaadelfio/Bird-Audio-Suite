@@ -30,16 +30,14 @@ class LiveMetricsTests(unittest.TestCase):
             clock.now += 4.8
             metrics.record_window(analysis, 4.8, lag_seconds=0.3)
         metrics.record_echo(0.01, 1.0)
-        metrics.record_upload(4.0, 2)
         data = metrics.snapshot()
         self.assertEqual((data["windows"], data["analysis_max_s"], data["lag_s"]), (3, 1.2, 0.3))
         self.assertAlmostEqual(data["load_pct"], 100 * 2.4 / 14.4, places=1)
-        self.assertEqual((data["echo_pct"], data["upload_s_per_clip"]), (1.0, 2.0))
+        self.assertEqual(data["echo_pct"], 1.0)
         self.assertGreater(data["rss_mb"], 0)
         lines = metrics.summary_lines()
         self.assertEqual(len(lines), 2)
         self.assertIn("17% del tempo", lines[0])
-        self.assertIn("invio 2.0 s/clip", lines[1])
         self.assertIn("sottrazione PC 1.0% CPU", lines[1])
 
     def test_only_the_last_ten_minutes_count(self) -> None:

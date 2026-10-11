@@ -34,6 +34,9 @@ def runtime_dir() -> Path:
 
 
 HEARTBEAT_FILE = runtime_dir() / "heartbeat.json"
+UPLOADER_STATUS_FILE = runtime_dir() / "uploader.json"  # written by uploader.py
+UPLOADER_SILENT_SECONDS = 5 * 60
+STUCK_CLIP_SECONDS = 2 * 3600
 STATE_FILE = runtime_dir() / "health_state.json"
 
 
@@ -97,6 +100,23 @@ def find_problems(now: float, service_state: str, heartbeat: dict | None) -> dic
     return problems
 
 
+def find_upload_problems(now: float, status: dict | None) -> dict[str, str]:
+    """The uploader service (sync --watch): running, and not leaving clips behind."""
+    if not status or now - float(status.get("updated_at", 0)) > UPLOADER_SILENT_SECONDS:
+        return {"uploader": "Il servizio di invio a Supabase non gira: le clip restano in detections/ "
+                            "(make install-sync)."}
+    oldest = status.get("oldest_pending")
+    if oldest:
+        try:
+            waiting = now - datetime.fromisoformat(oldest).timestamp()
+        except ValueError:
+            waiting = 0
+        if waiting > STUCK_CLIP_SECONDS:
+            error = status.get("last_error") or "motivo sconosciuto"
+            return {"stuck": f"{status.get('pending')} clip non arrivano su Supabase da {waiting / 3600:.0f} h: {error}"}
+    return {}
+
+
 def service_state() -> str:
     try:
         completed = subprocess.run(
@@ -151,12 +171,14 @@ def main(argv: list[str] | None = None) -> int:
         notify("Bird Audio Suite", "Le notifiche funzionano.")
         return 0
 
-    problems = find_problems(time.time(), service_state(), read_json(HEARTBEAT_FILE))
+    now = time.time()
+    problems = find_problems(now, service_state(), read_json(HEARTBEAT_FILE))
+    problems.update(find_upload_problems(now, read_json(UPLOADER_STATUS_FILE)))
     state, to_alert, resolved = update_state(read_json(STATE_FILE) or {}, problems)
     for _key, message in to_alert:
         notify("Bird Audio Suite: problema", message, urgency="critical")
     if resolved and not problems:
-        notify("Bird Audio Suite", "Il servizio ha ripreso ad ascoltare normalmente.")
+        notify("Bird Audio Suite", "Tutto di nuovo a posto: il live ascolta e le clip arrivano su Supabase.")
     STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
     STATE_FILE.write_text(json.dumps(state), encoding="utf-8")
     return 0

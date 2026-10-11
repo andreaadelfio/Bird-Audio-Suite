@@ -15,7 +15,7 @@ DEVICE_INDEX ?= -1
 PORT ?= 8004
 HOST ?= 127.0.0.1
 
-.PHONY: venv test test-fast bench-baseline git dev dev-stop dev_mob web-dev install install-health install-sync start stop restart log log-follow status
+.PHONY: venv test test-fast bench-baseline git dev dev-stop dev_mob web-dev install install-health install-sync start stop restart log log-follow log-sync status
 
 # Dedicated environment outside Dropbox (NumPy 2 + LiteRT, no TensorFlow).
 venv:
@@ -115,29 +115,33 @@ install-health:
 	systemctl --user enable --now "$(HEALTH_NAME).timer"
 
 # Every 15 minutes: push new detections to Supabase (catches up after being offline).
+# The uploader: its own always-on service, so MP3, spectrograms and uploads never slow the
+# live listener down. Low priority: whatever the live needs comes first.
 install-sync:
 	mkdir -p "$(SYSTEMD_USER_DIR)"
+	-systemctl --user disable --now "$(SYNC_NAME).timer" 2>/dev/null
+	rm -f "$(SYSTEMD_USER_DIR)/$(SYNC_NAME).timer"
 	printf '%s\n' \
 		'[Unit]' \
-		'Description=Bird Audio Suite sync to Supabase' \
+		'Description=Bird Audio Suite uploader (detections/ to Supabase)' \
 		'After=network-online.target' \
 		'' \
 		'[Service]' \
-		'Type=oneshot' \
+		'Type=simple' \
 		'WorkingDirectory=$(PROJECT_DIR)' \
-		'ExecStart="$(PYTHON)" "$(CLI_SCRIPT)" sync' > "$(SYSTEMD_USER_DIR)/$(SYNC_NAME).service"
-	printf '%s\n' \
-		'[Unit]' \
-		'Description=Run the Bird Audio Suite sync every 15 minutes' \
-		'' \
-		'[Timer]' \
-		'OnBootSec=15min' \
-		'OnUnitActiveSec=15min' \
+		'Environment=PYTHONUNBUFFERED=1' \
+		'ExecStart="$(PYTHON)" "$(CLI_SCRIPT)" sync --watch' \
+		'Restart=always' \
+		'RestartSec=10' \
+		'Nice=10' \
+		'CPUWeight=20' \
+		'IOSchedulingClass=idle' \
 		'' \
 		'[Install]' \
-		'WantedBy=timers.target' > "$(SYSTEMD_USER_DIR)/$(SYNC_NAME).timer"
+		'WantedBy=default.target' > "$(SYSTEMD_USER_DIR)/$(SYNC_NAME).service"
 	systemctl --user daemon-reload
-	systemctl --user enable --now "$(SYNC_NAME).timer"
+	systemctl --user enable "$(SYNC_NAME).service"
+	systemctl --user restart "$(SYNC_NAME).service"
 
 start:
 	systemctl --user start "$(SERVICE_NAME)"
@@ -154,5 +158,8 @@ log:
 log-follow:
 	journalctl --user -u "$(SERVICE_NAME)" -f -o cat
 
+log-sync:
+	journalctl --user -u "$(SYNC_NAME).service" -o cat -e
+
 status:
-	systemctl --user status "$(SERVICE_NAME)"
+	systemctl --user status --no-pager "$(SERVICE_NAME)" "$(SYNC_NAME).service"

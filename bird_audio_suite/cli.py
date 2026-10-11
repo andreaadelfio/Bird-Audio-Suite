@@ -57,6 +57,7 @@ from .echo import ACTIVE_RMS, PlaybackMonitor, PlaybackSubtractor
 from .geolocation import resolve_location
 from .health import HeartbeatWriter
 from .metrics import LiveMetrics
+from .uploader import read_status as read_uploader_status, status_line as uploader_status_line
 from .live import LiveDetectionTracker, run_sliding_window_loop
 from .species import SpeciesNames
 
@@ -65,7 +66,7 @@ AUDIO_FILE_SUFFIXES = {".wav", ".flac", ".mp3", ".ogg", ".m4a"}
 BIRDNET_SAMPLE_RATE = 48000
 AUDIO_STALL_TIMEOUT_SECONDS = 30.0
 LIVE_MAX_CLIP_SECONDS = 120.0
-OUTBOX_RETRY_SECONDS = 60.0
+TABLE_REFRESH_SECONDS = 60.0
 SEGMENT_MIN_CONFIDENCE = 0.5  # bands highlighted on the spectrogram
 BACKFILL_OVERLAP_SECONDS = 2.0  # backfill: 3 s chunks every 1 s
 BACKFILL_FALLBACK_CONFIDENCE = 0.1  # backfill: below 0.5, the best chunk is still shown
@@ -321,7 +322,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sync_parser = subparsers.add_parser(
         "sync",
-        help="Send what waits in the transit folder to Supabase (the live service does it by itself).",
+        help="Send what waits in the transit folder to Supabase (with --watch: the uploader service).",
     )
     sync_parser.add_argument("--detections-dir", type=Path, default=DEFAULT_DETECTIONS_DIR)
     sync_parser.add_argument(
@@ -331,6 +332,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Settings file. Default: ~/.config/bird-audio-suite/cloud.env",
     )
     sync_parser.add_argument("--limit", type=int, help="Send at most N clips (to try it out).")
+    sync_parser.add_argument(
+        "--watch",
+        action="store_true",
+        help="Keep running: send each clip as soon as the live writes it (the bird-audio-suite-sync service).",
+    )
 
     backfill_parser = subparsers.add_parser(
         "backfill-segments",
@@ -1037,7 +1043,7 @@ def print_daily_detection_summary(detections_dir: Path, names: SpeciesNames | No
             print("(Supabase non raggiungibile: solo i dati di questo PC)")
         # how fast and how heavy the live is, under the table (see metrics.py)
         performance = LIVE_METRICS.summary_lines()
-        footer = ["", *performance] if performance else []
+        footer = ["", *performance, uploader_status_line(read_uploader_status())]
         if not rows:
             print("\n".join(["No observations today.", *footer]))
             return
@@ -1342,31 +1348,26 @@ def push_outbox(detections_dir: Path, species_names: SpeciesNames, limit: int | 
     return Outbox(Path(detections_dir), species_names, config).push(limit=limit)
 
 
-def start_outbox_worker(detections_dir: Path, species_names: SpeciesNames, verbose: bool = False):
-    """Thread of the live service that sends clips to Supabase right after they close and,
-    for whatever had to wait (offline), every minute. After each round it reprints the table,
-    which so also shows the reviews made meanwhile on the site."""
+def start_table_refresher(detections_dir: Path, species_names: SpeciesNames):
+    """Reprint today's table every minute (reviews made on the site, the uploader's progress)
+    and shortly after each new clip. Only a light Supabase read: sending the clips is the
+    uploader's job, in its own process (uploader.py), so it never slows the listening down."""
     wake = threading.Event()
     stop = threading.Event()
 
     def work() -> None:
         while not stop.is_set():
-            wake.wait(OUTBOX_RETRY_SECONDS)
-            wake.clear()
+            if wake.wait(TABLE_REFRESH_SECONDS):
+                wake.clear()
+                stop.wait(10)  # give the uploader a moment: the new clip shows as sent
+            if stop.is_set():
+                break
             try:
-                started = time.perf_counter()
-                report = push_outbox(detections_dir, species_names)
-                LIVE_METRICS.record_upload(time.perf_counter() - started, report.sent)
+                print_daily_detection_summary(detections_dir, species_names)
             except Exception as exc:
-                print(f"{datetime.now():%H:%M:%S} - Invio a Supabase non riuscito: {exc!r}")
-                continue
-            if report.errors and (verbose or not report.sent):
-                print(f"{datetime.now():%H:%M:%S} - {len(report.errors)} clip in attesa: {report.errors[0]}")
-            if verbose and report.sent:
-                print(f"{datetime.now():%H:%M:%S} - Su Supabase: {', '.join(report.sent_ids)}")
-            print_daily_detection_summary(detections_dir, species_names)
+                print(f"{datetime.now():%H:%M:%S} - Tabella non aggiornata: {exc!r}")
 
-    threading.Thread(target=work, name="outbox", daemon=True).start()
+    threading.Thread(target=work, name="table", daemon=True).start()
     return wake, stop
 
 
@@ -1428,13 +1429,13 @@ def run_live_detection(
         clip_span=getattr(args, "clip_span", DEFAULT_LIVE_CLIP_SPAN),
         max_clip_seconds=LIVE_MAX_CLIP_SECONDS,
     )
-    wake_uploader, stop_uploader = start_outbox_worker(args.detections_dir, species_names, args.verbose)
+    wake_table, stop_table = start_table_refresher(args.detections_dir, species_names)
 
     def on_exported(paths: list[Path]) -> None:
         if args.verbose:
             for path in paths:
                 print(f"{datetime.now():%H:%M:%S} - Clip pronta: {path.name}")
-        wake_uploader.set()  # to Supabase now; the table is reprinted after the upload
+        wake_table.set()  # the uploader service sends it; the table shows it shortly
 
     def on_error(exc: Exception) -> None:
         print(f"{datetime.now():%H:%M:%S} - Detection error: {exc!r}")
@@ -1464,13 +1465,8 @@ def run_live_detection(
         )
     finally:
         stop_refresh.set()
-        stop_uploader.set()
-        # the clips flushed on shutdown are in the transit folder: one last attempt now,
-        # otherwise the next start (or the sync timer) sends them
-        try:
-            push_outbox(args.detections_dir, species_names)
-        except Exception:
-            pass
+        stop_table.set()
+        # the clips flushed on shutdown wait in the transit folder: the uploader sends them
 
 
 def load_species_names() -> SpeciesNames:
@@ -1752,13 +1748,19 @@ def run_sync(args: argparse.Namespace) -> int:
     if not config.configured:
         print("cloud.env senza SUPABASE_URL e SUPABASE_KEY: niente da fare.")
         return 1
-    if config.media_storage == "local":
-        names = SpeciesNames()
-    else:
-        names = load_species_names()
-    report = Outbox(Path(args.detections_dir), names, config).push(limit=args.limit)
+    def make_outbox():
+        names = SpeciesNames() if config.media_storage == "local" else load_species_names()
+        return Outbox(Path(args.detections_dir), names, config)
+
+    if getattr(args, "watch", False):
+        from .uploader import run_uploader
+
+        print(f"{datetime.now():%H:%M:%S} - Invio a Supabase: guardo {args.detections_dir}")
+        run_uploader(Path(args.detections_dir), make_outbox)
+        return 0
+    report = make_outbox().push(limit=args.limit)
     if report.busy:
-        print("Un altro invio e' in corso (il servizio live): riprovo al prossimo giro.")
+        print("Un altro invio e' in corso (il servizio di invio): riprovo dopo.")
         return 0
     waiting = report.pending - report.sent - report.discarded
     print(
