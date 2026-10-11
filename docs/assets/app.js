@@ -953,6 +953,7 @@ async function uploadObservationToInat(observation, onProgress = () => {}) {
       species_guess: name,
       observed_on_string: localDateTime(facts.firstHeard),
       place_guess: facts.place,
+      description: `BirdNET confidence ${facts.maxConfidence.toFixed(3)}`,
       tag_list: "audio,birdnet",
     };
     if (facts.latitude != null && facts.longitude != null) {
