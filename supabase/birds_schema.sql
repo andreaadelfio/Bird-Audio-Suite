@@ -42,6 +42,7 @@ create table if not exists birds.observations (
   reviewed_at               timestamptz,
   inat_observation_id       bigint,
   inat_uuid                 text,
+  uploaded_at               timestamptz,  -- on iNaturalist since: a week later its files leave Storage
   created_at                timestamptz not null default now(),
   updated_at                timestamptz not null default now(),
   unique (day, scientific_name)
@@ -64,6 +65,7 @@ create table if not exists birds.clips (
   review         text not null default 'unreviewed'
                  check (review in ('unreviewed', 'correct', 'wrong')),
   inat_sound_id  bigint,           -- set once uploaded to iNaturalist, so uploads resume
+  media_deleted_at timestamptz,    -- files removed from Storage (a week after the iNaturalist upload)
   created_at     timestamptz not null default now()
 );
 
@@ -92,6 +94,11 @@ alter table birds.clips add column if not exists inat_sound_id bigint;
 alter table birds.clips add column if not exists segments jsonb;
 alter table birds.clips add column if not exists trim_start_s real;
 alter table birds.clips add column if not exists trim_end_s real;
+alter table birds.clips add column if not exists media_deleted_at timestamptz;
+alter table birds.observations add column if not exists uploaded_at timestamptz;
+-- already uploaded before uploaded_at existed: the last change is when it happened
+update birds.observations set uploaded_at = coalesce(reviewed_at, updated_at)
+where status = 'uploaded' and uploaded_at is null;
 
 do $$
 begin

@@ -6,7 +6,8 @@ process with low CPU and disk priority (systemd unit bird-audio-suite-sync): not
 slow the listening down, not even through Python's GIL.
 
 It looks at the folder every few seconds, so a clip is on Supabase moments after it closes;
-what failed (offline) is tried again every minute. After each round it writes its state into
+what failed (offline) is tried again every minute. Once an hour it also removes from Storage the
+files of observations on iNaturalist for more than a week (Outbox.purge_uploaded_media). After each round it writes its state into
 the runtime folder: the live table shows it, the health check warns when clips stay stuck.
 """
 
@@ -23,6 +24,7 @@ from .health import UPLOADER_STATUS_FILE as STATUS_FILE
 POLL_SECONDS = 3.0
 RETRY_SECONDS = 60.0
 NAMES_REFRESH_SECONDS = 3600.0
+PURGE_EVERY_SECONDS = 3600.0
 STALE_STATUS_SECONDS = 3 * 60  # the uploader writes at least every RETRY_SECONDS
 
 
@@ -94,6 +96,7 @@ def run_uploader(
     poll_seconds: float = POLL_SECONDS,
     retry_seconds: float = RETRY_SECONDS,
     names_refresh_seconds: float = NAMES_REFRESH_SECONDS,
+    purge_every_seconds: float = PURGE_EVERY_SECONDS,
     status: UploaderStatus | None = None,
     log: Callable[[str], None] = print,
     should_stop: Callable[[], bool] = lambda: False,
@@ -108,6 +111,7 @@ def run_uploader(
     outbox, built_at = make_outbox(), clock()
     last_signature = None
     last_push = -retry_seconds
+    last_purge = -purge_every_seconds
     while not should_stop():
         signature = folder_signature(detections_dir)
         # push when the folder changed, and every retry_seconds anyway (failed clips, fresh status)
@@ -129,4 +133,12 @@ def run_uploader(
                 if error or (report is not None and report.errors):
                     log(f"{datetime.now():%H:%M:%S} - in attesa: {error or report.errors[0]}")
                 status.write(outbox_items(detections_dir), report, seconds, error)
+        if clock() - last_purge >= purge_every_seconds:
+            last_purge = clock()
+            try:
+                purged = outbox.purge_uploaded_media()
+                if purged:
+                    log(f"{datetime.now():%H:%M:%S} - tolti da Supabase i file di {purged} clip gia' su iNaturalist")
+            except Exception as exc:  # offline: next hour
+                log(f"{datetime.now():%H:%M:%S} - pulizia dei file gia' su iNaturalist rimandata: {exc!r}")
         sleep(poll_seconds)

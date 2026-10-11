@@ -27,7 +27,7 @@ import shutil
 import tempfile
 import unicodedata
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import requests
@@ -38,6 +38,8 @@ DEFAULT_CLOUD_CONFIG = Path.home() / ".config" / "bird-audio-suite" / "cloud.env
 DEFAULT_CACHE_DIR = Path.home() / ".cache" / "bird-audio-suite"
 STORAGE_BUCKET = "bird-audio"
 SCHEMA = "birds"
+# observations uploaded to iNaturalist keep their files on Supabase this long, then only the rows
+UPLOADED_MEDIA_DAYS = 7
 
 
 @dataclass
@@ -204,6 +206,15 @@ class SupabaseStorage:
         except requests.RequestException:
             return False
 
+    def remove(self, object_paths: list[str]) -> None:
+        """Delete files (missing ones are not an error)."""
+        if not object_paths:
+            return
+        response = self.session.delete(f"{self.base}/object/{self.bucket}", json={"prefixes": object_paths},
+                                       timeout=60)
+        if response.status_code >= 400:
+            raise RuntimeError(f"Supabase Storage delete failed ({response.status_code}): {response.text[:300]}")
+
 
 class LocalMediaStorage:
     """`make web-dev`: the same files, in a local folder served by the dev server."""
@@ -218,6 +229,10 @@ class LocalMediaStorage:
 
     def exists(self, object_path: str) -> bool:
         return (self.folder / object_path).is_file()
+
+    def remove(self, object_paths: list[str]) -> None:
+        for object_path in object_paths:
+            (self.folder / object_path).unlink(missing_ok=True)
 
 
 def render_spectrogram(audio_path: Path, output_path: Path) -> Path:
@@ -417,6 +432,26 @@ class Outbox:
     def _remove(item: OutboxItem) -> None:
         item.wav.unlink(missing_ok=True)
         item.sidecar.unlink(missing_ok=True)
+
+    def purge_uploaded_media(self, days: float = UPLOADED_MEDIA_DAYS, now: datetime | None = None,
+                             limit: int = 200) -> int:
+        """Files of observations on iNaturalist for more than `days`: deleted from Storage (they
+        live on iNaturalist now). The clip rows stay, marked media_deleted_at: reports, counts and
+        rarity are computed from them. Returns how many clips lost their files."""
+        self._connect()
+        now = now or datetime.now(timezone.utc)
+        cutoff = (now - timedelta(days=days)).isoformat()
+        clips = self.rest.get("clips", {
+            "select": "id,media_path,observations!inner(status,uploaded_at)",
+            "observations.status": "eq.uploaded",
+            "observations.uploaded_at": f"lt.{cutoff}",
+            "media_deleted_at": "is.null",
+            "limit": str(limit),
+        })
+        for clip in clips:
+            self.storage.remove([f"{clip['media_path']}.mp3", f"{clip['media_path']}-spectrogram.jpg"])
+            self.rest.update("clips", {"id": f"eq.{clip['id']}"}, {"media_deleted_at": now.isoformat()})
+        return len(clips)
 
 
 # ---------------------------------------------------------------- previous version

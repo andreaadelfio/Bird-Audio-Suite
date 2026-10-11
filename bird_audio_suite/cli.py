@@ -1792,6 +1792,7 @@ def run_backfill_segments(args: argparse.Namespace) -> int:
         "clips",
         {
             "select": "id,media_path,recorded_at,latitude,longitude,observations(scientific_name)",
+            "media_deleted_at": "is.null",  # files already removed (on iNaturalist): nothing to analyse
             **({"or": "(segments.is.null,segments.eq.[])"} if args.retry_empty else {"segments": "is.null"}),
             "order": "recorded_at",
             "limit": str(args.limit or 100000),

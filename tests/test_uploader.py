@@ -20,6 +20,11 @@ class FakeOutbox:
 
     def __init__(self, folder: Path) -> None:
         self.folder, self.pushes, self.offline, self.busy = folder, 0, False, False
+        self.purges = 0
+
+    def purge_uploaded_media(self) -> int:
+        self.purges += 1
+        return 0
 
     def push(self):
         self.pushes += 1
@@ -88,6 +93,7 @@ class UploaderLoopTests(unittest.TestCase):
             status = self.run_loop(folder, outbox, [lambda: None] * 45)  # 45 polls = 135 s
 
         self.assertEqual(outbox.pushes, 3)  # at 0, 60 and 120 s
+        self.assertEqual(outbox.purges, 1)  # once an hour
         self.assertEqual((status["pending"], status["last_error"]), (1, "offline"))
 
     def test_a_busy_folder_is_looked_at_again_after_a_pause(self) -> None:

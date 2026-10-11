@@ -485,3 +485,7 @@ button.small { padding: 0.1rem 0.5rem; font-size: 0.8rem; }
   /* one hour label in three, or they overlap */
   .hour:not(:nth-child(3n + 1)) .label { visibility: hidden; }
 }
+
+/* a week after the iNaturalist upload: the files are gone from Supabase, the clip's facts stay */
+.clip.media-gone { padding: 0.5rem 0.6rem; }
+.media-gone-note { margin: 0 0 0.2rem; color: var(--ink-soft); font-style: italic; }

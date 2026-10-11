@@ -5,7 +5,7 @@ import json
 import tempfile
 import types
 import unittest
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -219,6 +219,40 @@ class LegacyConversionTests(unittest.TestCase):
         data = items[0].data
         self.assertEqual((data["scientific_name"], data["confidence"], data["place_name"], data["latitude"]),
                          ("Turdus merula", 0.91, "Monfalcone", 45.8))
+
+
+class PurgeTests(unittest.TestCase):
+    def test_files_of_observations_on_inaturalist_for_a_week_go_rows_stay(self) -> None:
+        class Rest:
+            def __init__(self) -> None:
+                self.queries, self.updates = [], []
+
+            def get(self, table, params):
+                self.queries.append((table, params))
+                return [{"id": "Allocco_20261004_193743_0.992.wav", "media_path": "20261004/allocco_x"}]
+
+            def update(self, table, filters, values):
+                self.updates.append((table, filters, values))
+
+        class Storage:
+            removed: list = []
+
+            def remove(self, paths):
+                self.removed.extend(paths)
+
+        rest, storage = Rest(), Storage()
+        config = CloudConfig(supabase_url="https://example.supabase.co", supabase_key="k")
+        now = datetime(2026, 10, 18, 12, 0, tzinfo=timezone.utc)
+        purged = Outbox(Path("."), FakeNames(), config, rest=rest, storage=storage).purge_uploaded_media(now=now)
+
+        self.assertEqual(purged, 1)
+        table, params = rest.queries[0]
+        self.assertEqual((table, params["observations.status"], params["media_deleted_at"]),
+                         ("clips", "eq.uploaded", "is.null"))
+        self.assertEqual(params["observations.uploaded_at"], "lt.2026-10-11T12:00:00+00:00")
+        self.assertEqual(storage.removed, ["20261004/allocco_x.mp3", "20261004/allocco_x-spectrogram.jpg"])
+        self.assertEqual(rest.updates, [("clips", {"id": "eq.Allocco_20261004_193743_0.992.wav"},
+                                         {"media_deleted_at": "2026-10-18T12:00:00+00:00"})])
 
 
 class StorageTests(unittest.TestCase):

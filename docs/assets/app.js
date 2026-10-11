@@ -9,7 +9,7 @@ const STATUS_LABELS = {
   pending: "da rivedere",
   confirmed: "confermata",
   rejected: "scartata",
-  uploaded: "su iNaturalist",
+  uploaded: "caricata",
 };
 
 const BUCKET = "bird-audio";
@@ -233,6 +233,16 @@ function findClip(clipId) {
 }
 
 function clipHtml(clip, folded = false) {
+  if (clip.media_deleted_at) {
+    // a week after the iNaturalist upload the files leave Supabase (the PC's uploader removes them)
+    return `
+    <figure class="clip media-gone${folded ? " folded" : ""}" data-clip="${escapeHtml(clip.id)}">
+      <p class="media-gone-note">Audio tolto da Supabase il ${new Date(clip.media_deleted_at).toLocaleDateString("it-IT")}:
+        è su iNaturalist.</p>
+      <figcaption><span>${timeFormat.format(new Date(clip.recorded_at))} · clip_conf ${Number(clip.confidence).toFixed(3)}
+        · ${Math.round(clip.duration_s || 0)} s</span></figcaption>
+    </figure>`;
+  }
   const urls = mediaUrls(clip.media_path);
   const duration = Number(clip.duration_s) || 1;
   const recorded = timeFormat.format(new Date(clip.recorded_at));
@@ -930,7 +940,7 @@ async function uploadObservationToInat(observation, onProgress = () => {}) {
   const name = observation.corrected_scientific_name || observation.scientific_name;
   const facts = observationFacts(observation);
   const clips = (observation.clips || [])
-    .filter((clip) => clip.review !== "wrong")
+    .filter((clip) => clip.review !== "wrong" && !clip.media_deleted_at)
     .sort((a, b) => b.confidence - a.confidence)
     .slice(0, INAT_MAX_SOUNDS);
   if (!clips.length) throw new Error("nessuna clip da caricare (sono tutte scartate)");
@@ -943,8 +953,6 @@ async function uploadObservationToInat(observation, onProgress = () => {}) {
       species_guess: name,
       observed_on_string: localDateTime(facts.firstHeard),
       place_guess: facts.place,
-      description: `Rilevato con BirdNET (confidenza max ${facts.maxConfidence.toFixed(3)}) `
-        + "e verificato a orecchio. Registrazione automatica con Bird Audio Suite.",
       tag_list: "audio,birdnet",
     };
     if (facts.latitude != null && facts.longitude != null) {
@@ -991,7 +999,8 @@ async function uploadObservationToInat(observation, onProgress = () => {}) {
   }
 
   const { error } = await state.client.from("observations")
-    .update({ status: "uploaded", reviewed_at: new Date().toISOString() })
+    // uploaded_at: a week later the PC's uploader removes the files from Supabase
+    .update({ status: "uploaded", reviewed_at: new Date().toISOString(), uploaded_at: new Date().toISOString() })
     .eq("id", observation.id);
   if (error) throw error;
   observation.status = "uploaded";
