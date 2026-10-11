@@ -62,11 +62,22 @@ function formatDay(isoDay) {
   return dayFormat.format(new Date(`${isoDay}T12:00:00`));
 }
 
+// how long a message stays: results go quickly, errors stay longer to be read, "in progress"
+// ones ("Elimino…") are normally replaced by the result and only time out as a safety net
+const STATUS_SECONDS = { done: 4, error: 8, progress: 15 };
+let statusTimer = null;
+
 function setStatus(message, isError = false) {
   const line = $("#status-line");
   line.textContent = message;
   line.classList.toggle("error", isError);
+  clearTimeout(statusTimer);
+  if (!message) return;
+  const kind = isError ? "error" : message.endsWith("…") ? "progress" : "done";
+  statusTimer = setTimeout(() => setStatus(""), STATUS_SECONDS[kind] * 1000);
 }
+
+$("#status-line").addEventListener("click", () => setStatus("")); // tap to dismiss
 
 // ---------------------------------------------------------------- client
 
@@ -339,7 +350,7 @@ content.addEventListener("click", async (event) => {
     if (!observation) return;
     inatButton.disabled = true;
     try {
-      await uploadObservationToInat(observation, (step) => setStatus(`iNaturalist: ${step}`));
+      await uploadObservationToInat(observation, (step) => setStatus(`iNaturalist: ${step}…`));
       setStatus("Caricata su iNaturalist.");
       card.outerHTML = observationHtml(observation);
       refreshCounts();
@@ -1033,7 +1044,7 @@ $("#inat-upload-all").addEventListener("click", async () => {
     for (const [index, observation] of data.entries()) {
       const label = `${observation.species?.italian_name || observation.scientific_name}, ${formatDay(observation.day)}`;
       try {
-        await uploadObservationToInat(observation, (step) => setStatus(`iNaturalist ${index + 1}/${data.length}: ${step}`));
+        await uploadObservationToInat(observation, (step) => setStatus(`iNaturalist ${index + 1}/${data.length}: ${step}…`));
         done += 1;
         log.insertAdjacentHTML("beforeend", `<li>✓ <a href="https://www.inaturalist.org/observations/${Number(observation.inat_observation_id)}"
           target="_blank" rel="noopener">${escapeHtml(label)}</a></li>`);

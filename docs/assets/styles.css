@@ -369,6 +369,7 @@ button.small { padding: 0.1rem 0.5rem; font-size: 0.8rem; }
   color: var(--bg);
   text-align: center;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+  cursor: pointer;
 }
 
 .status-line.error:not(:empty) { background: var(--negative); color: #fff; }
