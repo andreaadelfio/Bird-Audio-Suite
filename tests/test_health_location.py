@@ -33,6 +33,14 @@ class FindProblemsTests(unittest.TestCase):
         # a quiet room is not silence
         self.assertEqual(find_problems(NOW, "active", heartbeat(max_rms=0.0003)), {})
 
+    def test_live_falling_behind_or_growing_too_big(self) -> None:
+        keeping_up = {**heartbeat(), "lag_s": 0.4, "analysis_avg_s": 0.6, "load_pct": 13, "rss_mb": 320}
+        self.assertEqual(find_problems(NOW, "active", keeping_up), {})
+        behind = find_problems(NOW, "active", {**keeping_up, "lag_s": 95, "analysis_avg_s": 6.1, "load_pct": 127})
+        self.assertEqual(list(behind), ["slow"])
+        self.assertIn("95 s", behind["slow"])
+        self.assertEqual(list(find_problems(NOW, "active", {**keeping_up, "rss_mb": 1500})), ["memory"])
+
 
 class AlertStateTests(unittest.TestCase):
     def test_alerts_after_two_checks_once_then_reports_recovery(self) -> None:

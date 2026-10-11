@@ -316,9 +316,18 @@ button.small { padding: 0.1rem 0.5rem; font-size: 0.8rem; }
 .selection-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; padding: 0.4rem 0.5rem 0; }
 .selection-label { font-weight: 600; font-variant-numeric: tabular-nums; }
 
-.trash-button { width: 2rem; height: 2rem; border-color: transparent; background: transparent; }
-.trash-button svg { fill: var(--negative); width: 1.1rem; height: 1.1rem; }
-.trash-button:hover { border-color: var(--negative); }
+/* delete one clip for good: a small round button, never stretched */
+.clip-actions .trash-button {
+  flex: none;
+  width: 2.2rem;
+  height: 2.2rem;
+  min-height: 0;
+  border: 1px solid color-mix(in srgb, var(--negative) 45%, transparent);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--negative) 8%, transparent);
+}
+.trash-button svg { fill: var(--negative); width: 1.05rem; height: 1.05rem; }
+.trash-button:hover, .trash-button:focus-visible { background: color-mix(in srgb, var(--negative) 18%, transparent); }
 
 .clip figcaption {
   display: flex;
@@ -451,11 +460,11 @@ button.small { padding: 0.1rem 0.5rem; font-size: 0.8rem; }
   .play-button { width: 2.9rem; height: 2.9rem; }
   .player .small, .selection-actions .small { min-height: 2.6rem; padding: 0 0.7rem; }
   .chip { min-height: 2.2rem; font-size: 0.85rem; }
-  .trash-button { width: 2.75rem; height: 2.75rem; }
+  .clip-actions .trash-button { width: 2.75rem; height: 2.75rem; }
 
   .clip figcaption { flex-wrap: wrap; }
-  .clip-actions { display: flex; gap: 0.4rem; width: 100%; }
-  .clip-actions button { flex: 1; min-height: 2.75rem; font-size: 0.95rem; }
+  .clip-actions { display: flex; align-items: center; gap: 0.6rem; width: 100%; }
+  .clip-actions button:not(.trash-button) { flex: 1; min-height: 2.75rem; font-size: 0.95rem; }
 
   .observation footer { flex-direction: column; align-items: stretch; }
   .actions { display: grid; grid-template-columns: 1fr 1fr; }

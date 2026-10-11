@@ -28,6 +28,19 @@ class EchoCancellerTests(unittest.TestCase):
         original = samples[: delayed.size]
         self.assertLess(float(np.sqrt(np.mean((delayed - original) ** 2))), 1e-5)
 
+    def test_skipping_ffts_while_the_pc_is_silent_changes_nothing(self) -> None:
+        rng = np.random.default_rng(7)
+        mic = rng.standard_normal(48_000 * 3).astype(np.float32) * 0.1
+        reference = np.zeros_like(mic)
+        reference[48_000:96_000] = rng.standard_normal(48_000).astype(np.float32) * 0.1  # plays for 1 s
+        mic[48_000:96_000] += 0.5 * reference[48_000:96_000]
+        fast, full = EchoCanceller(), EchoCanceller()
+        full.skip_silence = False
+        blocks = [slice(start, start + 1536) for start in range(0, mic.size, 1536)]
+        out_fast = np.concatenate([fast.process(mic[part], reference[part]) for part in blocks])
+        out_full = np.concatenate([full.process(mic[part], reference[part]) for part in blocks])
+        np.testing.assert_allclose(out_fast, out_full, atol=1e-5)
+
     def test_matching_reference_is_subtracted_without_suppressing_unrelated_audio(self) -> None:
         sample_rate = 48_000
         t = np.arange(sample_rate * 2, dtype=np.float32) / sample_rate

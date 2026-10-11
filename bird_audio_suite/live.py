@@ -3,6 +3,7 @@ from __future__ import annotations
 import collections
 import queue
 import threading
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -197,6 +198,7 @@ def run_sliding_window_loop(
     on_error: Callable[[Exception], None] | None = None,
     now: Callable[[], datetime] = datetime.now,
     shutdown_timeout: float = 30.0,
+    on_timing: Callable[[float, float, float], None] | None = None,
 ) -> None:
     """Feed 50%-overlapping windows of ``frames`` to a background detector.
 
@@ -205,6 +207,10 @@ def run_sliding_window_loop(
     thread so audio is never dropped while BirdNET is busy; results are handled
     here, in the caller's thread. On exit (end of frames, Ctrl+C, SIGTERM or an
     error) pending windows are completed and open clips are flushed to disk.
+
+    ``on_timing(analysis_seconds, budget_seconds, lag_seconds)`` after each window: how long the
+    detection took, the time available for it (a new window comes every half slice) and how
+    far behind the microphone the analysis has finished.
     """
     slice_frames = max(1, int(slice_frames))
     slide_step_frames = max(1, slice_frames // 2)
@@ -218,10 +224,15 @@ def run_sliding_window_loop(
                 break
             window, playback_window, window_start_sample, window_start_time = item
             try:
+                started = time.perf_counter()
                 if playback_window is None:
                     result = detect_window(window)  # (grouped, samples[, BirdNET bands per species])
                 else:
                     result = detect_window(window, playback_window)
+                if on_timing:
+                    window_seconds = window.size / float(sample_rate)
+                    lag = (now() - window_start_time).total_seconds() - window_seconds
+                    on_timing(time.perf_counter() - started, window_seconds * slide_step_frames / slice_frames, lag)
                 grouped, working_samples = result[0], result[1]
                 bands = result[2] if len(result) > 2 else None
                 result_queue.put((grouped, working_samples, window_start_sample, window_start_time, bands))

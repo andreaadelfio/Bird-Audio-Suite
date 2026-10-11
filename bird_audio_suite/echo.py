@@ -45,6 +45,8 @@ class EchoCanceller:
     """Streaming subband NLMS: the mic minus the filtered reference. As many samples come out as
     go in, `latency` samples late."""
 
+    skip_silence = True  # no FFTs while the PC is silent (same output: see the tests)
+
     def __init__(self, frame: int = FRAME, hop: int = HOP, taps: int = TAPS, step: float = STEP) -> None:
         self.frame, self.hop, self.taps, self.step = frame, hop, taps, step
         self.window = np.sqrt(np.hanning(frame + 1)[:frame]).astype(np.float32)
@@ -60,6 +62,7 @@ class EchoCanceller:
         bins = self.frame // 2 + 1
         self.weights = np.zeros((self.taps, bins), np.complex64)
         self.history = np.zeros((self.taps, bins), np.complex64)
+        self._silent_frames = self.taps  # the history holds only silence
 
     def process(self, mic: np.ndarray, reference: np.ndarray) -> np.ndarray:
         mic_buffer = np.concatenate((self._mic, np.asarray(mic, np.float32)))
@@ -68,14 +71,22 @@ class EchoCanceller:
         produced = []
         start = 0
         while start + self.frame <= mic_buffer.size:
-            spectrum = np.fft.rfft(mic_buffer[start:start + self.frame] * self.window)
-            self.history = np.roll(self.history, 1, axis=0)
-            self.history[0] = np.fft.rfft(ref_buffer[start:start + self.frame] * self.window)
-            error = spectrum - (self.weights * self.history).sum(axis=0)
-            power = (np.abs(self.history) ** 2).sum(axis=0) + floor
-            self.weights += (self.step * np.conj(self.history) * error / power).astype(np.complex64)
-            # sqrt-Hann on both sides at a quarter-frame hop adds up to 2
-            self._overlap += np.fft.irfft(error, self.frame).astype(np.float32) * self.window / 2
+            mic_frame = mic_buffer[start:start + self.frame]
+            ref_frame = ref_buffer[start:start + self.frame]
+            self._silent_frames = self._silent_frames + 1 if not ref_frame.any() else 0
+            if self.skip_silence and self._silent_frames >= self.taps:
+                # the PC is silent and has been for the whole filter: nothing to subtract, the
+                # frame goes back as it came in (what the FFT round trip would give), without FFTs
+                self._overlap += mic_frame * self.window * self.window / 2
+            else:
+                spectrum = np.fft.rfft(mic_frame * self.window)
+                self.history = np.roll(self.history, 1, axis=0)
+                self.history[0] = np.fft.rfft(ref_frame * self.window)
+                error = spectrum - (self.weights * self.history).sum(axis=0)
+                power = (np.abs(self.history) ** 2).sum(axis=0) + floor
+                self.weights += (self.step * np.conj(self.history) * error / power).astype(np.complex64)
+                # sqrt-Hann on both sides at a quarter-frame hop adds up to 2
+                self._overlap += np.fft.irfft(error, self.frame).astype(np.float32) * self.window / 2
             produced.append(self._overlap[:self.hop].copy())
             self._overlap = np.concatenate((self._overlap[self.hop:], np.zeros(self.hop, np.float32)))
             start += self.hop

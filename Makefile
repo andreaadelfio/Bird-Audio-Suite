@@ -15,15 +15,24 @@ DEVICE_INDEX ?= -1
 PORT ?= 8004
 HOST ?= 127.0.0.1
 
-.PHONY: venv test git dev dev-stop dev_mob web-dev install install-health install-sync start stop restart log log-follow status
+.PHONY: venv test test-fast bench-baseline git dev dev-stop dev_mob web-dev install install-health install-sync start stop restart log log-follow status
 
 # Dedicated environment outside Dropbox (NumPy 2 + LiteRT, no TensorFlow).
 venv:
 	uv venv --python python3.12 "$(VENV_DIR)"
 	VIRTUAL_ENV="$(VENV_DIR)" uv pip install --python "$(VENV_DIR)/bin/python" -r requirements.txt
 
+# The suite, then how long each step takes and how much RAM it uses, against the reference in
+# dev/benchmark_baseline.json (flags what got more than 30% slower)
 test:
+	"$(PYTHON)" -W ignore dev/benchmark.py
+
+test-fast:
 	"$(PYTHON)" -m pytest -q tests
+
+# after a deliberate change (or a new laptop): the current numbers become the reference
+bench-baseline:
+	"$(PYTHON)" -W ignore dev/benchmark.py --save-baseline
 
 # Like the other projects: commit everything and publish (GitHub Pages serves docs/)
 git:

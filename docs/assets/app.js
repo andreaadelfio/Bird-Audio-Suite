@@ -39,7 +39,7 @@ const OBSERVATION_SELECT = "*, species(italian_name,english_name,german_name), c
 
 const state = {
   client: null,
-  view: "review",
+  view: "observations",
   offset: 0,
   species: new Map(),
   trash: new Map(), // observation id -> { whole, clips } shown in the Cestino
@@ -119,7 +119,7 @@ async function fetchObservations() {
     .order("id", { ascending: false })
     .range(state.offset, state.offset + PAGE_SIZE - 1);
 
-  const status = state.view === "review" ? "pending" : $("#filter-status").value;
+  const status = $("#filter-status").value;
   if (status) query = query.eq("status", status);
   if ($("#filter-from").value) query = query.gte("day", $("#filter-from").value);
   if ($("#filter-to").value) query = query.lte("day", $("#filter-to").value);
@@ -356,7 +356,8 @@ content.addEventListener("click", async (event) => {
     const found = findClip(figure.dataset.clip);
     if (!found) return;
     figure.querySelector("audio").pause();
-    const deleted = await deleteForGood([{ observationId: found.observationId, whole: false, clips: [found.clip] }]);
+    const deleted = await deleteForGood([{ observationId: found.observationId, whole: false, clips: [found.clip] }],
+      { ask: false });
     if (deleted && state.view !== "trash") {
       if (found.observation) found.observation.clips = found.observation.clips.filter((clip) => clip.id !== found.clip.id);
       figure.remove();
@@ -380,8 +381,10 @@ content.addEventListener("click", async (event) => {
     try {
       await updateObservation(id, changes);
       setStatus(`Osservazione ${STATUS_LABELS[changes.status]}.`);
+      // a card leaves only when it no longer matches the status you are filtering on
+      const statusFilter = $("#filter-status").value;
       const leavesView =
-        (state.view === "review" && changes.status !== "pending") ||
+        (state.view === "observations" && statusFilter && changes.status !== statusFilter) ||
         (state.view === "trash" && changes.status !== "rejected");
       if (leavesView) {
         card.querySelectorAll("audio").forEach((audio) => audio.pause());
@@ -646,7 +649,7 @@ async function renderObservations(append = false) {
   state.offset += rows.length;
   $("#more").classList.toggle("hidden", rows.length < PAGE_SIZE);
   if (!content.children.length) {
-    content.innerHTML = `<p class="empty">${state.view === "review" ? "Niente da rivedere." : "Nessuna osservazione."}</p>`;
+    content.innerHTML = '<p class="empty">Nessuna osservazione.</p>';
   }
   setStatus("");
 }
@@ -712,13 +715,14 @@ function chunks(items, size) {
   return result;
 }
 
-// entries: [{ observationId, whole, clips }]; true once deleted
-async function deleteForGood(entries) {
+// entries: [{ observationId, whole, clips }]; true once deleted. ask: false for the trash button
+// of a single clip, which deletes at once.
+async function deleteForGood(entries, { ask = true } = {}) {
   const clips = entries.flatMap((entry) => entry.clips);
   const wholeCount = entries.filter((entry) => entry.whole).length;
   const question = `Eliminare definitivamente ${clips.length} clip${wholeCount ? ` (${wholeCount} osservazioni intere)` : ""}?\n\n`
     + "Audio e spettrogrammi vengono cancellati da Supabase e non si possono recuperare dal sito. I WAV sul PC restano.";
-  if (!clips.length || !window.confirm(question)) return false;
+  if (!clips.length || (ask && !window.confirm(question))) return false;
   let deleted = false;
 
   setStatus("Elimino…");
@@ -1136,7 +1140,7 @@ function showSpeciesObservations(scientificName, fromDay) {
   $("#filter-from").value = fromDay;
   $("#filter-to").value = new Date().toISOString().slice(0, 10);
   $("#filters").open = true;
-  state.view = "all";
+  state.view = "observations";
   window.scrollTo(0, 0);
   render();
 }
@@ -1145,7 +1149,7 @@ function showSpeciesObservations(scientificName, fromDay) {
 
 async function render() {
   document.querySelectorAll(".tab").forEach((tab) => tab.classList.toggle("active", tab.dataset.view === state.view));
-  $("#filters").classList.toggle("hidden", state.view !== "all");
+  $("#filters").classList.toggle("hidden", state.view !== "observations");
   $("#more").classList.add("hidden");
   try {
     if (state.view === "report") await renderReport();

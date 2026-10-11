@@ -23,6 +23,9 @@ SILENCE_WINDOW_SECONDS = 10 * 60
 # Digital silence: muted/unplugged inputs read ~0.00004, a quiet room 0.0003+.
 SILENCE_RMS = 0.0001
 CONSECUTIVE_CHECKS_TO_ALERT = 2
+# the analysis finishes this far behind the microphone: BirdNET is slower than real time
+SLOW_LAG_SECONDS = 60
+MEMORY_LIMIT_MB = 1200
 
 
 def runtime_dir() -> Path:
@@ -75,13 +78,23 @@ def find_problems(now: float, service_state: str, heartbeat: dict | None) -> dic
     if age > STALE_AFTER_SECONDS:
         last = datetime.fromtimestamp(float(heartbeat["updated_at"])).strftime("%H:%M")
         return {"stale": f"Nessun audio analizzato dalle {last} ({age / 60:.0f} min)."}
+    problems = {}
     if (
         float(heartbeat.get("recent_seconds", 0)) >= SILENCE_WINDOW_SECONDS - 60
         and float(heartbeat.get("max_rms_recent", 1.0)) < SILENCE_RMS
     ):
         device = heartbeat.get("device", "?")
-        return {"silent": f"Solo silenzio digitale da 10 minuti dal microfono ({device}): è muto o scollegato?"}
-    return {}
+        problems["silent"] = f"Solo silenzio digitale da 10 minuti dal microfono ({device}): è muto o scollegato?"
+    # written by metrics.LiveMetrics
+    lag = float(heartbeat.get("lag_s") or 0)
+    if lag > SLOW_LAG_SECONDS:
+        problems["slow"] = (f"Il live è indietro di {lag:.0f} s sul microfono: BirdNET ci mette "
+                            f"{float(heartbeat.get('analysis_avg_s') or 0):.1f} s per finestra "
+                            f"({float(heartbeat.get('load_pct') or 0):.0f}% del tempo disponibile).")
+    rss = float(heartbeat.get("rss_mb") or 0)
+    if rss > MEMORY_LIMIT_MB:
+        problems["memory"] = f"Il live usa {rss:.0f} MB di RAM (limite di guardia {MEMORY_LIMIT_MB} MB)."
+    return problems
 
 
 def service_state() -> str:

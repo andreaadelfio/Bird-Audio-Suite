@@ -56,6 +56,7 @@ from .detector import BirdNetDetector
 from .echo import ACTIVE_RMS, PlaybackMonitor, PlaybackSubtractor
 from .geolocation import resolve_location
 from .health import HeartbeatWriter
+from .metrics import LiveMetrics
 from .live import LiveDetectionTracker, run_sliding_window_loop
 from .species import SpeciesNames
 
@@ -929,6 +930,7 @@ class LiveToday:
 
 
 LIVE_TODAY = LiveToday()
+LIVE_METRICS = LiveMetrics()
 _PRINT_LOCK = threading.Lock()
 _REMOTE: dict = {"loaded": False, "client": None}
 
@@ -1033,16 +1035,22 @@ def print_daily_detection_summary(detections_dir: Path, names: SpeciesNames | No
             print(title)
         if remote is None:
             print("(Supabase non raggiungibile: solo i dati di questo PC)")
+        # how fast and how heavy the live is, under the table (see metrics.py)
+        performance = LIVE_METRICS.summary_lines()
+        footer = ["", *performance] if performance else []
         if not rows:
-            print("No observations today.")
+            print("\n".join(["No observations today.", *footer]))
             return
         headers = ["time", "taxon_name", "rarity", "avg_counts", "taxon_en", "taxon_ita", "taxon_ger", "conf"]
         widths = {header: max(len(header), max(len(row[header]) for row in rows)) for header in headers}
         header = "|".join(header.ljust(widths[header]) for header in headers)
-        print(f"\033[8;{len(rows) + 2};{len(header)}t", end="")
+        width = max([len(header), *map(len, footer)])
+        print(f"\033[8;{len(rows) + 2 + len(footer)};{width}t", end="")
         print(header)
         for row in rows:
             print("|".join(row[header].ljust(widths[header]) for header in headers))
+        for line in footer:
+            print(line)
 
 
 def record_live_detection_observation(
@@ -1346,7 +1354,9 @@ def start_outbox_worker(detections_dir: Path, species_names: SpeciesNames, verbo
             wake.wait(OUTBOX_RETRY_SECONDS)
             wake.clear()
             try:
+                started = time.perf_counter()
                 report = push_outbox(detections_dir, species_names)
+                LIVE_METRICS.record_upload(time.perf_counter() - started, report.sent)
             except Exception as exc:
                 print(f"{datetime.now():%H:%M:%S} - Invio a Supabase non riuscito: {exc!r}")
                 continue
@@ -1378,7 +1388,11 @@ def subtract_playback_from_frames(frames, sample_rate: int, args: argparse.Names
         print(f"{datetime.now():%H:%M:%S} - Sottrazione audio PC attiva")
     try:
         for frame in frames:
-            yield subtractor.process_with_reference(frame, time.monotonic())
+            # CPU time, not wall time: while the PC plays, waiting for its audio is not a cost
+            started = time.thread_time()
+            result = subtractor.process_with_reference(frame, time.monotonic())
+            LIVE_METRICS.record_echo(time.thread_time() - started, len(frame) / float(sample_rate))
+            yield result
     finally:
         subtractor.close()
 
@@ -1427,7 +1441,8 @@ def run_live_detection(
 
     def detect_window(window, playback_window=None):
         result = detect_live_slice(window, sample_rate, detector, args, playback_window)
-        heartbeat.beat(rms_level(window), device=device_label, place_name=args.place_name)
+        heartbeat.beat(rms_level(window), device=device_label, place_name=args.place_name,
+                       **LIVE_METRICS.snapshot())
         return result
 
     def on_location_change() -> None:
@@ -1445,6 +1460,7 @@ def run_live_detection(
             tracker=tracker,
             on_exported=on_exported,
             on_error=on_error,
+            on_timing=LIVE_METRICS.record_window,
         )
     finally:
         stop_refresh.set()
