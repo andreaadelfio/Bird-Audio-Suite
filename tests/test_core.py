@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import tempfile
 import unittest
 from pathlib import Path
@@ -16,6 +17,7 @@ from bird_audio_suite.audio import (
 )
 from bird_audio_suite.cli import build_parser
 from bird_audio_suite.cli import choose_loudest_sounddevice_index
+from bird_audio_suite.cli import detect_live_slice
 from bird_audio_suite.cli import select_sounddevice_index
 
 
@@ -111,6 +113,68 @@ class CliTests(unittest.TestCase):
 
             self.assertEqual(selected_index, 13)
             probe.assert_called_once_with([devices[0]], 1.0)
+
+
+class LiveSliceTests(unittest.TestCase):
+    def make_args(self) -> argparse.Namespace:
+        return argparse.Namespace(
+            disable_denoise=True,
+            lat=45.0,
+            lon=7.0,
+            min_confidence=0.85,
+            playback_suppression_min_confidence=0.5,
+            verbose=False,
+        )
+
+    def test_species_detected_in_pc_playback_is_not_reported_live(self) -> None:
+        class Detector:
+            def detect_samples(self, samples, *args, **kwargs):
+                species = "Turdus merula"
+                return [
+                    {
+                        "scientific_name": species,
+                        "common_name": "Blackbird",
+                        "start_time": 0.0,
+                        "end_time": 3.0,
+                        "confidence": 0.95 if samples[0] < 0 else 0.9,
+                    }
+                ]
+
+        grouped, _samples, segments = detect_live_slice(
+            np.ones(48_000, dtype=np.float32),
+            48_000,
+            Detector(),
+            self.make_args(),
+            -np.ones(48_000, dtype=np.float32),
+        )
+
+        self.assertEqual(grouped, {})
+        self.assertEqual(segments, {})
+
+    def test_species_not_in_pc_playback_still_reports_live(self) -> None:
+        class Detector:
+            def detect_samples(self, samples, *args, **kwargs):
+                species, common = ("Pica pica", "Magpie") if samples[0] < 0 else ("Turdus merula", "Blackbird")
+                return [
+                    {
+                        "scientific_name": species,
+                        "common_name": common,
+                        "start_time": 0.0,
+                        "end_time": 3.0,
+                        "confidence": 0.95 if samples[0] < 0 else 0.9,
+                    }
+                ]
+
+        grouped, _samples, segments = detect_live_slice(
+            np.ones(48_000, dtype=np.float32),
+            48_000,
+            Detector(),
+            self.make_args(),
+            -np.ones(48_000, dtype=np.float32),
+        )
+
+        self.assertIn("Turdus merula", grouped)
+        self.assertIn("Turdus merula", segments)
 
 
 if __name__ == "__main__":

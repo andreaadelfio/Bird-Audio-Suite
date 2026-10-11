@@ -182,11 +182,12 @@ class LiveDetectionTracker:
         )
 
 
-DetectWindow = Callable[[np.ndarray], tuple[dict[str, tuple[float, float, float, str]], np.ndarray]]
+Frame = np.ndarray | tuple[np.ndarray, np.ndarray | None]
+DetectWindow = Callable[..., tuple[dict[str, tuple[float, float, float, str]], np.ndarray]]
 
 
 def run_sliding_window_loop(
-    frames: Iterable[np.ndarray],
+    frames: Iterable[Frame],
     *,
     sample_rate: int,
     slice_frames: int,
@@ -199,7 +200,8 @@ def run_sliding_window_loop(
 ) -> None:
     """Feed 50%-overlapping windows of ``frames`` to a background detector.
 
-    ``frames`` yields normalized float32 mono blocks. Detection runs in a worker
+    ``frames`` yields normalized float32 mono blocks, or ``(mic, playback)`` blocks
+    when a parallel PC-playback reference is available. Detection runs in a worker
     thread so audio is never dropped while BirdNET is busy; results are handled
     here, in the caller's thread. On exit (end of frames, Ctrl+C, SIGTERM or an
     error) pending windows are completed and open clips are flushed to disk.
@@ -214,9 +216,12 @@ def run_sliding_window_loop(
             item = task_queue.get()
             if item is None:
                 break
-            window, window_start_sample, window_start_time = item
+            window, playback_window, window_start_sample, window_start_time = item
             try:
-                result = detect_window(window)  # (grouped, samples[, BirdNET bands per species])
+                if playback_window is None:
+                    result = detect_window(window)  # (grouped, samples[, BirdNET bands per species])
+                else:
+                    result = detect_window(window, playback_window)
                 grouped, working_samples = result[0], result[1]
                 bands = result[2] if len(result) > 2 else None
                 result_queue.put((grouped, working_samples, window_start_sample, window_start_time, bands))
@@ -243,12 +248,24 @@ def run_sliding_window_loop(
     worker_thread.start()
 
     frames_buf: collections.deque = collections.deque(maxlen=slice_frames)
+    playback_buf: collections.deque = collections.deque(maxlen=slice_frames)
+    has_playback_reference = False
     frames_since_last_window = 0
     total_samples = 0
     try:
         for frame in frames:
+            playback = None
+            if isinstance(frame, tuple):
+                frame, playback = frame
+                has_playback_reference = True
             frame = np.asarray(frame, dtype=np.float32).reshape(-1)
+            playback = (
+                np.asarray(playback, dtype=np.float32).reshape(-1)
+                if playback is not None
+                else np.zeros_like(frame)
+            )
             frames_buf.append(frame)
+            playback_buf.append(playback)
             total_samples += frame.size
             frames_since_last_window += 1
 
@@ -258,10 +275,11 @@ def run_sliding_window_loop(
                 continue
 
             window = np.concatenate(frames_buf, axis=0)
+            playback_window = np.concatenate(playback_buf, axis=0) if has_playback_reference else None
             window_start_sample = total_samples - window.size
             # The last frame has just been captured: date the window from its end.
             window_start_time = now() - timedelta(seconds=window.size / float(sample_rate))
-            task_queue.put((window, window_start_sample, window_start_time))
+            task_queue.put((window, playback_window, window_start_sample, window_start_time))
             frames_since_last_window = 0
     finally:
         task_queue.put(None)

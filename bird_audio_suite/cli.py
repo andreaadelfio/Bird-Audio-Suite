@@ -47,12 +47,13 @@ from .config import (
     DEFAULT_LOCATION_REFRESH_SECONDS,
     DEFAULT_LONGITUDE,
     DEFAULT_PLACE_NAME,
+    DEFAULT_PLAYBACK_SUPPRESSION_MIN_CONFIDENCE,
     DEFAULT_RECORDER_SAMPLE_RATE,
     DEFAULT_SLICE_INTERVAL,
     DEFAULT_NOISE_REDUCTION_FACTOR,
 )
 from .detector import BirdNetDetector
-from .echo import PlaybackMonitor, PlaybackSubtractor
+from .echo import ACTIVE_RMS, PlaybackMonitor, PlaybackSubtractor
 from .geolocation import resolve_location
 from .health import HeartbeatWriter
 from .live import LiveDetectionTracker, run_sliding_window_loop
@@ -269,6 +270,15 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_false",
         help="Do not subtract PC playback from the microphone.",
     )
+    live_parser.add_argument(
+        "--playback-suppression-min-confidence",
+        type=float,
+        default=DEFAULT_PLAYBACK_SUPPRESSION_MIN_CONFIDENCE,
+        help=(
+            "When PC playback is detected as a bird, suppress that species from live observations. "
+            f"Default: {DEFAULT_PLAYBACK_SUPPRESSION_MIN_CONFIDENCE}"
+        ),
+    )
 
     denoise_parser = subparsers.add_parser(
         "denoise",
@@ -354,6 +364,7 @@ def get_default_live_args() -> argparse.Namespace:
         list_devices=False,
         enable_denoise=False,
         enable_playback_subtraction=DEFAULT_ENABLE_PLAYBACK_SUBTRACTION,
+        playback_suppression_min_confidence=DEFAULT_PLAYBACK_SUPPRESSION_MIN_CONFIDENCE,
         noise_ref=None,
         high_pass_hz=DEFAULT_HIGH_PASS_HZ,
         noise_reduction_factor=DEFAULT_NOISE_REDUCTION_FACTOR,
@@ -838,6 +849,7 @@ def interactive_args() -> argparse.Namespace:
                 "Sottrarre l'audio riprodotto dal PC dal microfono",
                 DEFAULT_ENABLE_PLAYBACK_SUBTRACTION,
             ),
+            playback_suppression_min_confidence=DEFAULT_PLAYBACK_SUPPRESSION_MIN_CONFIDENCE,
             noise_ref=noise_ref,
             high_pass_hz=high_pass_hz,
             noise_reduction_factor=noise_reduction_factor,
@@ -1220,6 +1232,7 @@ def detect_live_slice(
     sample_rate: int,
     detector: BirdNetDetector,
     args: argparse.Namespace,
+    playback_samples=None,
 ):
     """Detect on a live slice and return grouped detections and the working samples.
 
@@ -1239,7 +1252,7 @@ def detect_live_slice(
         )
         processing_mode = "denoised"
 
-    def detect(samples):
+    def detect(samples, min_confidence: float | None = None):
         return detector.detect_samples(
             samples,
             sample_rate,
@@ -1248,7 +1261,11 @@ def detect_live_slice(
             when=datetime.now(),
             # lower than the clip threshold: weaker calls of a species already heard are
             # still highlighted on its spectrogram; clips start only above args.min_confidence
-            min_confidence=min(args.min_confidence, SEGMENT_MIN_CONFIDENCE),
+            min_confidence=(
+                min(args.min_confidence, SEGMENT_MIN_CONFIDENCE)
+                if min_confidence is None
+                else min_confidence
+            ),
         )
 
     detections = detect(working_samples)
@@ -1257,12 +1274,33 @@ def detect_live_slice(
         working_samples = raw_samples
         detections = detect(working_samples)
 
+    suppressed_species: set[str] = set()
+    if playback_samples is not None and rms_level(playback_samples) > ACTIVE_RMS:
+        playback_min_confidence = getattr(
+            args,
+            "playback_suppression_min_confidence",
+            DEFAULT_PLAYBACK_SUPPRESSION_MIN_CONFIDENCE,
+        )
+        playback_detections = detect(playback_samples, min_confidence=playback_min_confidence)
+        suppressed_species = {
+            detection.get("scientific_name", "")
+            for detection in playback_detections
+            if float(detection.get("confidence", 0.0)) >= playback_min_confidence
+        }
+        if suppressed_species:
+            detections = [
+                detection
+                for detection in detections
+                if detection.get("scientific_name", "") not in suppressed_species
+            ]
+
     if getattr(args, "verbose", False):
         print(
             f"{datetime.now():%H:%M:%S} - "
             f"mode={processing_mode} "
             f"raw_rms={rms_level(raw_samples):.4f} "
             f"used_rms={rms_level(working_samples):.4f} "
+            f"pc_suppressed={','.join(sorted(suppressed_species)) or '-'} "
             f"detections={sum(1 for d in detections if float(d.get('confidence', 0)) >= args.min_confidence)}"
         )
 
@@ -1330,7 +1368,7 @@ def subtract_playback_from_frames(frames, sample_rate: int, args: argparse.Names
 
     if not PlaybackMonitor.available():
         if getattr(args, "verbose", False):
-            print(f"{datetime.now():%H:%M:%S} - parec non trovato: niente sottrazione audio PC")
+            print(f"{datetime.now():%H:%M:%S} - pw-record/parec non trovati: niente sottrazione audio PC")
         yield from frames
         return
 
@@ -1340,7 +1378,7 @@ def subtract_playback_from_frames(frames, sample_rate: int, args: argparse.Names
         print(f"{datetime.now():%H:%M:%S} - Sottrazione audio PC attiva")
     try:
         for frame in frames:
-            yield subtractor.process(frame, time.monotonic())
+            yield subtractor.process_with_reference(frame, time.monotonic())
     finally:
         subtractor.close()
 
@@ -1387,8 +1425,8 @@ def run_live_detection(
     def on_error(exc: Exception) -> None:
         print(f"{datetime.now():%H:%M:%S} - Detection error: {exc!r}")
 
-    def detect_window(window):
-        result = detect_live_slice(window, sample_rate, detector, args)
+    def detect_window(window, playback_window=None):
+        result = detect_live_slice(window, sample_rate, detector, args, playback_window)
         heartbeat.beat(rms_level(window), device=device_label, place_name=args.place_name)
         return result
 

@@ -1,7 +1,7 @@
 """Remove from the microphone what the PC itself is playing (videos, music, calls).
 
 The live service also reads the monitor of the default output (what goes to the speakers,
-through `parec`) and subtracts from the microphone its "imprint": the playback as it reaches
+through `pw-record`, or `parec` where PipeWire is missing) and subtracts from the microphone its "imprint": the playback as it reaches
 the microphone, learned continuously by an adaptive filter (NLMS in 1024-point subbands with
 16 taps, ~85 ms of echo). Only a linear subtraction: unlike the echo cancellers of video calls
 there is no suppressor that turns the microphone down while the PC plays, so a bird singing
@@ -38,6 +38,7 @@ ALIGN_WINDOW_SECONDS = 8.0
 ALIGN_EVERY_SECONDS = 10.0
 ACTIVE_RMS = 1e-4  # about -80 dBFS: below this the PC is silent
 QUIET_SECONDS = 5.0  # "stopped playing" only after this much silence
+GAP_SECONDS = 0.5  # no monitor data for this long: the output is asleep, nothing is playing
 
 
 class EchoCanceller:
@@ -99,14 +100,21 @@ def estimate_lag(mic: np.ndarray, reference: np.ndarray, max_lag: int) -> tuple[
 
 
 class PlaybackMonitor:
-    """What the PC is playing, read with `parec` from the monitor of the default output."""
+    """What the PC is playing, read from the monitor of the default output.
+
+    With PipeWire the capture stream is passive: it does not keep the output awake, so the
+    speakers' amplifier is suspended as usual when nothing plays, and data arrives only while
+    something does. Each stretch of playback after such a pause is a new "generation", counted
+    from 0 (its timing has nothing to do with the previous one). `parec` (plain PulseAudio) has
+    no passive mode: it keeps the output awake and streams silence.
+    """
 
     def __init__(self, sample_rate: int, keep_seconds: float = 10.0) -> None:
         self.sample_rate = sample_rate
         self.ring = np.zeros(int(keep_seconds * sample_rate), np.float32)
-        self.count = 0  # samples read since this parec started
+        self.count = 0  # samples read in this generation
         self.last_time = 0.0  # when the last ones arrived (time.monotonic)
-        self.generation = 0  # a restarted parec counts from 0 again
+        self.generation = 0  # a new one after every pause or restart of the reader
         self.lock = threading.Lock()
         self.stopped = threading.Event()
         self.process: subprocess.Popen | None = None
@@ -114,7 +122,21 @@ class PlaybackMonitor:
 
     @staticmethod
     def available() -> bool:
-        return shutil.which("parec") is not None
+        return PlaybackMonitor.command(48000) is not None
+
+    @staticmethod
+    def command(sample_rate: int) -> list[str] | None:
+        if shutil.which("pw-record"):
+            return ["pw-record", "--rate", str(sample_rate), "--channels", "1", "--format", "f32",
+                    "--latency", "20ms", "-P",
+                    "{ stream.capture.sink = true node.passive = true "
+                    "node.name = bird-audio-suite-pc-playback media.name = pc-playback-reference }",
+                    "-"]
+        if shutil.which("parec"):
+            return ["parec", "--device=@DEFAULT_MONITOR@", "--raw", "--format=float32le",
+                    f"--rate={sample_rate}", "--channels=1", "--latency-msec=20",
+                    "--client-name=bird-audio-suite", "--stream-name=pc-playback-reference"]
+        return None
 
     def start(self) -> PlaybackMonitor:
         self.thread.start()
@@ -126,17 +148,14 @@ class PlaybackMonitor:
             self.process.terminate()
 
     def _run(self) -> None:
-        command = ["parec", "--device=@DEFAULT_MONITOR@", "--raw", "--format=float32le",
-                   f"--rate={self.sample_rate}", "--channels=1", "--latency-msec=20",
-                   "--client-name=bird-audio-suite", "--stream-name=pc-playback-reference"]
-        while not self.stopped.is_set():
+        command = self.command(self.sample_rate)
+        while command and not self.stopped.is_set():
             try:
                 self.process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
             except OSError:
                 return
             with self.lock:
-                self.count, self.last_time = 0, 0.0
-                self.generation += 1
+                self.last_time = 0.0  # the next data starts a new generation
             leftover = b""
             while not self.stopped.is_set():
                 data = self.process.stdout.read1(16384)
@@ -152,17 +171,27 @@ class PlaybackMonitor:
 
     def _append(self, samples: np.ndarray) -> None:
         size = self.ring.size
+        now = time.monotonic()
         with self.lock:
+            if not self.last_time or now - self.last_time > GAP_SECONDS:
+                self.ring[:] = 0
+                self.count = 0
+                self.generation += 1
             samples = samples[-size:]
             index = (self.count + np.arange(samples.size)) % size
             self.ring[index] = samples
             self.count += samples.size
-            self.last_time = time.monotonic()
+            self.last_time = now
 
     def position(self) -> tuple[int, float, int]:
-        """(samples read, when the last ones arrived, parec generation)."""
+        """(samples read, when the last ones arrived, generation)."""
         with self.lock:
             return self.count, self.last_time, self.generation
+
+    def flowing(self) -> bool:
+        """Data is arriving: something is playing (or, with parec, the output is awake)."""
+        with self.lock:
+            return bool(self.last_time) and time.monotonic() - self.last_time <= GAP_SECONDS
 
     def read(self, start: int, length: int) -> np.ndarray:
         """Samples [start, start + length); silence for what is not (or no longer) there."""
@@ -186,6 +215,9 @@ class PlaybackSubtractor:
         self.margin = int(LAG_MARGIN_SECONDS * sample_rate)
         self.mic_count = 0
         self.offset: int | None = None  # reference index = mic index + offset
+        # what _align learned about the rough offset (the two streams' latencies differ by a
+        # fairly constant amount): applied straight away when playback starts again
+        self.correction = 0
         self.generation = -1
         self.history_mic: deque[np.ndarray] = deque()
         self.history_ref: deque[np.ndarray] = deque()
@@ -198,6 +230,9 @@ class PlaybackSubtractor:
         self.monitor.stop()
 
     def process(self, block: np.ndarray, arrived_at: float) -> np.ndarray:
+        return self.process_with_reference(block, arrived_at)[0]
+
+    def process_with_reference(self, block: np.ndarray, arrived_at: float) -> tuple[np.ndarray, np.ndarray]:
         """`arrived_at`: time.monotonic() when the block reached the audio callback."""
         block = np.asarray(block, np.float32).reshape(-1)
         start = self.mic_count
@@ -205,7 +240,8 @@ class PlaybackSubtractor:
         if self.monitor.position()[2] != self.generation:
             self.offset = self._rough_offset(arrived_at)
             self.canceller.reset()
-        if self.offset is None:
+        if self.offset is None or not self.monitor.flowing():
+            # nothing playing (the output is asleep): no data will come, do not wait for it
             reference = np.zeros(block.size, np.float32)
         else:
             needed = start + self.offset + block.size
@@ -215,7 +251,7 @@ class PlaybackSubtractor:
             reference = self.monitor.read(start + self.offset, block.size)
         self._track_playing(reference)
         self._remember(block, reference)
-        return self.canceller.process(block, reference)
+        return self.canceller.process(block, reference), reference
 
     def _rough_offset(self, arrived_at: float) -> int | None:
         """From arrival times: tens of ms off, fixed by _align as soon as the PC plays."""
@@ -224,7 +260,7 @@ class PlaybackSubtractor:
             return None
         self.generation = generation
         reference_now = count + (arrived_at - last_time) * self.sample_rate
-        return int(round(reference_now - self.mic_count)) + self.margin
+        return int(round(reference_now - self.mic_count)) + self.margin + self.correction
 
     def _track_playing(self, reference: np.ndarray) -> None:
         if reference.size and float(np.sqrt(np.mean(reference ** 2))) > ACTIVE_RMS:
@@ -259,5 +295,6 @@ class PlaybackSubtractor:
         shift = lag - self.margin
         if abs(shift) > self.sample_rate // 500:  # more than 2 ms off: line up and learn again
             self.offset -= shift
+            self.correction -= shift
             self.canceller.reset()
             self.log(f"audio del PC riallineato al microfono ({shift / self.sample_rate * 1000:+.0f} ms)")

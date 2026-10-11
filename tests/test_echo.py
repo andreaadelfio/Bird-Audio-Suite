@@ -7,7 +7,8 @@ from unittest.mock import patch
 import numpy as np
 
 from bird_audio_suite.cli import subtract_playback_from_frames
-from bird_audio_suite.echo import EchoCanceller, estimate_lag
+from bird_audio_suite import echo
+from bird_audio_suite.echo import EchoCanceller, PlaybackMonitor, PlaybackSubtractor, estimate_lag
 
 
 class EchoCancellerTests(unittest.TestCase):
@@ -72,6 +73,46 @@ class PlaybackSubtractionFrameTests(unittest.TestCase):
 
         self.assertEqual(len(output), 1)
         np.testing.assert_array_equal(output[0], frames[0])
+
+
+class PassiveMonitorTests(unittest.TestCase):
+    def test_monitor_capture_does_not_keep_the_output_awake(self) -> None:
+        with patch("bird_audio_suite.echo.shutil.which", side_effect=lambda name: f"/usr/bin/{name}"):
+            command = PlaybackMonitor.command(48_000)
+        self.assertEqual(command[0], "pw-record")
+        self.assertIn("node.passive = true", " ".join(command))
+
+    def test_playback_after_a_pause_counts_as_new(self) -> None:
+        monitor = PlaybackMonitor(48_000, keep_seconds=1.0)
+        with patch("bird_audio_suite.echo.time.monotonic", return_value=100.0):
+            monitor._append(np.ones(480, np.float32))
+        with patch("bird_audio_suite.echo.time.monotonic", return_value=100.01):
+            monitor._append(np.ones(480, np.float32))
+        self.assertEqual(monitor.position()[0::2], (960, 1))
+        with patch("bird_audio_suite.echo.time.monotonic", return_value=100.01 + echo.GAP_SECONDS + 1):
+            monitor._append(np.full(480, 0.5, np.float32))
+        self.assertEqual(monitor.position()[0::2], (480, 2))
+        np.testing.assert_array_equal(monitor.read(0, 480), np.full(480, 0.5, np.float32))
+
+    def test_silent_pc_does_not_slow_the_microphone_down(self) -> None:
+        class SleepingOutput:
+            def position(self):
+                return 4800, 1.0, 1  # data came long ago: the output is asleep
+
+            def flowing(self):
+                return False
+
+            def read(self, start, length):
+                raise AssertionError("nothing to read while the PC is silent")
+
+            def stop(self):
+                pass
+
+        subtractor = PlaybackSubtractor(48_000, monitor=SleepingOutput())
+        with patch("bird_audio_suite.echo.time.sleep", side_effect=AssertionError("waited")):
+            out, reference = subtractor.process_with_reference(np.ones(512, np.float32), arrived_at=50.0)
+        self.assertEqual(out.size, 512)
+        self.assertFalse(reference.any())
 
 
 if __name__ == "__main__":
