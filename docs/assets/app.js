@@ -362,7 +362,9 @@ content.addEventListener("click", async (event) => {
     try {
       await uploadObservationToInat(observation, (step) => setStatus(`iNaturalist: ${step}…`));
       setStatus("Caricata su iNaturalist.");
-      card.outerHTML = observationHtml(observation);
+      // now "caricata": it leaves a list filtered on another status (e.g. the confirmed ones)
+      if (leavesFilteredView("uploaded")) removeCard(card);
+      else card.outerHTML = observationHtml(observation);
       refreshCounts();
     } catch (error) {
       inatButton.disabled = false;
@@ -402,15 +404,8 @@ content.addEventListener("click", async (event) => {
     try {
       await updateObservation(id, changes);
       setStatus(`Osservazione ${STATUS_LABELS[changes.status]}.`);
-      // a card leaves only when it no longer matches the status you are filtering on
-      const statusFilter = $("#filter-status").value;
-      const leavesView =
-        (state.view === "observations" && statusFilter && changes.status !== statusFilter) ||
-        (state.view === "trash" && changes.status !== "rejected");
-      if (leavesView) {
-        card.querySelectorAll("audio").forEach((audio) => audio.pause());
-        card.classList.add("leaving");
-        setTimeout(() => card.remove(), 250);
+      if (leavesFilteredView(changes.status)) {
+        removeCard(card);
       } else {
         card.className = `observation status-${changes.status}`;
         card.querySelector(".badge").textContent = STATUS_LABELS[changes.status];
@@ -421,6 +416,20 @@ content.addEventListener("click", async (event) => {
     }
   }
 });
+
+// a card leaves only when its new status no longer matches the list it is in: the status you
+// are filtering on, or the Cestino (rejected only)
+function leavesFilteredView(newStatus) {
+  const statusFilter = $("#filter-status").value;
+  return (state.view === "observations" && Boolean(statusFilter) && newStatus !== statusFilter)
+    || (state.view === "trash" && newStatus !== "rejected");
+}
+
+function removeCard(card) {
+  card.querySelectorAll("audio").forEach((audio) => audio.pause());
+  card.classList.add("leaving");
+  setTimeout(() => card.remove(), 250);
+}
 
 // one clip at a time; every playback runs over a range: the kept part (trim), a BirdNET band,
 // the selection or from a tapped point; "Ripeti" loops over it
