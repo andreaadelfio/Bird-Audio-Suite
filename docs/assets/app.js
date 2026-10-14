@@ -259,7 +259,7 @@ function clipHtml(clip, folded = false) {
         <span class="selection hidden"></span>
         <span class="playhead"></span>
       </div>
-      <audio preload="none" src="${escapeHtml(urls.audio)}"></audio>
+      <audio preload="none" crossorigin="anonymous" src="${escapeHtml(urls.audio)}"></audio>
       <div class="player">
         <button type="button" class="play-button" data-player="toggle" aria-label="Riproduci">${ICON_PLAY}</button>
         <span class="player-time">0:00 / ${formatSeconds(duration)}</span>
@@ -455,10 +455,68 @@ function seekWhenReady(audio, seconds) {
   }
 }
 
-function playRange(figure, start, end) {
+// ---------------------------------------------------------------- listening level
+
+// Clips recorded until October 2026 sit 40-50 dB under full scale (system mic volume at 45%, far
+// birds). Each clip plays through Web Audio with the gain that brings its peak to -1 dB, at most
+// +30 dB: the uploader's rule for new MP3s, which so stay as they are. The peak is measured once
+// per clip, decoding its MP3 (then the <audio> element reads it from the browser cache).
+const LISTENING_PEAK_DB = -1;
+const LISTENING_MAX_GAIN_DB = 30;
+let listeningContext = null;
+const listeningGains = new WeakMap(); // <audio> -> Promise of its gain in dB (null: plays as it is)
+
+function audioContext() {
+  if (!listeningContext) {
+    const Context = window.AudioContext || window.webkitAudioContext;
+    if (!Context) return null;
+    listeningContext = new Context();
+    // iPhone: keep playing with the silent switch on, as the plain <audio> element does
+    if (navigator.audioSession) navigator.audioSession.type = "playback";
+  }
+  return listeningContext;
+}
+
+async function peakOf(url, context) {
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`audio non scaricabile (${response.status})`);
+  const buffer = await context.decodeAudioData(await response.arrayBuffer());
+  let peak = 0;
+  for (let channel = 0; channel < buffer.numberOfChannels; channel += 1) {
+    const samples = buffer.getChannelData(channel);
+    for (let index = 0; index < samples.length; index += 1) {
+      const value = Math.abs(samples[index]);
+      if (value > peak) peak = value;
+    }
+  }
+  return peak;
+}
+
+function listeningGain(audio) {
+  if (!listeningGains.has(audio)) {
+    listeningGains.set(audio, (async () => {
+      const context = audioContext();
+      if (!context) return null; // no Web Audio: plain playback
+      const peak = await peakOf(audio.src, context);
+      const gainDb = peak > 0 ? Math.min(LISTENING_PEAK_DB - 20 * Math.log10(peak), LISTENING_MAX_GAIN_DB) : 0;
+      const gain = context.createGain();
+      gain.gain.value = 10 ** (gainDb / 20);
+      context.createMediaElementSource(audio).connect(gain).connect(context.destination);
+      return gainDb;
+    })().catch((error) => {
+      console.warn("Volume della clip non calcolato, la riproduco così com'è:", error);
+      return null;
+    }));
+  }
+  return listeningGains.get(audio);
+}
+
+async function playRange(figure, start, end) {
   const audio = figure.querySelector("audio");
   playerState(figure).range = { start, end };
   state.currentFigure = figure;
+  audioContext()?.resume(); // inside the tap: browsers start audio only on a user gesture
+  await listeningGain(audio);
   seekWhenReady(audio, start);
   audio.play().catch((error) => setStatus(`Audio: ${error.message}`, true));
 }

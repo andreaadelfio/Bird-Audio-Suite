@@ -106,6 +106,7 @@ python bird_audio_cli.py denoise --input ./recording.wav --noise-ref ./noise.wav
   - bande gialle sullo spettrogramma dove BirdNET ha sentito la specie (piu' intense = piu' sicure), e sotto un pulsante per ciascuna che fa ascoltare solo quel tratto;
   - tocca lo spettrogramma per ascoltare da quel punto, trascina per selezionare un tratto: **Ascolta selezione** o **Taglia qui**; la parte tagliata resta ombreggiata, **togli taglio** la ripristina; il file su Supabase resta intero, ma su iNaturalist viene caricata solo la parte tenuta;
   - player: play/pausa, −2 s, velocita' 1×/½×, **Ripeti** (in loop il tratto o la selezione); da tastiera spazio e frecce;
+  - volume: ogni clip suona con il picco a -1 dB (al massimo +30 dB), calcolato al primo play decodificando l'MP3 e applicato con Web Audio: anche le clip vecchie, registrate 40-50 dB sotto, si sentono bene; le nuove sono gia' normalizzate e restano com'erano;
   - cestino rosso tondo: elimina subito e definitivamente quella clip (audio, spettrogramma e riga su Supabase), senza conferma e senza passare dal Cestino.
 - **Report**: 7/30/90 giorni, specie (cliccabili, aprono le loro osservazioni del periodo), clip, minuti di audio, specie nuove, attivita' per ora.
 - **Cestino**: osservazioni e clip scartate, da riascoltare e ripristinare o eliminare definitivamente (con conferma). L'eliminazione cancella righe e file da Supabase e annota le clip in `birds.deleted_clips`, cosi' il PC non le rimanda.
