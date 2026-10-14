@@ -44,6 +44,7 @@ class LiveMetrics:
         self.windows: deque[tuple[float, float, float, float]] = deque()  # (t, analysis, budget, lag)
         self.echo: deque[tuple[float, float, float]] = deque()  # (t, seconds spent, audio seconds)
         self.cpu: deque[tuple[float, float]] = deque([(clock(), cpu_seconds())])
+        self.input_gain = None  # inputgain.SourceVolumeCompensation, when the live uses one
 
     def _trim(self, now: float) -> None:
         for samples in (self.windows, self.echo):
@@ -108,4 +109,6 @@ class LiveMetrics:
             resources.append(f"CPU {data['cpu_pct']:.0f}%")
         if data["echo_pct"] is not None:
             resources.append(f"sottrazione PC {data['echo_pct']:.1f}% CPU")
+        if self.input_gain is not None and self.input_gain.volume_db is not None:
+            resources.append(f"mic di sistema {self.input_gain.volume_db:.1f} dB (compensato {self.input_gain.gain_db:+.1f})")
         return [timing, " · ".join(resources)]

@@ -56,6 +56,7 @@ from .detector import BirdNetDetector
 from .echo import ACTIVE_RMS, PlaybackMonitor, PlaybackSubtractor
 from .geolocation import resolve_location
 from .health import HeartbeatWriter
+from .inputgain import SOUND_SERVER_DEVICES, SourceVolumeCompensation
 from .metrics import LiveMetrics
 from .uploader import read_status as read_uploader_status, status_line as uploader_status_line
 from .live import LiveDetectionTracker, run_sliding_window_loop
@@ -1371,6 +1372,21 @@ def start_table_refresher(detections_dir: Path, species_names: SpeciesNames):
     return wake, stop
 
 
+def compensate_system_volume(frames, device_label: str, args: argparse.Namespace):
+    """Recordings at the microphone's own level, whatever the system mic volume (inputgain.py).
+    Only for devices that go through the sound server, which is where that volume applies."""
+    if device_label.lower() not in SOUND_SERVER_DEVICES or not SourceVolumeCompensation.available():
+        yield from frames
+        return
+    compensation = SourceVolumeCompensation(log=lambda message: print(f"{datetime.now():%H:%M:%S} - {message}"))
+    LIVE_METRICS.input_gain = compensation
+    try:
+        for frame in frames:
+            yield compensation.apply(frame)
+    finally:
+        compensation.stop()
+
+
 def subtract_playback_from_frames(frames, sample_rate: int, args: argparse.Namespace):
     """Yield live frames after subtracting the default output monitor, when available."""
     if not getattr(args, "enable_playback_subtraction", DEFAULT_ENABLE_PLAYBACK_SUBTRACTION):
@@ -1451,6 +1467,7 @@ def run_live_detection(
 
     stop_refresh = start_location_refresh(args, on_location_change, DEFAULT_LOCATION_REFRESH_SECONDS)
     print_daily_detection_summary(args.detections_dir, species_names)
+    frames = compensate_system_volume(frames, device_label, args)
     frames = subtract_playback_from_frames(frames, sample_rate, args)
     try:
         run_sliding_window_loop(
