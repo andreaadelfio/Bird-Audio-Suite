@@ -262,30 +262,13 @@ def render_spectrogram(audio_path: Path, output_path: Path) -> Path:
     return output_path
 
 
-LISTENING_PEAK_DB = -1.0
-LISTENING_MAX_GAIN_DB = 30.0
-
-
-def listening_gain(samples) -> float:
-    """Gain that brings the peak to LISTENING_PEAK_DB: birds are far away, clips came out 40 dB
-    under full scale. At most +30 dB, so a clip of pure background noise is not blown up."""
-    import numpy as np
-
-    peak = float(np.max(np.abs(samples))) if len(samples) else 0.0
-    if peak <= 0:
-        return 1.0
-    gain_db = min(LISTENING_PEAK_DB - 20 * np.log10(peak), LISTENING_MAX_GAIN_DB)
-    return float(10 ** (gain_db / 20))
-
-
-def encode_mp3(audio_path: Path, output_path: Path, normalize: bool = True) -> Path:
+def encode_mp3(audio_path: Path, output_path: Path) -> Path:
     """MP3 for listening and for iNaturalist: ~8x smaller than the WAV, BirdNET scores it the same.
-    Normalized for listening (the WAV that BirdNET analysed keeps its level)."""
+    At the recorded level (no normalization: it raises the background as much as the bird; the
+    site has a volume up to +30 dB instead)."""
     import soundfile
 
     samples, sample_rate = soundfile.read(str(audio_path), dtype="float32")
-    if normalize:
-        samples = samples * listening_gain(samples)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     soundfile.write(str(output_path), samples, sample_rate, format="MP3", subtype="MPEG_LAYER_III",
                     compression_level=0.3, bitrate_mode="VARIABLE")

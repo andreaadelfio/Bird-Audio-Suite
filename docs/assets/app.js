@@ -455,16 +455,17 @@ function seekWhenReady(audio, seconds) {
   }
 }
 
-// ---------------------------------------------------------------- listening level
+// ---------------------------------------------------------------- volume
 
-// Clips recorded until October 2026 sit 40-50 dB under full scale (system mic volume at 45%, far
-// birds). Each clip plays through Web Audio with the gain that brings its peak to -1 dB, at most
-// +30 dB: the uploader's rule for new MP3s, which so stay as they are. The peak is measured once
-// per clip, decoding its MP3 (then the <audio> element reads it from the browser cache).
-const LISTENING_PEAK_DB = -1;
-const LISTENING_MAX_GAIN_DB = 30;
+// One volume for every clip, set by you, up to +30 dB (×32): clips recorded until October 2026
+// sit 40-50 dB under full scale, newer ones at the microphone's real level. The <audio> element
+// stops at 100%, so playback goes through a Web Audio gain. Remembered in this browser.
+const VOLUME_KEY = "volumeDb";
+const VOLUME_MIN_DB = -20;
+const VOLUME_MAX_DB = 30;
+let volumeDb = Math.min(Math.max(Number(storageGet(VOLUME_KEY)) || 0, VOLUME_MIN_DB), VOLUME_MAX_DB);
 let listeningContext = null;
-const listeningGains = new WeakMap(); // <audio> -> Promise of its gain in dB (null: plays as it is)
+const volumeGains = new Set();
 
 function audioContext() {
   if (!listeningContext) {
@@ -477,46 +478,51 @@ function audioContext() {
   return listeningContext;
 }
 
-async function peakOf(url, context) {
-  const response = await fetch(url);
-  if (!response.ok) throw new Error(`audio non scaricabile (${response.status})`);
-  const buffer = await context.decodeAudioData(await response.arrayBuffer());
-  let peak = 0;
-  for (let channel = 0; channel < buffer.numberOfChannels; channel += 1) {
-    const samples = buffer.getChannelData(channel);
-    for (let index = 0; index < samples.length; index += 1) {
-      const value = Math.abs(samples[index]);
-      if (value > peak) peak = value;
-    }
-  }
-  return peak;
+function volumeLabel(db) {
+  return `${Math.round(100 * 10 ** (db / 20))}%`;
 }
 
-function listeningGain(audio) {
-  if (!listeningGains.has(audio)) {
-    listeningGains.set(audio, (async () => {
-      const context = audioContext();
-      if (!context) return null; // no Web Audio: plain playback
-      const peak = await peakOf(audio.src, context);
-      const gainDb = peak > 0 ? Math.min(LISTENING_PEAK_DB - 20 * Math.log10(peak), LISTENING_MAX_GAIN_DB) : 0;
-      const gain = context.createGain();
-      gain.gain.value = 10 ** (gainDb / 20);
-      context.createMediaElementSource(audio).connect(gain).connect(context.destination);
-      return gainDb;
-    })().catch((error) => {
-      console.warn("Volume della clip non calcolato, la riproduco così com'è:", error);
-      return null;
-    }));
+function routeThroughVolume(audio) {
+  if (audio.dataset.volume) return;
+  const context = audioContext();
+  if (!context) return; // no Web Audio: plain playback, at most 100%
+  try {
+    const gain = context.createGain();
+    gain.gain.value = 10 ** (volumeDb / 20);
+    context.createMediaElementSource(audio).connect(gain).connect(context.destination);
+    volumeGains.add(gain);
+    audio.dataset.volume = "1";
+  } catch (error) {
+    console.warn("Volume oltre il 100% non disponibile per questa clip:", error);
   }
-  return listeningGains.get(audio);
 }
 
-async function playRange(figure, start, end) {
+function setVolume(db) {
+  volumeDb = Math.min(Math.max(db, VOLUME_MIN_DB), VOLUME_MAX_DB);
+  storageSet(VOLUME_KEY, volumeDb ? String(volumeDb) : "");
+  const now = listeningContext ? listeningContext.currentTime : 0;
+  // also on what is playing now, smoothed over a few ms (no click)
+  for (const gain of volumeGains) gain.gain.setTargetAtTime(10 ** (volumeDb / 20), now, 0.02);
+  $("#volume").value = String(volumeDb);
+  $("#volume-value").textContent = volumeLabel(volumeDb);
+  $("#volume-toggle").title = `Volume ${volumeLabel(volumeDb)}`;
+}
+
+$("#volume-toggle").addEventListener("click", () => {
+  const panel = $("#volume-panel");
+  panel.classList.toggle("hidden");
+  $("#volume-toggle").setAttribute("aria-expanded", String(!panel.classList.contains("hidden")));
+});
+$("#volume").addEventListener("input", (event) => setVolume(Number(event.target.value)));
+$("#volume-reset").addEventListener("click", () => setVolume(0));
+setVolume(volumeDb);
+
+function playRange(figure, start, end) {
   const audio = figure.querySelector("audio");
   playerState(figure).range = { start, end };
   state.currentFigure = figure;
   audioContext()?.resume(); // inside the tap: browsers start audio only on a user gesture
-  await listeningGain(audio);
+  routeThroughVolume(audio);
   seekWhenReady(audio, start);
   audio.play().catch((error) => setStatus(`Audio: ${error.message}`, true));
 }

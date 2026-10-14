@@ -79,6 +79,11 @@ button, input, select, textarea { font: inherit; color: inherit; }
   font-weight: 600;
 }
 
+/* volume for every clip, beyond 100% (opened from the header) */
+.volume-panel { display: flex; align-items: center; gap: 0.6rem; width: 100%; }
+.volume-panel input[type="range"] { flex: 1; min-width: 0; accent-color: var(--accent); }
+.volume-panel output { min-width: 3.6rem; text-align: right; font-weight: 600; font-variant-numeric: tabular-nums; }
+
 /* iNaturalist panel, opened from the header */
 .inat-panel {
   display: grid;
@@ -445,6 +450,7 @@ button.small { padding: 0.1rem 0.5rem; font-size: 0.8rem; }
 
   .top-bar h1 { font-size: 1.15rem; flex: 1; }
   .tabs { width: 100%; order: 3; }
+  .volume-panel { order: 2; }
   .tab { flex: 1; min-height: 2.6rem; padding: 0.35rem 0.3rem; white-space: nowrap; font-size: 0.86rem; }
   .trash-head .danger { justify-self: stretch; }
 
