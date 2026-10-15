@@ -1879,7 +1879,7 @@ def run_backfill_segments(args: argparse.Namespace) -> int:
             print(f"  {clip['id']}: {exc}")
         if index % 25 == 0:
             print(f"  {index}/{len(clips)}")
-    print(f"Fatto: {done} clip analizzate, {empty} dove BirdNET non ritrova la specie (nemmeno sopra 0.1).")
+    print(f"Fatto: {done} clip analizzate, {empty} dove BirdNET non sente la specie da 0.6 in su.")
     return 0
 
 

@@ -358,7 +358,7 @@ button.inat { border-color: var(--uploaded); color: var(--uploaded); }
 
 .spectrogram { display: block; width: 100%; height: 100%; object-fit: fill; pointer-events: none; }
 
-/* where BirdNET heard the species, from 0.3: green when likely (>= 0.8), amber when unsure;
+/* where BirdNET heard the species, from 0.6: green when likely (>= 0.8), amber when unsure (0.6-0.8);
    the stronger, the more visible. Tap one to hear just that part */
 .band {
   --band: 255, 196, 80;
