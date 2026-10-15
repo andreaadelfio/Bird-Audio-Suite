@@ -15,83 +15,90 @@
     <link rel="manifest" href="./manifest.webmanifest">
     <link rel="icon" type="image/svg+xml" href="./assets/icon.svg">
     <link rel="apple-touch-icon" href="./assets/icon-192.png">
-    <link rel="stylesheet" href="./assets/styles.css?v=21">
+    <link rel="stylesheet" href="./assets/styles.css?v=23">
   </head>
   <body>
     <div class="page-shell">
       <header class="top-bar">
         <h1>Bird Audio Suite</h1>
-        <button id="inat-toggle" class="pill-button" type="button" title="Carica su iNaturalist">iNat</button>
-        <button id="volume-toggle" class="icon-button" type="button" aria-label="Volume" aria-expanded="false"
-          aria-controls="volume-panel">
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0 0 14 8v8a4.5 4.5 0 0 0 2.5-4zM14 3.2v2.1a7 7 0 0 1 0 13.4v2.1a9 9 0 0 0 0-17.6z"/>
-          </svg>
-        </button>
-        <button id="refresh" class="icon-button" type="button" title="Ricarica" aria-label="Ricarica">
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M17.65 6.35A7.95 7.95 0 0 0 12 4V1L7 6l5 5V7a5 5 0 1 1-5 5H5a7 7 0 1 0 12.65-5.65z"/>
-          </svg>
-        </button>
-        <div id="volume-panel" class="volume-panel hidden">
-          <label for="volume">Volume</label>
-          <input id="volume" type="range" min="-20" max="30" step="1" value="0">
-          <output id="volume-value" for="volume">100%</output>
-          <button id="volume-reset" type="button" class="small">100%</button>
-        </div>
         <nav class="tabs" aria-label="Sezioni">
           <button class="tab active" type="button" data-view="observations"
             title="Il numero è quante osservazioni sono da rivedere">Osservazioni <span id="pending-count" class="count"></span></button>
           <button class="tab" type="button" data-view="report">Report</button>
           <button class="tab" type="button" data-view="trash">Cestino <span id="trash-count" class="count trash-count"></span></button>
         </nav>
+        <!-- volume of every clip, beyond 100%: always visible on a computer, behind the speaker on the phone -->
+        <div id="volume-panel" class="volume-panel">
+          <svg class="volume-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0 0 14 8v8a4.5 4.5 0 0 0 2.5-4zM14 3.2v2.1a7 7 0 0 1 0 13.4v2.1a9 9 0 0 0 0-17.6z"/>
+          </svg>
+          <input id="volume" type="range" min="-20" max="30" step="1" value="0" aria-label="Volume">
+          <button id="volume-value" type="button" class="tool volume-value" title="Tocca per tornare al 100%">100%</button>
+        </div>
+        <div class="top-tools">
+          <button id="volume-toggle" class="icon-button" type="button" aria-label="Volume" aria-expanded="false"
+            aria-controls="volume-panel">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0 0 14 8v8a4.5 4.5 0 0 0 2.5-4zM14 3.2v2.1a7 7 0 0 1 0 13.4v2.1a9 9 0 0 0 0-17.6z"/>
+            </svg>
+          </button>
+          <button id="inat-toggle" class="pill-button" type="button" title="Collega iNaturalist e carica le confermate"
+            aria-expanded="false" aria-controls="inat-panel">iNat</button>
+          <button id="refresh" class="icon-button" type="button" title="Ricarica" aria-label="Ricarica">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M17.65 6.35A7.95 7.95 0 0 0 12 4V1L7 6l5 5V7a5 5 0 1 1-5 5H5a7 7 0 1 0 12.65-5.65z"/>
+            </svg>
+          </button>
+        </div>
       </header>
 
       <section id="inat-panel" class="inat-panel hidden" aria-label="iNaturalist">
-        <h2>iNaturalist</h2>
-        <p id="inat-state" class="inat-state"></p>
-        <form id="inat-token-form" class="inat-token">
-          <p class="hint">
-            1. Apri <a href="https://www.inaturalist.org/users/api_token" target="_blank" rel="noopener">la pagina del token</a>
-            (con l'accesso a iNaturalist fatto) e copia tutto quello che mostra.
-            2. Incollalo qui: vale 24 ore e resta salvato in questo browser.
+        <div class="inat-connect">
+          <h2>iNaturalist <span id="inat-state" class="inat-state"></span></h2>
+          <form id="inat-token-form" class="inat-token">
+            <input id="inat-token" type="password" autocomplete="off" placeholder='token: {"api_token":"..."}'>
+            <button type="submit">Collega</button>
+          </form>
+          <p id="inat-token-hint" class="hint">
+            Apri <a href="https://www.inaturalist.org/users/api_token" target="_blank" rel="noopener">la pagina del token</a>
+            (con l'accesso fatto), copia tutto e incollalo qui: vale 24 ore e resta in questo browser.
           </p>
-          <input id="inat-token" type="password" autocomplete="off" placeholder='{"api_token":"..."}'>
-          <button type="submit">Collega</button>
-        </form>
-        <label>Posizione su iNaturalist
-          <select id="inat-geoprivacy">
-            <option value="">precisa</option>
-            <option value="obscured">oscurata (circa 20 km)</option>
-            <option value="private">privata</option>
-          </select>
-        </label>
-        <button id="inat-upload-all" class="primary" type="button">Carica le confermate</button>
-        <p class="hint">
-          Si caricano le osservazioni confermate, con la specie corretta se l'hai indicata e fino a 5 clip
-          (le migliori, escluse quelle scartate). Se si interrompe, riprende da dove era rimasto senza doppioni.
-        </p>
-        <ul id="inat-log" class="inat-log"></ul>
+        </div>
+        <div class="inat-upload">
+          <div class="inat-row">
+            <label class="inline-label">Posizione
+              <select id="inat-geoprivacy">
+                <option value="">precisa</option>
+                <option value="obscured">oscurata (~20 km)</option>
+                <option value="private">privata</option>
+              </select>
+            </label>
+            <button id="inat-upload-all" class="primary" type="button">Carica le confermate</button>
+          </div>
+          <p class="hint">Specie corretta se indicata, fino a 5 clip (le migliori, non scartate). Se si interrompe riprende senza doppioni.</p>
+          <ul id="inat-log" class="inat-log"></ul>
+        </div>
       </section>
 
-      <!-- sul telefono i filtri restano chiusi finche' non servono -->
-      <details id="filters" class="filters hidden">
-        <summary>Filtri</summary>
-        <div class="filter-fields">
-          <label>Stato
-            <select id="filter-status">
-              <option value="">tutti</option>
-              <option value="pending">da rivedere</option>
-              <option value="confirmed">confermate</option>
-              <option value="rejected">scartate</option>
-              <option value="uploaded">caricate</option>
-            </select>
-          </label>
-          <label>Specie <input id="filter-species" type="search" placeholder="nome italiano, inglese o scientifico"></label>
-          <label>Dal <input id="filter-from" type="date"></label>
-          <label>Al <input id="filter-to" type="date"></label>
+      <section id="filters" class="filters hidden" aria-label="Filtri">
+        <div class="status-pills" role="group" aria-label="Stato">
+          <button type="button" class="pill on" data-filter-status="">Tutte</button>
+          <button type="button" class="pill" data-filter-status="pending">Da rivedere <span id="pending-pill" class="count"></span></button>
+          <button type="button" class="pill" data-filter-status="confirmed">Confermate</button>
+          <button type="button" class="pill" data-filter-status="uploaded">Caricate</button>
+          <button type="button" class="pill" data-filter-status="rejected">Scartate</button>
         </div>
-      </details>
+        <input id="filter-status" type="hidden" value="">
+        <details id="more-filters" class="more-filters">
+          <summary>Specie e date <span id="filters-active" class="dot hidden"></span></summary>
+          <div class="filter-fields">
+            <input id="filter-species" type="search" placeholder="Specie: italiano, inglese o scientifico" aria-label="Specie">
+            <label class="inline-label">dal <input id="filter-from" type="date"></label>
+            <label class="inline-label">al <input id="filter-to" type="date"></label>
+            <button id="filters-clear" type="button" class="tool hidden" title="Togli specie e date">✕</button>
+          </div>
+        </details>
+      </section>
 
       <main id="content" aria-live="polite"></main>
       <button id="more" class="more hidden" type="button">Carica altre</button>
@@ -101,7 +108,7 @@
     <datalist id="species-list"></datalist>
 
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.1/dist/umd/supabase.min.js"></script>
-    <script src="./assets/config.js?v=21"></script>
-    <script type="module" src="./assets/app.js?v=21"></script>
+    <script src="./assets/config.js?v=23"></script>
+    <script type="module" src="./assets/app.js?v=23"></script>
   </body>
 </html>

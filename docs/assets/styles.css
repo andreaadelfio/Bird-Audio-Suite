@@ -1,7 +1,9 @@
-/* Same palette as MyFinance, with a dark variant. */
+/* Same palette as MyFinance, with a dark variant. Dense layout: on a computer an observation is
+   one row (facts and actions on the left, its clips on the right), on the phone one column. */
 :root {
   --bg: #f4efe7;
   --surface: #fffaf4;
+  --sunken: #efe8dd;
   --ink: #1f2a24;
   --ink-soft: #59655d;
   --line: rgba(31, 42, 36, 0.12);
@@ -10,13 +12,18 @@
   --positive: #2f7a3e;
   --negative: #a23b2f;
   --pending: #b7791f;
-  --radius: 12px;
+  --uploaded: #2f6f8f;
+  --on-accent: #fff; /* text on accent-coloured buttons */
+  --radius: 10px;
+  --control: 2rem; /* height of buttons and fields */
+  --gap: 0.5rem;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: #161b18;
     --surface: #1f2622;
+    --sunken: #19201c;
     --ink: #e7ece8;
     --ink-soft: #a4b0a8;
     --line: rgba(231, 236, 232, 0.12);
@@ -25,6 +32,8 @@
     --positive: #6cc07d;
     --negative: #e58b7f;
     --pending: #e0ad5b;
+    --uploaded: #7cb8d8;
+    --on-accent: #10231a;
   }
 }
 
@@ -36,232 +45,274 @@ body {
   color: var(--ink);
   font-family: "Avenir Next", "Segoe UI", sans-serif;
   font-size: 14px;
+  line-height: 1.35;
 }
 
-button, input, select, textarea { font: inherit; color: inherit; }
-
+button, input, select { font: inherit; color: inherit; }
 .hidden { display: none !important; }
+a { color: var(--accent-deep); }
 
-.page-shell {
-  width: min(100%, 1200px);
-  margin: 0 auto;
-  padding: 1rem;
+.page-shell { width: min(100%, 1280px); margin: 0 auto; padding: 0 1rem 2rem; }
+
+/* ---------------------------------------------------------------- controls */
+
+button {
+  min-height: var(--control);
+  padding: 0 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color 0.15s, border-color 0.15s, color 0.15s, opacity 0.15s;
 }
 
-/* top bar */
+button:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+button:disabled { opacity: 0.5; cursor: default; }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+button.danger { background: var(--negative); border-color: var(--negative); color: var(--on-accent); }
+button.ghost { border-color: transparent; background: transparent; color: var(--ink-soft); }
+button.ghost:hover { background: var(--sunken); }
 
-.top-bar {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  flex-wrap: wrap;
-  margin-bottom: 1rem;
+/* small square-ish buttons inside the clip player */
+button.tool { min-height: 1.75rem; padding: 0 0.45rem; font-size: 0.8rem; border-radius: 6px; }
+button.tool.on, button.pill.on { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+
+input, select {
+  min-height: var(--control);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  padding: 0 0.5rem;
 }
 
-.top-bar h1 { margin: 0; font-size: 1.4rem; color: var(--accent-deep); }
+label { color: var(--ink-soft); font-size: 0.85rem; }
+.inline-label { display: inline-flex; align-items: center; gap: 0.35rem; }
 
 .icon-button {
   display: grid;
   place-items: center;
-  width: 2.4rem;
-  height: 2.4rem;
+  width: var(--control);
   padding: 0;
   border-radius: 999px;
 }
 
-.icon-button svg { width: 1.2rem; height: 1.2rem; fill: var(--accent); }
-
-.pill-button {
-  min-height: 2.4rem;
-  padding: 0 0.9rem;
-  border-radius: 999px;
-  color: var(--accent-deep);
-  font-weight: 600;
-}
-
-/* volume for every clip, beyond 100% (opened from the header) */
-.volume-panel { display: flex; align-items: center; gap: 0.6rem; width: 100%; }
-.volume-panel input[type="range"] { flex: 1; min-width: 0; accent-color: var(--accent); }
-.volume-panel output { min-width: 3.6rem; text-align: right; font-weight: 600; font-variant-numeric: tabular-nums; }
-
-/* iNaturalist panel, opened from the header */
-.inat-panel {
-  display: grid;
-  gap: 0.6rem;
-  margin-bottom: 1rem;
-  padding: 0.9rem 1rem;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-}
-
-.inat-panel h2 { margin: 0; font-size: 1.1rem; color: var(--accent-deep); }
-.inat-state { margin: 0; font-weight: 600; color: var(--positive); }
-.inat-state.error { color: var(--negative); }
-.inat-token { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
-.inat-token .hint { flex: 1 1 100%; }
-.inat-token input { flex: 1 1 220px; }
-.inat-panel .hint { margin: 0; color: var(--ink-soft); font-size: 0.85rem; }
-.inat-panel > .primary { justify-self: start; min-height: 2.6rem; }
-.inat-panel > .primary:disabled { opacity: 0.5; cursor: default; }
-.inat-log { margin: 0; padding-left: 1.1rem; font-size: 0.9rem; }
-.inat-log:empty { display: none; }
-.inat-log .error { color: var(--negative); }
-
-button.inat { border-color: var(--positive); color: var(--positive); }
-.inat-link { align-self: center; color: var(--positive); font-weight: 600; }
-
-.tabs {
-  display: flex;
-  gap: 0.25rem;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  padding: 0.2rem;
-}
-
-.tab {
-  border: 0;
-  background: transparent;
-  border-radius: 999px;
-  padding: 0.35rem 0.9rem;
-  cursor: pointer;
-}
-
-.tab.active { background: var(--accent); color: #fff; }
+.icon-button svg { width: 1.1rem; height: 1.1rem; fill: var(--accent); }
+.pill-button { padding: 0 0.8rem; border-radius: 999px; color: var(--accent-deep); font-weight: 600; }
+.pill-button[aria-expanded="true"] { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 
 .count:not(:empty) {
   display: inline-block;
-  min-width: 1.4em;
-  margin-left: 0.25rem;
+  min-width: 1.5em;
+  margin-left: 0.2rem;
   padding: 0 0.35rem;
   border-radius: 999px;
   background: var(--pending);
-  color: #fff;
-  font-size: 0.8em;
+  color: var(--on-accent);
+  font-size: 0.75em;
+  line-height: 1.5;
   text-align: center;
 }
 
+.count.trash-count:not(:empty) { background: var(--negative); }
 
+/* ---------------------------------------------------------------- top bar */
 
-/* panels and filters */
+.top-bar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.6rem 1rem;
+  margin: 0 -1rem 0.6rem;
+  padding: 0.55rem 1rem;
+  background: color-mix(in srgb, var(--bg) 92%, transparent);
+  backdrop-filter: blur(6px);
+  border-bottom: 1px solid var(--line);
+}
 
-.filters, .observation, .tile, .report-table {
+.top-bar h1 { margin: 0; font-size: 1.15rem; color: var(--accent-deep); }
+
+.tabs {
+  display: flex;
+  gap: 0.15rem;
+  padding: 0.15rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+}
+
+.tab { min-height: 1.85rem; border: 0; border-radius: 999px; background: transparent; padding: 0 0.85rem; }
+.tab.active { background: var(--accent); color: var(--on-accent); }
+
+.top-tools { display: flex; align-items: center; gap: 0.4rem; }
+
+.volume-panel { display: flex; align-items: center; gap: 0.4rem; margin-left: auto; }
+.volume-icon { width: 1.1rem; height: 1.1rem; fill: var(--ink-soft); flex: none; }
+.volume-panel input[type="range"] { width: 140px; min-height: 0; padding: 0; border: 0; background: none; accent-color: var(--accent); }
+.volume-value { min-width: 3.6rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+#volume-toggle { display: none; }
+
+/* ---------------------------------------------------------------- iNaturalist panel */
+
+.inat-panel {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem 1.5rem;
+  margin-bottom: 0.6rem;
+  padding: 0.7rem 0.9rem;
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--radius);
 }
 
-.filters {
-  padding: 0.6rem 0.75rem;
-  margin-bottom: 1rem;
+.inat-panel h2 { margin: 0 0 0.4rem; font-size: 1rem; color: var(--accent-deep); }
+.inat-state { margin-left: 0.4rem; font-size: 0.85rem; font-weight: 600; color: var(--positive); }
+.inat-state.error { color: var(--negative); }
+.inat-token, .inat-row { display: flex; flex-wrap: wrap; gap: var(--gap); align-items: center; }
+.inat-token input { flex: 1 1 200px; }
+.inat-panel .hint { margin: 0.4rem 0 0; color: var(--ink-soft); font-size: 0.8rem; }
+.inat-log { margin: 0.4rem 0 0; padding-left: 1.1rem; font-size: 0.85rem; max-height: 9rem; overflow-y: auto; }
+.inat-log:empty { display: none; }
+.inat-log .error { color: var(--negative); }
+
+/* ---------------------------------------------------------------- filters */
+
+.filters { display: flex; flex-wrap: wrap; align-items: center; gap: var(--gap) 1rem; margin-bottom: 0.6rem; }
+.status-pills { display: flex; gap: 0.25rem; }
+.pill { min-height: 1.85rem; border-radius: 999px; padding: 0 0.75rem; }
+.pill .count:not(:empty) { margin-left: 0.15rem; }
+.pill.on .count { background: rgba(255, 255, 255, 0.28); }
+
+.more-filters > summary { cursor: pointer; color: var(--accent-deep); font-weight: 600; list-style: none; }
+.more-filters > summary::-webkit-details-marker { display: none; }
+.more-filters > summary::before { content: "▸ "; }
+.more-filters[open] > summary::before { content: "▾ "; }
+.filter-fields { display: flex; flex-wrap: wrap; align-items: center; gap: var(--gap); }
+.filter-fields input[type="search"] { width: 16rem; }
+
+/* on a computer species and dates sit next to the status pills, always open */
+@media (min-width: 721px) {
+  .more-filters > summary { display: none; }
 }
+.dot { display: inline-block; width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--pending); vertical-align: middle; }
 
-.filters summary { cursor: pointer; color: var(--accent-deep); font-weight: 600; }
-.filter-fields { display: flex; flex-wrap: wrap; gap: 0.75rem; margin-top: 0.6rem; }
+/* ---------------------------------------------------------------- content */
 
-label { display: grid; gap: 0.2rem; color: var(--ink-soft); font-size: 0.85rem; }
-
-input, select, textarea {
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--bg);
-  padding: 0.35rem 0.5rem;
-}
-
-button {
-  border: 1px solid var(--line);
-  background: var(--surface);
-  border-radius: 8px;
-  padding: 0.35rem 0.8rem;
-  cursor: pointer;
-}
-
-button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-button.danger { background: var(--negative); border-color: var(--negative); color: #fff; }
-.count.trash-count:not(:empty) { background: var(--negative); }
-.trash-head { display: grid; gap: 0.6rem; margin-bottom: 1rem; color: var(--ink-soft); }
-.trash-head p { margin: 0; }
-.trash-head .danger { justify-self: start; min-height: 2.6rem; }
-button.small { padding: 0.1rem 0.5rem; font-size: 0.8rem; }
-
-/* observation cards */
+#content { transition: opacity 0.15s; }
+#content.busy { opacity: 0.45; pointer-events: none; }
 
 .observation {
-  padding: 0.9rem 1rem;
-  margin-bottom: 0.9rem;
+  display: grid;
+  grid-template-columns: minmax(250px, 300px) minmax(0, 1fr);
+  grid-template-areas:
+    "head  clips"
+    "meta  clips"
+    "fix   clips"
+    "acts  clips"
+    ".     clips";
+  grid-template-rows: auto auto auto auto 1fr;
+  gap: 0.3rem 1rem;
+  margin-bottom: 0.6rem;
+  padding: 0.65rem 0.8rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
   border-left: 4px solid var(--pending);
+  border-radius: var(--radius);
   transition: opacity 0.25s, transform 0.25s;
 }
 
-.observation.status-confirmed, .observation.status-uploaded { border-left-color: var(--positive); }
-.observation.status-rejected { border-left-color: var(--negative); opacity: 0.75; }
+.observation.status-confirmed { border-left-color: var(--positive); }
+.observation.status-uploaded { border-left-color: var(--uploaded); }
+.observation.status-rejected { border-left-color: var(--negative); }
 .observation.leaving { opacity: 0; transform: translateX(1rem); }
 
-.observation .title-row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem; }
-.observation h2 { margin: 0; font-size: 1.15rem; }
-.observation .common-names { margin: 0.15rem 0 0; color: var(--ink-soft); }
+.obs-head { grid-area: head; min-width: 0; }
+.title-row { display: flex; align-items: center; gap: 0.35rem; min-width: 0; }
+.obs-head h2 { margin: 0; font-size: 1.05rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.common-names { margin: 0.05rem 0 0; color: var(--ink-soft); }
 
 .badge {
+  flex: none;
   margin-left: auto;
+  padding: 0 0.5rem;
   border-radius: 999px;
-  padding: 0.1rem 0.6rem;
-  font-size: 0.8rem;
-  background: var(--line);
+  font-size: 0.75rem;
+  line-height: 1.6;
+  background: color-mix(in srgb, var(--pending) 18%, transparent);
+  color: color-mix(in srgb, var(--pending) 70%, var(--ink));
 }
 
-.meta, .corrected { margin: 0.3rem 0 0.6rem; color: var(--ink-soft); }
+.badge-confirmed { background: color-mix(in srgb, var(--positive) 16%, transparent); color: var(--positive); }
+.badge-uploaded { background: color-mix(in srgb, var(--uploaded) 16%, transparent); color: var(--uploaded); }
+.badge-rejected, .badge-trash { background: color-mix(in srgb, var(--negative) 14%, transparent); color: var(--negative); }
+
+/* facts separated by dots; a dot that would open a new line falls outside the box (hidden) */
+.meta { grid-area: meta; display: flex; flex-wrap: wrap; column-gap: 0.9em; margin: 0; overflow: hidden; color: var(--ink-soft); font-size: 0.85rem; }
+.meta > span { position: relative; white-space: nowrap; }
+.meta > span.place { white-space: normal; }
+.meta > span::before { content: "·"; position: absolute; left: -0.6em; }
+.meta b { color: var(--ink); font-weight: 600; }
 
 /* Wikipedia and iNaturalist icons next to the species name */
-.species-links { display: flex; gap: 0.4rem; }
-.corrected .species-links { display: inline-flex; margin: 0 0 0 0.4rem; vertical-align: middle; }
-.species-links a { display: block; width: 1.75rem; height: 1.75rem; border-radius: 999px; }
+.species-links { display: inline-flex; gap: 0.25rem; flex: none; }
+.species-links a { display: block; width: 1.35rem; height: 1.35rem; border-radius: 999px; }
 .species-links svg { display: block; width: 100%; height: 100%; }
 .species-links a:hover, .species-links a:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
-.clips {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  gap: 0.6rem;
-}
+/* the species BirdNET should have said: opened from the actions, saved when you leave the field */
+.fix { grid-area: fix; display: flex; align-items: center; gap: 0.35rem; font-size: 0.85rem; color: var(--ink-soft); }
+.fix input { flex: 1; min-width: 0; }
 
-.clip {
-  margin: 0;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  overflow: hidden;
-  background: var(--bg);
-}
+.actions { grid-area: acts; display: flex; flex-wrap: wrap; gap: 0.3rem; align-items: center; }
+.actions .primary { font-weight: 600; }
+button.inat { border-color: var(--uploaded); color: var(--uploaded); }
+.inat-link { padding: 0 0.3rem; color: var(--uploaded); font-weight: 600; white-space: nowrap; }
 
+.obs-clips { grid-area: clips; min-width: 0; }
+/* the clips fill the row: one clip gets a long spectrogram, three share it */
+.clips { display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); gap: var(--gap); }
+.show-clips { margin-top: var(--gap); width: 100%; border-style: dashed; color: var(--accent-deep); }
+
+/* ---------------------------------------------------------------- clip */
+
+.clip { margin: 0; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--sunken); }
 .clip.folded { display: none; }
-.show-clips { display: block; width: 100%; margin-top: 0.6rem; color: var(--accent-deep); }
-
-.clip.review-wrong { outline: 2px solid var(--negative); opacity: 0.7; }
+.clip.review-wrong { border-color: var(--negative); box-shadow: inset 0 0 0 1px var(--negative); }
+.clip.review-wrong .spectrogram { opacity: 0.55; }
 
 .spectrogram-box {
   position: relative;
+  height: 96px;
   cursor: pointer;
-  background: #000;
+  background: #0d0a14;
   /* horizontal drags select a part, vertical ones still scroll the page */
   touch-action: pan-y;
   user-select: none;
   -webkit-user-select: none;
 }
 
-.spectrogram { display: block; width: 100%; height: 110px; object-fit: fill; pointer-events: none; }
+.spectrogram { display: block; width: 100%; height: 100%; object-fit: fill; pointer-events: none; }
 
-/* where BirdNET heard the species: the stronger, the more visible */
+/* where BirdNET heard the species: tap one to hear just that part */
 .band {
   position: absolute;
   top: 0;
   bottom: 0;
-  background: rgba(255, 214, 102, calc(0.12 + 0.28 * var(--strength, 0.5)));
+  background: rgba(255, 214, 102, calc(0.1 + 0.26 * var(--strength, 0.5)));
   border-left: 2px solid rgba(255, 214, 102, 0.95);
   border-right: 2px solid rgba(255, 214, 102, 0.95);
   pointer-events: none;
+  transition: background-color 0.15s;
 }
 
-/* outside the trimmed part */
+.spectrogram-box:hover .band { background: rgba(255, 214, 102, calc(0.16 + 0.3 * var(--strength, 0.5))); }
 .trim-shade { position: absolute; top: 0; bottom: 0; background: rgba(0, 0, 0, 0.62); pointer-events: none; }
 
 .selection {
@@ -287,87 +338,97 @@ button.small { padding: 0.1rem 0.5rem; font-size: 0.8rem; }
 
 .clip.playing .playhead { opacity: 0.95; }
 
-.player {
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
-  padding: 0.4rem 0.5rem 0;
+/* facts of the clip and the playback time, written on the spectrogram */
+.clip-info, .player-time {
+  position: absolute;
+  padding: 0 0.3rem;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #f1ece4;
+  font-size: 0.72rem;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
 }
+
+.clip-info { top: 3px; left: 3px; }
+.player-time { right: 3px; bottom: 3px; }
+
+.player { display: flex; align-items: center; gap: 0.25rem; padding: 0.3rem; }
+.player > button { flex: none; }
+.player .spacer { flex: 1; }
 
 .play-button {
   display: grid;
   place-items: center;
-  width: 2.4rem;
-  height: 2.4rem;
+  width: 1.9rem;
+  min-height: 1.9rem;
   padding: 0;
   border-radius: 999px;
   background: var(--accent);
   border-color: var(--accent);
 }
 
-.play-button svg { width: 1.3rem; height: 1.3rem; fill: #fff; }
-.player-time { min-width: 6.5em; font-variant-numeric: tabular-nums; color: var(--ink-soft); font-size: 0.85rem; }
-.player .small.on, .chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
-
-.band-chips { display: flex; flex-wrap: wrap; gap: 0.3rem; padding: 0.4rem 0.5rem 0; }
-.chip {
-  padding: 0.15rem 0.55rem;
-  border-radius: 999px;
-  font-size: 0.8rem;
-  border-color: rgba(201, 151, 0, 0.6);
-  background: rgba(255, 214, 102, 0.18);
-}
-
-.selection-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; padding: 0.4rem 0.5rem 0; }
-.selection-label { font-weight: 600; font-variant-numeric: tabular-nums; }
-
-/* delete one clip for good: a small round button, never stretched */
-.clip-actions .trash-button {
-  flex: none;
-  width: 2.2rem;
-  height: 2.2rem;
+.play-button svg { width: 1.1rem; height: 1.1rem; fill: var(--on-accent); }
+.tool svg { display: block; width: 1rem; height: 1rem; fill: currentColor; }
+/* on a trimmed clip: the kept part, written on the spectrogram; tap to undo */
+.trim-chip {
+  position: absolute;
+  top: 3px;
+  right: 3px;
   min-height: 0;
-  border: 1px solid color-mix(in srgb, var(--negative) 45%, transparent);
-  border-radius: 50%;
-  background: color-mix(in srgb, var(--negative) 8%, transparent);
+  padding: 0 0.3rem;
+  border: 0;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.6);
+  color: #ffd666;
+  font-size: 0.72rem;
+  line-height: 1.5;
 }
-.trash-button svg { fill: var(--negative); width: 1.05rem; height: 1.05rem; }
-.trash-button:hover, .trash-button:focus-visible { background: color-mix(in srgb, var(--negative) 18%, transparent); }
+.trim-chip:hover { background: rgba(0, 0, 0, 0.8); }
 
-.clip figcaption {
+/* "Scarta" marks the clip wrong (it goes to the Cestino); the bin deletes it for good */
+.player [data-clip-review].on { background: var(--negative); border-color: var(--negative); color: var(--on-accent); }
+.trash-button { width: 1.75rem; padding: 0; display: grid; place-items: center; color: var(--negative); }
+.trash-button:hover { background: color-mix(in srgb, var(--negative) 14%, transparent); border-color: var(--negative); }
+
+.selection-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem; padding: 0 0.3rem 0.3rem; }
+.selection-label { margin-right: auto; font-weight: 600; font-size: 0.8rem; font-variant-numeric: tabular-nums; }
+
+/* a week after the iNaturalist upload: the files are gone from Supabase, the clip's facts stay */
+.clip.media-gone { display: grid; align-content: center; min-height: 6rem; padding: 0.5rem 0.6rem; color: var(--ink-soft); font-size: 0.85rem; }
+.clip.media-gone p { margin: 0; }
+
+/* ---------------------------------------------------------------- lists */
+
+.more { display: block; margin: 0.4rem auto 1rem; }
+.empty { color: var(--ink-soft); text-align: center; padding: 2rem; }
+
+.trash-head {
   display: flex;
-  justify-content: space-between;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 0.4rem;
-  padding: 0.3rem 0.5rem;
-  font-size: 0.8rem;
+  gap: var(--gap) 1rem;
+  margin-bottom: 0.6rem;
+  padding: 0.55rem 0.8rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
   color: var(--ink-soft);
 }
 
-.clip-actions button.on[data-clip-review="correct"] { background: var(--positive); color: #fff; }
-.clip-actions button.on[data-clip-review="wrong"] { background: var(--negative); color: #fff; }
+.trash-head p { flex: 1 1 320px; margin: 0; font-size: 0.85rem; }
+.trash-head b { color: var(--ink); }
 
-.observation footer {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: end;
-  gap: 0.75rem;
-  margin-top: 0.75rem;
-}
-
-.actions { display: flex; gap: 0.4rem; flex-wrap: wrap; }
-
-.more { display: block; margin: 0 auto 1rem; }
-.empty { color: var(--ink-soft); text-align: center; padding: 2rem; }
 /* messages as a toast above the bottom edge: visible wherever the page is scrolled */
 .status-line:not(:empty) {
   position: fixed;
   left: 50%;
   bottom: calc(0.8rem + env(safe-area-inset-bottom));
   z-index: 20;
-  width: min(calc(100% - 1.2rem), 640px);
+  width: min(calc(100% - 1.2rem), 560px);
   margin: 0;
-  padding: 0.6rem 0.8rem;
+  padding: 0.5rem 0.8rem;
   transform: translateX(-50%);
   border-radius: var(--radius);
   background: var(--ink);
@@ -375,40 +436,42 @@ button.small { padding: 0.1rem 0.5rem; font-size: 0.8rem; }
   text-align: center;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
   cursor: pointer;
+  animation: toast-in 0.18s ease-out;
 }
 
-.status-line.error:not(:empty) { background: var(--negative); color: #fff; }
+@keyframes toast-in { from { opacity: 0; transform: translate(-50%, 0.5rem); } }
+.status-line.error:not(:empty) { background: var(--negative); color: var(--on-accent); }
 .error { color: var(--negative); }
 
-/* report */
+/* ---------------------------------------------------------------- report */
 
-.report-head { display: flex; align-items: center; gap: 1rem; }
-.segmented { display: flex; gap: 0.25rem; }
-.segmented button.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+.report-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--gap) 1rem; margin-bottom: 0.6rem; }
+.report-head h2 { margin: 0; font-size: 1.05rem; }
+.segmented { display: flex; gap: 0.2rem; }
+.segmented button.on { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
 
-.tiles {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
-  gap: 0.6rem;
-  margin: 0.75rem 0;
-}
+.report-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr); gap: 0.8rem; align-items: start; }
+.report-grid h3 { margin: 0.8rem 0 0.3rem; font-size: 0.9rem; color: var(--ink-soft); font-weight: 600; }
+.report-grid > section > h3:first-child { margin-top: 0; }
 
-.tile { padding: 0.75rem; display: grid; }
-.tile b { font-size: 1.6rem; color: var(--accent-deep); }
-.tile span { color: var(--ink-soft); }
-.new-species { color: var(--positive); }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(76px, 1fr)); gap: 0.4rem; }
+.tile { display: grid; padding: 0.45rem 0.6rem; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); }
+.tile b { font-size: 1.3rem; line-height: 1.2; color: var(--accent-deep); }
+.tile span { color: var(--ink-soft); font-size: 0.8rem; }
+.new-species { margin: 0.5rem 0 0; color: var(--positive); }
 
 /* species names in the report open their observations of the period */
 .species-link {
+  min-height: 0;
   padding: 0;
   border: 0;
   background: none;
   color: var(--accent-deep);
-  font: inherit;
   text-align: left;
   text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--accent) 40%, transparent);
   text-underline-offset: 2px;
-  cursor: pointer;
+  white-space: normal;
 }
 
 .new-species .species-link { color: var(--positive); }
@@ -416,82 +479,88 @@ button.small { padding: 0.1rem 0.5rem; font-size: 0.8rem; }
 .hours {
   display: grid;
   grid-template-columns: repeat(24, 1fr);
-  gap: 3px;
+  gap: 2px;
   align-items: end;
-  height: 140px;
-  padding: 0.5rem 0;
+  height: 96px;
+  padding: 0.4rem 0.5rem 0.2rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
 }
 
 .hour { display: grid; grid-template-rows: 1fr auto; height: 100%; text-align: center; }
-.hour .bar { align-self: end; background: var(--accent); border-radius: 3px 3px 0 0; min-height: 1px; }
-.hour .label { font-size: 0.7rem; color: var(--ink-soft); }
+.hour .bar { align-self: end; background: var(--accent); border-radius: 2px 2px 0 0; min-height: 1px; }
+.hour .label { font-size: 0.65rem; color: var(--ink-soft); }
+.hour:not(:nth-child(3n + 1)) .label { visibility: hidden; }
 
 .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
-.report-table { width: 100%; border-collapse: collapse; overflow: hidden; }
-.report-table th, .report-table td { padding: 0.45rem 0.6rem; border-bottom: 1px solid var(--line); text-align: left; }
-.report-table td:nth-child(n+2), .report-table th:nth-child(n+2) { text-align: right; }
+.report-table { width: 100%; border-collapse: collapse; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+.report-table th, .report-table td { padding: 0.3rem 0.55rem; border-bottom: 1px solid var(--line); text-align: left; }
+.report-table th { font-size: 0.8rem; color: var(--ink-soft); font-weight: 600; }
+.report-table tbody tr:hover { background: var(--sunken); }
+.report-table td:nth-child(n+2), .report-table th:nth-child(n+2) { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.report-table small { color: var(--ink-soft); }
 
 /* ---------------------------------------------------------------- phone */
 
 @media (max-width: 720px) {
-  .page-shell {
-    padding: 0 0.6rem calc(4rem + env(safe-area-inset-bottom));
-  }
+  :root { --control: 2.5rem; }
+
+  .page-shell { padding: 0 0.5rem calc(4rem + env(safe-area-inset-bottom)); }
 
   .top-bar {
-    position: sticky;
-    top: 0;
-    z-index: 10;
-    margin: 0 -0.6rem 0.75rem;
-    padding: calc(0.5rem + env(safe-area-inset-top)) 0.6rem 0.5rem;
-    background: var(--bg);
-    border-bottom: 1px solid var(--line);
+    gap: 0.4rem;
+    margin: 0 -0.5rem 0.5rem;
+    padding: calc(0.45rem + env(safe-area-inset-top)) 0.5rem 0.45rem;
   }
 
-  .top-bar h1 { font-size: 1.15rem; flex: 1; }
-  .tabs { width: 100%; order: 3; }
-  .volume-panel { order: 2; }
-  .tab { flex: 1; min-height: 2.6rem; padding: 0.35rem 0.3rem; white-space: nowrap; font-size: 0.86rem; }
-  .trash-head .danger { justify-self: stretch; }
+  .top-bar h1 { flex: 1; font-size: 1.05rem; }
+  .tabs { order: 3; width: 100%; }
+  .tab { flex: 1; min-height: 2.3rem; padding: 0 0.3rem; }
+
+  /* the volume opens under the bar, from the speaker */
+  #volume-toggle { display: grid; }
+  .volume-panel { display: none; }
+  .volume-panel.open { display: flex; order: 4; width: 100%; margin-left: 0; }
+  .volume-panel input[type="range"] { flex: 1; width: auto; }
 
   /* 16px: iOS zooms into smaller fields */
-  input, select, textarea { font-size: 16px; min-height: 2.6rem; }
-  .filter-fields label { flex: 1 1 100%; }
+  input, select { font-size: 16px; }
 
-  .observation { padding: 0.75rem; }
-  .observation h2 { font-size: 1.05rem; }
-  .species-links { gap: 0.5rem; }
-  .species-links a { width: 2rem; height: 2rem; }
-  .clips { grid-template-columns: 1fr; }
-  .spectrogram { height: 140px; }
-  .play-button { width: 2.9rem; height: 2.9rem; }
-  .player .small, .selection-actions .small { min-height: 2.6rem; padding: 0 0.7rem; }
-  .chip { min-height: 2.2rem; font-size: 0.85rem; }
-  .clip-actions .trash-button { width: 2.75rem; height: 2.75rem; }
+  .inat-panel { grid-template-columns: 1fr; }
+  .inat-row .primary { flex: 1; }
 
-  .clip figcaption { flex-wrap: wrap; }
-  .clip-actions { display: flex; align-items: center; gap: 0.6rem; width: 100%; }
-  .clip-actions button:not(.trash-button) { flex: 1; min-height: 2.75rem; font-size: 0.95rem; }
+  .filters { gap: 0.4rem; }
+  .status-pills { width: calc(100% + 1rem); margin: 0 -0.5rem; padding: 0 0.5rem; overflow-x: auto; scrollbar-width: none; }
+  .status-pills::-webkit-scrollbar { display: none; }
+  .pill { min-height: 2.2rem; flex: none; padding: 0 0.55rem; font-size: 0.85rem; }
+  .more-filters { width: 100%; }
+  .filter-fields { margin-top: 0.4rem; }
+  .filter-fields input[type="search"] { width: 100%; }
+  .filter-fields .inline-label { flex: 1 1 40%; }
+  .filter-fields .inline-label input { flex: 1; min-width: 0; }
 
-  .observation footer { flex-direction: column; align-items: stretch; }
-  .actions { display: grid; grid-template-columns: 1fr 1fr; }
-  .actions button { min-height: 3rem; font-size: 1rem; }
-  .actions [data-status="pending"] { grid-column: 1 / -1; }
+  .observation {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "head" "meta" "fix" "clips" "acts";
+    grid-template-rows: none;
+    padding: 0.55rem 0.6rem;
+  }
 
-  .more, .show-clips { width: 100%; min-height: 3rem; }
-  .inat-panel > .primary { justify-self: stretch; min-height: 3rem; }
-  .actions .inat, .actions .inat-link { grid-column: 1 / -1; text-align: center; }
+  .clips { grid-template-columns: minmax(0, 1fr); }
+  .spectrogram-box { height: 104px; }
+  .player { gap: 0.3rem; }
+  .play-button { width: 2.3rem; min-height: 2.3rem; }
+  button.tool { min-height: 2.3rem; padding: 0 0.6rem; font-size: 0.85rem; }
+  .trash-button { width: 2.3rem; }
+  .trim-chip { line-height: 1.9; }
 
-  .report-head { flex-wrap: wrap; gap: 0.5rem; }
-  .report-head h2 { font-size: 1.1rem; margin: 0.4rem 0; }
-  .segmented button { min-height: 2.4rem; }
-  .tiles { grid-template-columns: repeat(2, 1fr); }
-  .tile b { font-size: 1.35rem; }
-  .hours { height: 110px; gap: 2px; }
-  /* one hour label in three, or they overlap */
-  .hour:not(:nth-child(3n + 1)) .label { visibility: hidden; }
+  .actions { margin-top: 0.2rem; }
+  .actions > button { flex: 1 1 0; }
+  .actions > .ghost { flex: 0 0 auto; }
+
+  .more, .show-clips { width: 100%; }
+  .report-grid { grid-template-columns: minmax(0, 1fr); }
+  .tiles { grid-template-columns: repeat(3, 1fr); }
+  .trash-head .danger { width: 100%; }
 }
-
-/* a week after the iNaturalist upload: the files are gone from Supabase, the clip's facts stay */
-.clip.media-gone { padding: 0.5rem 0.6rem; }
-.media-gone-note { margin: 0 0 0.2rem; color: var(--ink-soft); font-style: italic; }

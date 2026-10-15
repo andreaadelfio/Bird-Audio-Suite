@@ -56,10 +56,21 @@ function escapeHtml(value) {
 }
 
 const timeFormat = new Intl.DateTimeFormat("it-IT", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+const hourFormat = new Intl.DateTimeFormat("it-IT", { hour: "2-digit", minute: "2-digit" });
 const dayFormat = new Intl.DateTimeFormat("it-IT", { weekday: "short", day: "numeric", month: "short", year: "numeric" });
+const dayThisYearFormat = new Intl.DateTimeFormat("it-IT", { weekday: "short", day: "numeric", month: "short" });
+const shortDateFormat = new Intl.DateTimeFormat("it-IT", { day: "numeric", month: "short" });
 
+// "mer 14 ott", with the year only when it is not this one
 function formatDay(isoDay) {
-  return dayFormat.format(new Date(`${isoDay}T12:00:00`));
+  const date = new Date(`${isoDay}T12:00:00`);
+  return (date.getFullYear() === new Date().getFullYear() ? dayThisYearFormat : dayFormat).format(date);
+}
+
+// "Berlin, Berlin, Germany" -> "Berlin, Germany"
+function placeLabel(place) {
+  const parts = String(place || "").split(",").map((part) => part.trim()).filter(Boolean);
+  return parts.filter((part, index) => index === 0 || part.toLowerCase() !== parts[index - 1].toLowerCase()).join(", ");
 }
 
 // how long a message stays: results go quickly, errors stay longer to be read, "in progress"
@@ -110,6 +121,7 @@ async function refreshCounts() {
       .eq("review", "wrong").neq("observations.status", "rejected"),
   ]);
   $("#pending-count").textContent = pending.count ? String(pending.count) : "";
+  $("#pending-pill").textContent = pending.count ? String(pending.count) : "";
   const trash = (rejected.count || 0) + (wrongClips.count || 0);
   $("#trash-count").textContent = trash ? String(trash) : "";
 }
@@ -167,15 +179,15 @@ const SPECIES_LINK_ICONS = {
 };
 
 // "Pica pica  W iN  status" over "Gazza · Eurasian Magpie"
-function speciesHeaderHtml(observation, badge) {
+function speciesHeaderHtml(observation, label, kind = observation.status) {
   const species = observation.species || {};
   const names = [species.italian_name, species.english_name].filter(Boolean).map(escapeHtml).join(" · ");
   return `
-      <header>
+      <header class="obs-head">
         <div class="title-row">
           <h2><i>${escapeHtml(observation.scientific_name)}</i></h2>
           ${speciesLinks(observation.scientific_name)}
-          <span class="badge">${badge}</span>
+          <span class="badge badge-${kind}">${escapeHtml(label)}</span>
         </div>
         ${names ? `<p class="common-names">${names}</p>` : ""}
       </header>`;
@@ -199,6 +211,7 @@ function speciesLinks(scientificName) {
 const ICON_PLAY = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>';
 const ICON_PAUSE = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5h4v14H6zm8 0h4v14h-4z"/></svg>';
 const ICON_TRASH = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3h6l1 2h4v2H4V5h4l1-2zM6 9h12l-1 12H7L6 9zm4 2v8h2v-8h-2zm4 0v8h2v-8h-2z"/></svg>';
+const ICON_LOOP = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/></svg>';
 const SKIP_SECONDS = 2;
 const BAND_PADDING_SECONDS = 0.5;
 
@@ -232,96 +245,118 @@ function findClip(clipId) {
   return null;
 }
 
+function clipFacts(clip) {
+  return `${timeFormat.format(new Date(clip.recorded_at))} · clip_conf ${Number(clip.confidence).toFixed(3)}
+    · ${Math.round(clip.duration_s || 0)} s`;
+}
+
 function clipHtml(clip, folded = false) {
   if (clip.media_deleted_at) {
     // a week after the iNaturalist upload the files leave Supabase (the PC's uploader removes them)
     return `
     <figure class="clip media-gone${folded ? " folded" : ""}" data-clip="${escapeHtml(clip.id)}">
-      <p class="media-gone-note">Audio tolto da Supabase il ${new Date(clip.media_deleted_at).toLocaleDateString("it-IT")}:
-        è su iNaturalist.</p>
-      <figcaption><span>${timeFormat.format(new Date(clip.recorded_at))} · clip_conf ${Number(clip.confidence).toFixed(3)}
-        · ${Math.round(clip.duration_s || 0)} s</span></figcaption>
+      <p>${clipFacts(clip)}</p>
+      <p>Audio tolto da Supabase il ${new Date(clip.media_deleted_at).toLocaleDateString("it-IT")}: è su iNaturalist.</p>
     </figure>`;
   }
   const urls = mediaUrls(clip.media_path);
   const duration = Number(clip.duration_s) || 1;
-  const recorded = timeFormat.format(new Date(clip.recorded_at));
   const segments = clipSegments(clip);
   const trimmed = isTrimmed(clip);
+  const wrong = clip.review === "wrong";
   return `
     <figure class="clip review-${clip.review}${folded ? " folded" : ""}" data-clip="${escapeHtml(clip.id)}" data-duration="${duration}">
-      <div class="spectrogram-box" title="Tocca per ascoltare da lì, trascina in orizzontale per selezionare">
+      <div class="spectrogram-box" title="Tocca una banda gialla per sentire dove BirdNET riconosce la specie, altrove per ascoltare da lì; trascina per selezionare">
         <img class="spectrogram" src="${escapeHtml(urls.spectrogram)}" alt="Spettrogramma" loading="lazy" draggable="false">
-        ${segments.map(([start, end, confidence]) => `<span class="band" style="left:${percentOf(start, duration)};width:${percentOf(end - start, duration)};--strength:${confidence}"
-          title="BirdNET ${Number(confidence).toFixed(2)} · ${Number(start).toFixed(1)}–${Number(end).toFixed(1)} s"></span>`).join("")}
+        ${segments.map(([start, end, confidence]) => `<span class="band" style="left:${percentOf(start, duration)};width:${percentOf(end - start, duration)};--strength:${confidence}"></span>`).join("")}
         ${trimmed ? `<span class="trim-shade" style="left:0;width:${percentOf(clip.trim_start_s, duration)}"></span>
           <span class="trim-shade" style="left:${percentOf(clip.trim_end_s, duration)};right:0"></span>` : ""}
         <span class="selection hidden"></span>
         <span class="playhead"></span>
+        <span class="clip-info">${clipFacts(clip)}</span>
+        ${trimmed ? `<button type="button" class="trim-chip" data-player="untrim"
+          title="Tagliata (il file resta intero): tocca per togliere il taglio">✂ ${Number(clip.trim_start_s).toFixed(1)}–${Number(clip.trim_end_s).toFixed(1)} ✕</button>` : ""}
+        <span class="player-time">0:00 / ${formatSeconds(duration)}</span>
       </div>
       <audio preload="none" crossorigin="anonymous" src="${escapeHtml(urls.audio)}"></audio>
       <div class="player">
         <button type="button" class="play-button" data-player="toggle" aria-label="Riproduci">${ICON_PLAY}</button>
-        <span class="player-time">0:00 / ${formatSeconds(duration)}</span>
-        <button type="button" class="small" data-player="back" title="Indietro di ${SKIP_SECONDS} secondi">−${SKIP_SECONDS} s</button>
-        <button type="button" class="small" data-player="speed" title="Rallenta per sentire i dettagli">1×</button>
-        <button type="button" class="small" data-player="loop" title="Ripeti in continuazione">Ripeti</button>
+        <button type="button" class="tool" data-player="back" title="Indietro di ${SKIP_SECONDS} secondi">−${SKIP_SECONDS}s</button>
+        <button type="button" class="tool" data-player="speed" title="Velocità: metà per sentire i dettagli">1×</button>
+        <button type="button" class="tool" data-player="loop" title="Ripeti in continuazione" aria-label="Ripeti">${ICON_LOOP}</button>
+        <span class="spacer"></span>
+        <button type="button" class="tool${wrong ? " on" : ""}" data-clip-review="wrong"
+          title="${wrong ? "Rimetti la clip nell'osservazione" : "La clip non contiene la specie: va nel Cestino"}">${wrong ? "Ripristina" : "Scarta"}</button>
+        <button type="button" class="tool trash-button" data-delete-clip
+          title="Elimina subito e per sempre questa clip" aria-label="Elimina definitivamente questa clip">${ICON_TRASH}</button>
       </div>
-      ${segments.length ? `<div class="band-chips" aria-label="Dove BirdNET la sente">${segments.map(([start, end, confidence], index) => `
-        <button type="button" class="chip" data-band="${index}" title="BirdNET ${Number(confidence).toFixed(2)}">▶ ${Number(start).toFixed(1)}–${Number(end).toFixed(1)} s</button>`).join("")}</div>` : ""}
       <div class="selection-actions hidden">
         <span class="selection-label"></span>
-        <button type="button" class="small" data-player="play-selection">Ascolta selezione</button>
-        <button type="button" class="small primary" data-player="trim">Taglia qui</button>
-        <button type="button" class="small" data-player="clear-selection">Annulla</button>
+        <button type="button" class="tool" data-player="play-selection">▶ Ascolta</button>
+        <button type="button" class="tool on" data-player="trim" title="Tieni solo questa parte (il file resta intero)">✂ Taglia</button>
+        <button type="button" class="tool" data-player="clear-selection" aria-label="Annulla la selezione">✕</button>
       </div>
-      <figcaption>
-        <span>${recorded} · clip_conf ${Number(clip.confidence).toFixed(3)} · ${Math.round(clip.duration_s || 0)} s${trimmed
-          ? ` · tagliata ${Number(clip.trim_start_s).toFixed(1)}–${Number(clip.trim_end_s).toFixed(1)} s
-            <button type="button" class="link-button" data-player="untrim">togli taglio</button>` : ""}</span>
-        <span class="clip-actions">
-          <button type="button" class="small ${clip.review === "wrong" ? "on" : ""}" data-clip-review="wrong"
-            title="Questa clip non contiene la specie: finisce nel Cestino">${clip.review === "wrong" ? "Ripristina clip" : "Scarta clip"}</button>
-          <button type="button" class="icon-button trash-button" data-delete-clip
-            title="Elimina definitivamente questa clip" aria-label="Elimina definitivamente questa clip">${ICON_TRASH}</button>
-        </span>
-      </figcaption>
     </figure>`;
 }
 
-function observationHtml(observation) {
-  const facts = observationFacts(observation);
-  const clips = facts.clips;
-  const first = facts.firstHeard ? timeFormat.format(new Date(facts.firstHeard)) : "";
-  const last = clips.length > 1 ? `–${timeFormat.format(new Date(facts.lastHeard))}` : "";
-  const corrected = observation.corrected_scientific_name
-    ? `<p class="corrected">Corretta in <i>${escapeHtml(observation.corrected_scientific_name)}</i>
-        ${speciesLinks(observation.corrected_scientific_name)}</p>`
-    : "";
-  return `
-    <article class="observation status-${observation.status}" data-id="${observation.id}">
-      ${speciesHeaderHtml(observation, STATUS_LABELS[observation.status] || observation.status)}
-      <p class="meta">${formatDay(observation.day)} · ${first}${last} · ${escapeHtml(facts.place)} ·
-        max_obs_conf ${facts.maxConfidence.toFixed(3)} · ${clips.length} clip</p>
-      ${corrected}
+function observationMeta(observation, facts, extra = "") {
+  const first = facts.firstHeard ? hourFormat.format(new Date(facts.firstHeard)) : "";
+  const last = facts.clips.length > 1 && facts.lastHeard ? hourFormat.format(new Date(facts.lastHeard)) : "";
+  const hours = last && last !== first ? `${first}–${last}` : first;
+  return `<p class="meta"><span>${formatDay(observation.day)} ${hours}</span>
+    ${facts.place ? `<span class="place">${escapeHtml(placeLabel(facts.place))}</span>` : ""}
+    <span>max_obs_conf <b>${facts.maxConfidence.toFixed(3)}</b></span>
+    <span>${facts.clips.length} clip</span>${extra}</p>`;
+}
+
+function clipsHtml(clips) {
+  return `<div class="obs-clips">
       <div class="clips">${clips.map((clip, index) => clipHtml(clip, index >= VISIBLE_CLIPS)).join("")}</div>
       ${clips.length > VISIBLE_CLIPS
         ? `<button type="button" class="show-clips" data-show-clips>Mostra altre ${clips.length - VISIBLE_CLIPS} clip</button>`
         : ""}
-      <footer>
-        <label>Specie corretta <input data-field="corrected" list="species-list" placeholder="se BirdNET ha sbagliato"
-          value="${escapeHtml(observation.corrected_scientific_name || "")}"></label>
-        <div class="actions">
-          <button type="button" data-status="confirmed" class="primary">Conferma</button>
-          <button type="button" data-status="rejected">Scarta</button>
-          ${observation.status !== "pending" ? '<button type="button" data-status="pending">Rimetti da rivedere</button>' : ""}
-          ${observation.status === "confirmed" ? '<button type="button" class="inat" data-inat-upload>Carica su iNaturalist</button>' : ""}
-          ${observation.inat_observation_id
-            ? `<a class="inat-link" href="https://www.inaturalist.org/observations/${Number(observation.inat_observation_id)}"
-                target="_blank" rel="noopener">Vedi su iNaturalist</a>`
-            : ""}
-        </div>
-      </footer>
+    </div>`;
+}
+
+// only the actions that make sense for the current status
+function observationActions(observation) {
+  const status = observation.status;
+  const buttons = [];
+  if (status === "pending" || status === "rejected") {
+    buttons.push('<button type="button" data-status="confirmed" class="primary" title="La specie è giusta">✓ Conferma</button>');
+  }
+  if (status === "confirmed") {
+    buttons.push('<button type="button" class="inat" data-inat-upload title="Carica su iNaturalist (serve il token, pannello iNat)">↑ iNaturalist</button>');
+  }
+  if (observation.inat_observation_id) {
+    buttons.push(`<a class="inat-link" href="https://www.inaturalist.org/observations/${Number(observation.inat_observation_id)}"
+      target="_blank" rel="noopener">Vedi su iNat ↗</a>`);
+  }
+  if (status !== "rejected" && status !== "uploaded") {
+    buttons.push('<button type="button" data-status="rejected" title="Non è questa specie: va nel Cestino">✕ Scarta</button>');
+  }
+  if (status !== "pending") {
+    buttons.push('<button type="button" class="ghost" data-status="pending" title="Rimetti da rivedere">↺</button>');
+  }
+  buttons.push(`<button type="button" class="ghost" data-fix-toggle title="Correggi la specie se BirdNET ha sbagliato"
+    aria-label="Correggi la specie">✎</button>`);
+  return buttons.join("");
+}
+
+function observationHtml(observation) {
+  const facts = observationFacts(observation);
+  const corrected = observation.corrected_scientific_name || "";
+  return `
+    <article class="observation status-${observation.status}" data-id="${observation.id}">
+      ${speciesHeaderHtml(observation, STATUS_LABELS[observation.status] || observation.status)}
+      ${observationMeta(observation, facts)}
+      <div class="fix${corrected ? "" : " hidden"}">
+        <span>Specie corretta</span>
+        <input data-field="corrected" list="species-list" placeholder="nome scientifico" value="${escapeHtml(corrected)}">
+        ${corrected ? speciesLinks(corrected) : ""}
+      </div>
+      <div class="actions">${observationActions(observation)}</div>
+      ${clipsHtml(facts.clips)}
     </article>`;
 }
 
@@ -344,8 +379,12 @@ content.addEventListener("click", async (event) => {
     try {
       await updateClip(figure.dataset.clip, value);
       figure.classList.toggle("review-wrong", value === "wrong");
+      figure.classList.toggle("review-unreviewed", value !== "wrong");
       clipButton.classList.toggle("on", value === "wrong");
-      clipButton.textContent = value === "wrong" ? "Ripristina clip" : "Scarta clip";
+      clipButton.textContent = value === "wrong" ? "Ripristina" : "Scarta";
+      clipButton.title = value === "wrong" ? "Rimetti la clip nell'osservazione" : "La clip non contiene la specie: va nel Cestino";
+      const found = findClip(figure.dataset.clip);
+      if (found) found.clip.review = value;
       if (state.view === "trash" && value !== "wrong") figure.remove();
       refreshCounts();
     } catch (error) {
@@ -396,6 +435,14 @@ content.addEventListener("click", async (event) => {
     return;
   }
 
+  const fixToggle = event.target.closest("[data-fix-toggle]");
+  if (fixToggle) {
+    const fix = card.querySelector(".fix");
+    fix.classList.toggle("hidden");
+    if (!fix.classList.contains("hidden")) fix.querySelector("input").focus();
+    return;
+  }
+
   const statusButton = event.target.closest("[data-status]");
   if (statusButton) {
     const changes = { status: statusButton.dataset.status };
@@ -404,16 +451,39 @@ content.addEventListener("click", async (event) => {
     try {
       await updateObservation(id, changes);
       setStatus(`Osservazione ${STATUS_LABELS[changes.status]}.`);
+      const observation = state.observations.get(id);
       if (leavesFilteredView(changes.status)) {
         removeCard(card);
-      } else {
-        card.className = `observation status-${changes.status}`;
-        card.querySelector(".badge").textContent = STATUS_LABELS[changes.status];
+      } else if (observation) {
+        // drawn again: the actions depend on the status
+        observation.status = changes.status;
+        if (changes.corrected !== undefined) observation.corrected_scientific_name = changes.corrected.trim() || null;
+        card.querySelectorAll("audio").forEach((audio) => audio.pause());
+        card.outerHTML = observationHtml(observation);
       }
       refreshCounts();
     } catch (error) {
       setStatus(`Errore: ${error.message}`, true);
     }
+  }
+});
+
+// the corrected species is saved when you leave the field (or press Enter), without changing the status
+content.addEventListener("change", async (event) => {
+  const input = event.target.closest('[data-field="corrected"]');
+  if (!input) return;
+  const card = input.closest(".observation");
+  const id = Number(card.dataset.id);
+  try {
+    await updateObservation(id, { corrected: input.value });
+    const observation = state.observations.get(id);
+    if (observation) observation.corrected_scientific_name = input.value.trim() || null;
+    const links = card.querySelector(".fix .species-links");
+    links?.remove();
+    if (input.value.trim()) input.insertAdjacentHTML("afterend", speciesLinks(input.value.trim()));
+    setStatus(input.value.trim() ? `Specie corretta: ${input.value.trim()}.` : "Correzione tolta.");
+  } catch (error) {
+    setStatus(`Errore: ${error.message}`, true);
   }
 });
 
@@ -505,16 +575,17 @@ function setVolume(db) {
   for (const gain of volumeGains) gain.gain.setTargetAtTime(10 ** (volumeDb / 20), now, 0.02);
   $("#volume").value = String(volumeDb);
   $("#volume-value").textContent = volumeLabel(volumeDb);
+  $("#volume-value").classList.toggle("on", volumeDb !== 0);
   $("#volume-toggle").title = `Volume ${volumeLabel(volumeDb)}`;
 }
 
+// on the phone the volume opens under the bar; on a computer it is always there
 $("#volume-toggle").addEventListener("click", () => {
-  const panel = $("#volume-panel");
-  panel.classList.toggle("hidden");
-  $("#volume-toggle").setAttribute("aria-expanded", String(!panel.classList.contains("hidden")));
+  const open = $("#volume-panel").classList.toggle("open");
+  $("#volume-toggle").setAttribute("aria-expanded", String(open));
 });
 $("#volume").addEventListener("input", (event) => setVolume(Number(event.target.value)));
-$("#volume-reset").addEventListener("click", () => setVolume(0));
+$("#volume-value").addEventListener("click", () => setVolume(0)); // the percentage itself goes back to 100%
 setVolume(volumeDb);
 
 function playRange(figure, start, end) {
@@ -612,7 +683,7 @@ function clearSelection(figure) {
 
 content.addEventListener("pointerdown", (event) => {
   const box = event.target.closest(".spectrogram-box");
-  if (!box || event.button > 0) return;
+  if (!box || event.button > 0 || event.target.closest("button")) return; // the trim label is a button
   drag = { box, figure: box.closest(".clip"), x: event.clientX, from: fractionAt(box, event.clientX), moved: false };
   box.setPointerCapture(event.pointerId);
 });
@@ -635,7 +706,11 @@ content.addEventListener("pointerup", (event) => {
     const kept = keptRange(figure);
     const at = Math.min(Math.max(from * duration, kept.start), kept.end);
     clearSelection(figure);
-    playRange(figure, at, kept.end);
+    // inside a yellow band: just that band (with a little margin); elsewhere: from there on
+    const found = findClip(figure.dataset.clip);
+    const band = found ? clipSegments(found.clip).find(([start, end]) => at >= start && at <= end) : null;
+    if (band) playRange(figure, Math.max(kept.start, band[0] - BAND_PADDING_SECONDS), Math.min(kept.end, band[1] + BAND_PADDING_SECONDS));
+    else playRange(figure, at, kept.end);
     return;
   }
   const to = fractionAt(box, event.clientX);
@@ -670,14 +745,6 @@ content.addEventListener("click", async (event) => {
   const figure = event.target.closest(".clip");
   if (!figure) return;
   const control = event.target.closest("[data-player]");
-  const band = event.target.closest("[data-band]");
-  if (band) {
-    const found = findClip(figure.dataset.clip);
-    const [start, end] = clipSegments(found.clip)[Number(band.dataset.band)];
-    const kept = keptRange(figure);
-    playRange(figure, Math.max(kept.start, start - BAND_PADDING_SECONDS), Math.min(kept.end, end + BAND_PADDING_SECONDS));
-    return;
-  }
   if (!control) return;
   const audio = figure.querySelector("audio");
   const player = playerState(figure);
@@ -731,21 +798,43 @@ document.addEventListener("keydown", (event) => {
 });
 
 async function renderObservations(append = false) {
-  if (!append) {
-    state.offset = 0;
-    content.innerHTML = "";
-  }
-  setStatus("Carico…");
+  if (!append) state.offset = 0;
   const rows = await fetchObservations();
-  if (!append) content.innerHTML = ""; // a refresh may have raced with this load
+  if (!append) {
+    // replaced only now that the new list is here: no blank page while it loads
+    content.querySelectorAll("audio").forEach((audio) => audio.pause());
+    content.innerHTML = "";
+    state.observations = new Map();
+  }
   rows.forEach((row) => state.observations.set(row.id, row));
   content.insertAdjacentHTML("beforeend", rows.map(observationHtml).join(""));
   state.offset += rows.length;
   $("#more").classList.toggle("hidden", rows.length < PAGE_SIZE);
   if (!content.children.length) {
-    content.innerHTML = '<p class="empty">Nessuna osservazione.</p>';
+    content.innerHTML = '<p class="empty">Nessuna osservazione con questi filtri.</p>';
   }
-  setStatus("");
+}
+
+// the next page loads by itself when the end of the list comes into view
+let loadingMore = false;
+async function loadMore() {
+  if (loadingMore || $("#more").classList.contains("hidden") || state.view !== "observations") return;
+  loadingMore = true;
+  $("#more").textContent = "Carico…";
+  try {
+    await renderObservations(true);
+  } catch (error) {
+    setStatus(`Errore: ${error.message}`, true);
+  } finally {
+    loadingMore = false;
+    $("#more").textContent = "Carica altre";
+  }
+}
+
+if ("IntersectionObserver" in window) {
+  new IntersectionObserver((entries) => {
+    if (entries.some((entry) => entry.isIntersecting)) loadMore();
+  }, { rootMargin: "600px 0px" }).observe($("#more"));
 }
 
 // ---------------------------------------------------------------- Cestino
@@ -763,27 +852,28 @@ async function fetchTrash() {
 }
 
 function trashCardHtml(observation, whole) {
-  const clips = [...(observation.clips || [])].sort((a, b) => a.recorded_at.localeCompare(b.recorded_at));
+  const facts = observationFacts(observation);
+  const label = whole ? "scartata" : `${facts.clips.length} clip scartate`;
   return `
-    <article class="observation trash status-${observation.status}" data-id="${observation.id}">
-      ${speciesHeaderHtml(observation, whole ? "osservazione scartata" : `${clips.length} clip scartate`)}
-      <p class="meta">${formatDay(observation.day)} · ${escapeHtml(observationFacts(observation).place)} ·
-        ${whole ? `tutte le ${clips.length} clip` : "il resto dell'osservazione resta"}</p>
-      <div class="clips">${clips.map((clip, index) => clipHtml(clip, index >= VISIBLE_CLIPS)).join("")}</div>
-      ${clips.length > VISIBLE_CLIPS
-        ? `<button type="button" class="show-clips" data-show-clips>Mostra altre ${clips.length - VISIBLE_CLIPS} clip</button>`
-        : ""}
-      <footer>
-        <div class="actions">
-          <button type="button" class="danger" data-delete>Elimina definitivamente</button>
-          ${whole ? '<button type="button" data-status="pending">Ripristina</button>' : ""}
-        </div>
-      </footer>
+    <article class="observation trash status-rejected" data-id="${observation.id}">
+      ${speciesHeaderHtml(observation, label, "trash")}
+      ${observationMeta(observation, facts, whole ? "" : "<span>il resto dell'osservazione resta</span>")}
+      <div class="actions">
+        ${whole ? '<button type="button" class="primary" data-status="pending" title="Rimetti da rivedere">↺ Ripristina</button>' : ""}
+        <button type="button" class="danger" data-delete title="Audio, spettrogrammi e righe spariscono da Supabase">Elimina per sempre</button>
+      </div>
+      ${clipsHtml(facts.clips)}
     </article>`;
 }
 
+function trashSummary(observations, clips) {
+  const parts = [];
+  if (observations) parts.push(`<b>${observations}</b> ${observations === 1 ? "osservazione scartata" : "osservazioni scartate"}`);
+  if (clips) parts.push(`<b>${clips}</b> ${clips === 1 ? "clip scartata" : "clip scartate"} in osservazioni tenute`);
+  return `${parts.join(" e ")}.`;
+}
+
 async function renderTrash() {
-  setStatus("Carico…");
   const { rejected, partial } = await fetchTrash();
   state.trash = new Map([
     ...rejected.map((observation) => [observation.id, { whole: true, clips: observation.clips || [] }]),
@@ -792,15 +882,13 @@ async function renderTrash() {
   const clipCount = [...state.trash.values()].reduce((sum, entry) => sum + entry.clips.length, 0);
   content.innerHTML = state.trash.size
     ? `<div class="trash-head">
-         <p>${rejected.length} osservazioni scartate e ${partial.reduce((sum, o) => sum + o.clips.length, 0)} clip scartate
-           in osservazioni tenute: ${clipCount} clip in tutto. Riascoltale se vuoi, poi eliminale: audio e spettrogrammi
-           spariscono da Supabase, i WAV sul PC restano.</p>
+         <p>${trashSummary(rejected.length, partial.reduce((sum, o) => sum + o.clips.length, 0))}
+           Eliminandole, audio e spettrogrammi spariscono da Supabase.</p>
          <button type="button" class="danger" data-empty-trash>Svuota il cestino (${clipCount} clip)</button>
        </div>
        ${rejected.map((observation) => trashCardHtml(observation, true)).join("")}
        ${partial.map((observation) => trashCardHtml(observation, false)).join("")}`
     : '<p class="empty">Il cestino è vuoto.</p>';
-  setStatus("");
 }
 
 function chunks(items, size) {
@@ -922,8 +1010,10 @@ async function renderInatPanel() {
   const login = storageGet(INAT_LOGIN_KEY);
   const until = expiry ? ` fino alle ${expiry.toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" })}` : "";
   $("#inat-state").textContent = token
-    ? `Collegato${login ? ` come ${login}` : ""}${until}.`
-    : "Non collegato: serve il token di oggi.";
+    ? `collegato${login ? ` come ${login}` : ""}${until}`
+    : "non collegato";
+  $("#inat-token-form").classList.toggle("hidden", Boolean(token));
+  $("#inat-token-hint").classList.toggle("hidden", Boolean(token));
   $("#inat-state").classList.toggle("error", !token);
   $("#inat-geoprivacy").value = storageGet(INAT_GEOPRIVACY_KEY);
   const { count } = await state.client.from("observations").select("id", { count: "exact", head: true }).eq("status", "confirmed");
@@ -1084,6 +1174,7 @@ async function uploadObservationToInat(observation, onProgress = () => {}) {
 $("#inat-toggle").addEventListener("click", () => {
   const panel = $("#inat-panel");
   panel.classList.toggle("hidden");
+  $("#inat-toggle").setAttribute("aria-expanded", String(!panel.classList.contains("hidden")));
   if (!panel.classList.contains("hidden")) {
     renderInatPanel().catch((error) => setStatus(`Errore: ${error.message}`, true));
   }
@@ -1154,11 +1245,10 @@ function isoDaysAgo(days) {
 }
 
 async function renderReport(days = Number(localStorage.getItem("reportDays") || 7)) {
-  setStatus("Carico…");
   const from = isoDaysAgo(days - 1);
   // a species name opens its observations of exactly this period
   const speciesLink = (row) => `<button type="button" class="species-link" data-species="${escapeHtml(row.scientific_name)}"
-    data-from="${from}" title="Vedi le osservazioni di questo periodo">${escapeHtml(row.italian_name)}</button>`;
+    data-from="${from}" title="Vedi le osservazioni di questo periodo">${escapeHtml(row.italian_name || row.scientific_name)}</button>`;
   const [{ data: rows, error }, { data: clips, error: clipsError }] = await Promise.all([
     state.client.from("daily_summary").select("*").gte("day", from).neq("status", "rejected"),
     state.client.from("clips").select("recorded_at, observations!inner(status,day)")
@@ -1173,6 +1263,7 @@ async function renderReport(days = Number(localStorage.getItem("reportDays") || 
     entry.clips += row.clips;
     entry.seconds += Number(row.seconds);
     entry.best = Math.max(entry.best, Number(row.max_confidence));
+    if (row.last_heard && (!entry.last_heard || row.last_heard > entry.last_heard)) entry.last_heard = row.last_heard;
     bySpecies.set(row.scientific_name, entry);
   }
   const speciesRows = [...bySpecies.values()].sort((a, b) => b.days - a.days || b.clips - a.clips);
@@ -1181,39 +1272,46 @@ async function renderReport(days = Number(localStorage.getItem("reportDays") || 
   for (const clip of clips) hours[new Date(clip.recorded_at).getHours()] += 1;
   const maxHour = Math.max(1, ...hours);
   const totalMinutes = Math.round(speciesRows.reduce((sum, row) => sum + row.seconds, 0) / 60);
+  const pending = rows.filter((row) => row.status === "pending").length;
 
   content.innerHTML = `
     <div class="report-head">
       <h2>Ultimi ${days} giorni</h2>
       <div class="segmented">
-        ${[7, 30, 90].map((n) => `<button type="button" data-days="${n}" class="${n === days ? "on" : ""}">${n} gg</button>`).join("")}
+        ${[7, 30, 90, 365].map((n) => `<button type="button" data-days="${n}" class="${n === days ? "on" : ""}">${n === 365 ? "1 anno" : `${n} gg`}</button>`).join("")}
       </div>
     </div>
-    <div class="tiles">
-      <div class="tile"><b>${speciesRows.length}</b><span>specie</span></div>
-      <div class="tile"><b>${rows.length}</b><span>osservazioni</span></div>
-      <div class="tile"><b>${clips.length}</b><span>clip</span></div>
-      <div class="tile"><b>${totalMinutes}</b><span>minuti di audio</span></div>
-      <div class="tile"><b>${newSpecies.length}</b><span>specie nuove</span></div>
-    </div>
-    ${newSpecies.length ? `<p class="new-species">Prima volta: ${newSpecies.map(speciesLink).join(", ")}</p>` : ""}
-    <h3>Attività per ora</h3>
-    <div class="hours">${hours.map((count, hour) => `
-      <div class="hour" title="${hour}:00 · ${count} clip">
-        <span class="bar" style="height:${Math.round((count / maxHour) * 100)}%"></span>
-        <span class="label">${hour}</span>
-      </div>`).join("")}</div>
-    <h3>Specie</h3>
-    <div class="table-scroll"><table class="report-table">
-      <thead><tr><th>Specie</th><th>Giorni</th><th>Clip</th><th>Conf. max</th><th>Ultima volta</th></tr></thead>
-      <tbody>${speciesRows.map((row) => `
-        <tr>
-          <td>${speciesLink(row)} <small><i>${escapeHtml(row.scientific_name)}</i></small></td>
-          <td>${row.days}</td><td>${row.clips}</td><td>${row.best.toFixed(3)}</td>
-          <td>${row.last_heard ? dayFormat.format(new Date(row.last_heard)) : ""}</td>
-        </tr>`).join("")}</tbody>
-    </table></div>`;
-  setStatus("");
+    <div class="report-grid">
+      <section>
+        <div class="tiles">
+          <div class="tile"><b>${speciesRows.length}</b><span>specie</span></div>
+          <div class="tile"><b>${rows.length}</b><span>osservazioni</span></div>
+          <div class="tile"><b>${pending}</b><span>da rivedere</span></div>
+          <div class="tile"><b>${clips.length}</b><span>clip</span></div>
+          <div class="tile"><b>${totalMinutes}</b><span>min di audio</span></div>
+          <div class="tile"><b>${newSpecies.length}</b><span>specie nuove</span></div>
+        </div>
+        ${newSpecies.length ? `<p class="new-species">Prima volta: ${newSpecies.map(speciesLink).join(", ")}</p>` : ""}
+        <h3>Attività per ora</h3>
+        <div class="hours">${hours.map((count, hour) => `
+          <div class="hour" title="${hour}:00 · ${count} clip">
+            <span class="bar" style="height:${Math.round((count / maxHour) * 100)}%"></span>
+            <span class="label">${hour}</span>
+          </div>`).join("")}</div>
+      </section>
+      <section>
+        <h3>Specie</h3>
+        ${speciesRows.length ? `<div class="table-scroll"><table class="report-table">
+          <thead><tr><th>Specie</th><th>Giorni</th><th>Clip</th><th title="Confidenza massima">Conf.</th><th>Ultima</th></tr></thead>
+          <tbody>${speciesRows.map((row) => `
+            <tr>
+              <td>${speciesLink(row)} <small><i>${escapeHtml(row.scientific_name)}</i></small></td>
+              <td>${row.days}</td><td>${row.clips}</td><td>${row.best.toFixed(3)}</td>
+              <td>${row.last_heard ? shortDateFormat.format(new Date(row.last_heard)) : ""}</td>
+            </tr>`).join("")}</tbody>
+        </table></div>` : '<p class="empty">Nessuna specie in questo periodo.</p>'}
+      </section>
+    </div>`;
 }
 
 content.addEventListener("click", (event) => {
@@ -1233,7 +1331,7 @@ function showSpeciesObservations(scientificName, fromDay) {
   $("#filter-species").value = scientificName;
   $("#filter-from").value = fromDay;
   $("#filter-to").value = new Date().toISOString().slice(0, 10);
-  $("#filters").open = true;
+  $("#more-filters").open = true;
   state.view = "observations";
   window.scrollTo(0, 0);
   render();
@@ -1241,31 +1339,62 @@ function showSpeciesObservations(scientificName, fromDay) {
 
 // ---------------------------------------------------------------- navigation
 
+// the current page stays (dimmed) until the new one is ready: no blank flashes
+let renderToken = 0;
 async function render() {
+  const token = ++renderToken;
   document.querySelectorAll(".tab").forEach((tab) => tab.classList.toggle("active", tab.dataset.view === state.view));
   $("#filters").classList.toggle("hidden", state.view !== "observations");
-  $("#more").classList.add("hidden");
+  showFilterState();
+  content.classList.add("busy");
+  const slow = setTimeout(() => setStatus("Carico…"), 400);
   try {
+    if (state.view !== "observations") $("#more").classList.add("hidden");
     if (state.view === "report") await renderReport();
     else if (state.view === "trash") await renderTrash();
     else await renderObservations();
+    if ($("#status-line").textContent === "Carico…") setStatus("");
   } catch (error) {
     setStatus(`Errore: ${error.message}`, true);
+  } finally {
+    clearTimeout(slow);
+    if (token === renderToken) content.classList.remove("busy");
   }
 }
 
 document.querySelectorAll(".tab").forEach((tab) => tab.addEventListener("click", () => {
+  if (state.view !== tab.dataset.view) window.scrollTo({ top: 0 });
   state.view = tab.dataset.view;
   render();
 }));
 
+// status: one tap on its pill; species and dates: typed, applied after a short pause
+function showFilterState() {
+  const status = $("#filter-status").value;
+  document.querySelectorAll("[data-filter-status]").forEach((pill) => pill.classList.toggle("on", pill.dataset.filterStatus === status));
+  const narrowed = Boolean($("#filter-species").value.trim() || $("#filter-from").value || $("#filter-to").value);
+  $("#filters-active").classList.toggle("hidden", !narrowed);
+  $("#filters-clear").classList.toggle("hidden", !narrowed);
+}
+
+document.querySelectorAll("[data-filter-status]").forEach((pill) => pill.addEventListener("click", () => {
+  $("#filter-status").value = pill.dataset.filterStatus;
+  render();
+}));
+
 let filterTimer = null;
-document.querySelectorAll("#filters input, #filters select").forEach((input) => input.addEventListener("input", () => {
+document.querySelectorAll("#more-filters input").forEach((input) => input.addEventListener("input", () => {
+  showFilterState();
   clearTimeout(filterTimer);
   filterTimer = setTimeout(render, 300);
 }));
 
-$("#more").addEventListener("click", () => renderObservations(true).catch((error) => setStatus(`Errore: ${error.message}`, true)));
+$("#filters-clear").addEventListener("click", () => {
+  for (const id of ["#filter-species", "#filter-from", "#filter-to"]) $(id).value = "";
+  render();
+});
+
+$("#more").addEventListener("click", loadMore);
 
 $("#refresh").addEventListener("click", async () => {
   try {
@@ -1278,8 +1407,8 @@ $("#refresh").addEventListener("click", async () => {
   render();
 });
 
-// filters open on wide screens, folded away on the phone
-$("#filters").open = window.matchMedia("(min-width: 721px)").matches;
+// species and dates open on wide screens, folded away on the phone
+$("#more-filters").open = window.matchMedia("(min-width: 721px)").matches;
 
 async function start() {
   try {
