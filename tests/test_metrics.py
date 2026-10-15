@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 import numpy as np
 
 from bird_audio_suite.live import run_sliding_window_loop
-from bird_audio_suite.metrics import LiveMetrics, memory_mb
+from bird_audio_suite.metrics import LiveMetrics, NearMisses, memory_mb
 
 
 class Clock:
@@ -53,6 +53,23 @@ class LiveMetricsTests(unittest.TestCase):
         rss, peak = memory_mb()
         self.assertGreater(rss, 10)
         self.assertGreaterEqual(peak, rss)
+
+
+class NearMissTests(unittest.TestCase):
+    def test_best_score_per_species_in_the_last_minutes(self) -> None:
+        clock = Clock()
+        misses = NearMisses(clock=clock)
+        misses.add("Corvus cornix", "Hooded Crow", 0.42)
+        misses.add("Corvus cornix", "Hooded Crow", 0.30)  # weaker: the best stays
+        misses.add("Erithacus rubecula", "European Robin", 0.25)
+        misses.add("Turdus merula", "Eurasian Blackbird", 0.9, from_pc=True)
+        recent = misses.recent()
+        self.assertEqual([(name, round(entry["confidence"], 2)) for name, entry in recent],
+                         [("Turdus merula", 0.9), ("Corvus cornix", 0.42), ("Erithacus rubecula", 0.25)])
+        self.assertTrue(recent[0][1]["from_pc"])
+        clock.now += 11 * 60
+        misses.add("Erithacus rubecula", "European Robin", 0.21)  # a new spell: the old best is gone
+        self.assertEqual([(name, entry["confidence"]) for name, entry in misses.recent()], [("Erithacus rubecula", 0.21)])
 
 
 class LoopTimingTests(unittest.TestCase):
