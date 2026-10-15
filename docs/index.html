@@ -15,7 +15,7 @@
     <link rel="manifest" href="./manifest.webmanifest">
     <link rel="icon" type="image/svg+xml" href="./assets/icon.svg">
     <link rel="apple-touch-icon" href="./assets/icon-192.png">
-    <link rel="stylesheet" href="./assets/styles.css?v=24">
+    <link rel="stylesheet" href="./assets/styles.css?v=25">
   </head>
   <body>
     <div class="page-shell">
@@ -89,6 +89,13 @@
           <button type="button" class="pill" data-filter-status="rejected">Scartate</button>
         </div>
         <input id="filter-status" type="hidden" value="">
+        <div class="status-pills confidence-pills" role="group" aria-label="Confidenza">
+          <button type="button" class="pill pill-likely" data-filter-confidence="likely"
+            title="Almeno una clip con confidenza da 0.8 in su">likely</button>
+          <button type="button" class="pill pill-unsure" data-filter-confidence="unsure"
+            title="Nessuna clip sopra 0.8 (il live tiene da 0.6)">unsure</button>
+        </div>
+        <input id="filter-confidence" type="hidden" value="">
         <details id="more-filters" class="more-filters">
           <summary>Specie e date <span id="filters-active" class="dot hidden"></span></summary>
           <div class="filter-fields">
@@ -108,7 +115,7 @@
     <datalist id="species-list"></datalist>
 
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.1/dist/umd/supabase.min.js"></script>
-    <script src="./assets/config.js?v=24"></script>
-    <script type="module" src="./assets/app.js?v=24"></script>
+    <script src="./assets/config.js?v=25"></script>
+    <script type="module" src="./assets/app.js?v=25"></script>
   </body>
 </html>

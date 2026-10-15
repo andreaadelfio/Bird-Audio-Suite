@@ -48,6 +48,7 @@ from .config import (
     DEFAULT_LONGITUDE,
     DEFAULT_PLACE_NAME,
     DEFAULT_PLAYBACK_SUPPRESSION_MIN_CONFIDENCE,
+    LIKELY_CONFIDENCE,
     DEFAULT_RECORDER_SAMPLE_RATE,
     DEFAULT_SLICE_INTERVAL,
     DEFAULT_NOISE_REDUCTION_FACTOR,
@@ -1060,9 +1061,19 @@ def print_daily_detection_summary(detections_dir: Path, names: SpeciesNames | No
         print(f"\033[8;{len(rows) + 2 + len(footer)};{width}t", end="")
         print(header)
         for row in rows:
-            print("|".join(row[header].ljust(widths[header]) for header in headers))
+            print("|".join(colour_confidence(row[header].ljust(widths[header])) if header == "conf"
+                           else row[header].ljust(widths[header]) for header in headers))
         for line in footer:
             print(line)
+
+
+def colour_confidence(text: str) -> str:
+    """Likely (>= 0.8) green, unsure yellow, like on the site (the terminal of Ctrl+Alt+L shows it)."""
+    try:
+        value = float(text)
+    except ValueError:
+        return text
+    return f"\033[{32 if value >= LIKELY_CONFIDENCE else 33}m{text}\033[0m"
 
 
 def near_misses_line(names: SpeciesNames | None, limit: int = 6) -> str:

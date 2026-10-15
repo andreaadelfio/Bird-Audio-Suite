@@ -14,6 +14,8 @@
   --pending: #b7791f;
   --uploaded: #2f6f8f;
   --on-accent: #fff; /* text on accent-coloured buttons */
+  --likely: #2f7a3e;
+  --unsure: #b7791f;
   --radius: 10px;
   --control: 2rem; /* height of buttons and fields */
   --gap: 0.5rem;
@@ -34,6 +36,8 @@
     --pending: #e0ad5b;
     --uploaded: #7cb8d8;
     --on-accent: #10231a;
+    --likely: #6cc07d;
+    --unsure: #e0ad5b;
   }
 }
 
@@ -260,6 +264,21 @@ label { color: var(--ink-soft); font-size: 0.85rem; }
 .meta > span::before { content: "·"; position: absolute; left: -0.6em; }
 .meta b { color: var(--ink); font-weight: 600; }
 
+/* likely (>= 0.8) and unsure (0.6-0.8) identifications */
+.meta b.conf-likely { color: var(--likely); }
+.meta b.conf-unsure { color: var(--unsure); }
+.conf-tag { margin-left: 0.2rem; padding: 0 0.35rem; border-radius: 999px; font-size: 0.72rem; font-weight: 600; }
+.conf-tag.conf-likely { background: color-mix(in srgb, var(--likely) 15%, transparent); color: var(--likely); }
+.conf-tag.conf-unsure { background: color-mix(in srgb, var(--unsure) 18%, transparent); color: var(--unsure); }
+.observation.unsure .spectrogram { filter: saturate(0.75); }
+.clip-info b { font-weight: 700; }
+.clip-info b.conf-likely { color: #8fe3a2; }
+.clip-info b.conf-unsure { color: #ffcf70; }
+.confidence-pills .pill-likely { color: var(--likely); border-color: color-mix(in srgb, var(--likely) 40%, var(--line)); }
+.confidence-pills .pill-unsure { color: var(--unsure); border-color: color-mix(in srgb, var(--unsure) 45%, var(--line)); }
+.confidence-pills .pill-likely.on { background: var(--likely); border-color: var(--likely); color: var(--on-accent); }
+.confidence-pills .pill-unsure.on { background: var(--unsure); border-color: var(--unsure); color: var(--on-accent); }
+
 /* Wikipedia and iNaturalist icons next to the species name */
 .species-links { display: inline-flex; gap: 0.25rem; flex: none; }
 .species-links a { display: block; width: 1.35rem; height: 1.35rem; border-radius: 999px; }
@@ -271,6 +290,7 @@ label { color: var(--ink-soft); font-size: 0.85rem; }
 .fix input { flex: 1; min-width: 0; }
 
 .actions { grid-area: acts; display: flex; flex-wrap: wrap; gap: 0.3rem; align-items: center; }
+.actions .spacer { flex: 1; }
 .actions .primary { font-weight: 600; }
 
 /* confirm / reject / back to review / correct: round icon buttons, the words in their tooltips */
@@ -551,7 +571,9 @@ button.inat { border-color: var(--uploaded); color: var(--uploaded); }
   .status-pills { width: calc(100% + 1rem); margin: 0 -0.5rem; padding: 0 0.5rem; overflow-x: auto; scrollbar-width: none; }
   .status-pills::-webkit-scrollbar { display: none; }
   .pill { min-height: 2.2rem; flex: none; padding: 0 0.55rem; font-size: 0.85rem; }
-  .more-filters { width: 100%; }
+  .confidence-pills { width: auto; margin: 0; padding: 0; }
+  .more-filters { flex: 1; }
+  .more-filters[open] { flex-basis: 100%; }
   .filter-fields { margin-top: 0.4rem; }
   .filter-fields input[type="search"] { width: 100%; }
   .filter-fields .inline-label { flex: 1 1 40%; }

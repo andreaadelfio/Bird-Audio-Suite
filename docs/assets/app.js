@@ -12,6 +12,13 @@ const STATUS_LABELS = {
   uploaded: "caricata",
 };
 
+// the live keeps everything from 0.6; from 0.8 an identification is "likely", below "unsure"
+const LIKELY_CONFIDENCE = 0.8;
+
+function confidenceClass(confidence) {
+  return Number(confidence) >= LIKELY_CONFIDENCE ? "likely" : "unsure";
+}
+
 const BUCKET = "bird-audio";
 // files live in Storage: the database keeps only their path (clips.media_path)
 const MEDIA_BASE = config.mediaBaseUrl || `${config.supabaseUrl}/storage/v1/object/public/${BUCKET}`;
@@ -134,16 +141,30 @@ async function matchingSpecies(text) {
     .map((row) => row.scientific_name);
 }
 
+// likely: at least one clip >= 0.8; unsure: none (an anti-join on a second, aliased embedding,
+// so the observation still brings all its clips)
+function withConfidenceFilter(query) {
+  const confidence = $("#filter-confidence").value;
+  if (confidence === "likely") return query.gte("strong.confidence", LIKELY_CONFIDENCE).not("strong", "is", null);
+  if (confidence === "unsure") return query.gte("strong.confidence", LIKELY_CONFIDENCE).is("strong", null);
+  return query;
+}
+
+function observationSelect() {
+  return $("#filter-confidence").value ? `${OBSERVATION_SELECT}, strong:clips(id)` : OBSERVATION_SELECT;
+}
+
 async function fetchObservations() {
   let query = state.client
     .from("observations")
-    .select(OBSERVATION_SELECT)
+    .select(observationSelect())
     .order("day", { ascending: false })
     .order("id", { ascending: false })
     .range(state.offset, state.offset + PAGE_SIZE - 1);
 
   const status = $("#filter-status").value;
   if (status) query = query.eq("status", status);
+  query = withConfidenceFilter(query);
   if ($("#filter-from").value) query = query.gte("day", $("#filter-from").value);
   if ($("#filter-to").value) query = query.lte("day", $("#filter-to").value);
   const speciesText = $("#filter-species").value;
@@ -250,7 +271,7 @@ function findClip(clipId) {
 }
 
 function clipFacts(clip) {
-  return `${timeFormat.format(new Date(clip.recorded_at))} · clip_conf ${Number(clip.confidence).toFixed(3)}
+  return `${timeFormat.format(new Date(clip.recorded_at))} · clip_conf <b class="conf-${confidenceClass(clip.confidence)}">${Number(clip.confidence).toFixed(3)}</b>
     · ${Math.round(clip.duration_s || 0)} s`;
 }
 
@@ -309,7 +330,8 @@ function observationMeta(observation, facts, extra = "") {
   const hours = last && last !== first ? `${first}–${last}` : first;
   return `<p class="meta"><span>${formatDay(observation.day)} ${hours}</span>
     ${facts.place ? `<span class="place">${escapeHtml(placeLabel(facts.place))}</span>` : ""}
-    <span>max_obs_conf <b>${facts.maxConfidence.toFixed(3)}</b></span>
+    <span>max_obs_conf <b class="conf-${confidenceClass(facts.maxConfidence)}">${facts.maxConfidence.toFixed(3)}</b>
+      <span class="conf-tag conf-${confidenceClass(facts.maxConfidence)}">${confidenceClass(facts.maxConfidence)}</span></span>
     <span>${facts.clips.length} clip</span>${extra}</p>`;
 }
 
@@ -326,10 +348,6 @@ function clipsHtml(clips) {
 function observationActions(observation) {
   const status = observation.status;
   const buttons = [];
-  if (status === "pending" || status === "rejected") {
-    buttons.push(`<button type="button" data-status="confirmed" class="round confirm" title="Conferma: la specie è giusta"
-      aria-label="Conferma">${ICON_CHECK}</button>`);
-  }
   if (status === "confirmed") {
     buttons.push('<button type="button" class="inat" data-inat-upload title="Carica su iNaturalist (serve il token, pannello iNat)">↑ iNaturalist</button>');
   }
@@ -337,16 +355,22 @@ function observationActions(observation) {
     buttons.push(`<a class="inat-link" href="https://www.inaturalist.org/observations/${Number(observation.inat_observation_id)}"
       target="_blank" rel="noopener">Vedi su iNat ↗</a>`);
   }
-  if (status !== "rejected" && status !== "uploaded") {
-    buttons.push(`<button type="button" data-status="rejected" class="round reject" title="Scarta: non è questa specie, va nel Cestino"
-      aria-label="Scarta">${ICON_CROSS}</button>`);
-  }
+  // the round ones on the right, within reach of a right thumb; the tick last
+  buttons.push('<span class="spacer"></span>');
+  buttons.push(`<button type="button" class="round ghost" data-fix-toggle title="Correggi la specie se BirdNET ha sbagliato"
+    aria-label="Correggi la specie">${ICON_EDIT}</button>`);
   if (status !== "pending") {
     buttons.push(`<button type="button" class="round ghost" data-status="pending" title="Rimetti da rivedere"
       aria-label="Rimetti da rivedere">${ICON_UNDO}</button>`);
   }
-  buttons.push(`<button type="button" class="round ghost" data-fix-toggle title="Correggi la specie se BirdNET ha sbagliato"
-    aria-label="Correggi la specie">${ICON_EDIT}</button>`);
+  if (status !== "rejected" && status !== "uploaded") {
+    buttons.push(`<button type="button" data-status="rejected" class="round reject" title="Scarta: non è questa specie, va nel Cestino"
+      aria-label="Scarta">${ICON_CROSS}</button>`);
+  }
+  if (status === "pending" || status === "rejected") {
+    buttons.push(`<button type="button" data-status="confirmed" class="round confirm" title="Conferma: la specie è giusta"
+      aria-label="Conferma">${ICON_CHECK}</button>`);
+  }
   return buttons.join("");
 }
 
@@ -354,7 +378,7 @@ function observationHtml(observation) {
   const facts = observationFacts(observation);
   const corrected = observation.corrected_scientific_name || "";
   return `
-    <article class="observation status-${observation.status}" data-id="${observation.id}">
+    <article class="observation status-${observation.status} ${confidenceClass(facts.maxConfidence)}" data-id="${observation.id}">
       ${speciesHeaderHtml(observation, STATUS_LABELS[observation.status] || observation.status)}
       ${observationMeta(observation, facts)}
       <div class="fix${corrected ? "" : " hidden"}">
@@ -1379,6 +1403,8 @@ document.querySelectorAll(".tab").forEach((tab) => tab.addEventListener("click",
 function showFilterState() {
   const status = $("#filter-status").value;
   document.querySelectorAll("[data-filter-status]").forEach((pill) => pill.classList.toggle("on", pill.dataset.filterStatus === status));
+  const confidence = $("#filter-confidence").value;
+  document.querySelectorAll("[data-filter-confidence]").forEach((pill) => pill.classList.toggle("on", pill.dataset.filterConfidence === confidence));
   const narrowed = Boolean($("#filter-species").value.trim() || $("#filter-from").value || $("#filter-to").value);
   $("#filters-active").classList.toggle("hidden", !narrowed);
   $("#filters-clear").classList.toggle("hidden", !narrowed);
@@ -1386,6 +1412,13 @@ function showFilterState() {
 
 document.querySelectorAll("[data-filter-status]").forEach((pill) => pill.addEventListener("click", () => {
   $("#filter-status").value = pill.dataset.filterStatus;
+  render();
+}));
+
+// likely / unsure: a second tap on the active one shows both again
+document.querySelectorAll("[data-filter-confidence]").forEach((pill) => pill.addEventListener("click", () => {
+  const value = pill.dataset.filterConfidence;
+  $("#filter-confidence").value = $("#filter-confidence").value === value ? "" : value;
   render();
 }));
 
