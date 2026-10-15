@@ -108,7 +108,9 @@ def export(folder: Path, when: datetime, species=("Turdus merula", "Blackbird"),
 def outbox(folder, rest, storage=None) -> Outbox:
     config = CloudConfig(supabase_url="https://example.supabase.co", supabase_key="k")
     return Outbox(folder, FakeNames(), config, rest=rest, storage=storage or FakeStorage(),
-                  render=fake_render, encode=fake_encode)
+                  render=fake_render, encode=fake_encode,
+                  analyse=lambda item: [["Turdus merula", "Eurasian Blackbird", 0.91], ["Turdus philomelos", "Song Thrush", 0.2]],
+                  link_codes=lambda name: {"ebird_code": "eurbla"})
 
 
 class ExportTests(unittest.TestCase):
@@ -153,8 +155,8 @@ class PushTests(unittest.TestCase):
         # no URLs, no review columns: only what the clip is
         self.assertEqual(
             sorted(first),
-            ["confidence", "duration_s", "id", "latitude", "longitude", "media_path", "observation_id", "place_name",
-             "recorded_at", "segments"],
+            ["candidates", "confidence", "duration_s", "id", "latitude", "longitude", "media_path", "observation_id",
+             "place_name", "recorded_at", "segments"],
         )
         self.assertEqual(sorted(storage.objects), [
             "20261009/merlo_20261009_065500_0-910-spectrogram.jpg", "20261009/merlo_20261009_065500_0-910.mp3",
@@ -162,7 +164,8 @@ class PushTests(unittest.TestCase):
         ])
         species_rows = [row for table, rows in rest.upserts if table == "species" for row in rows]
         self.assertEqual(species_rows, [{"scientific_name": "Turdus merula", "english_name": "Blackbird",
-                                         "italian_name": "Merlo", "german_name": "Amsel"}])
+                                         "italian_name": "Merlo", "german_name": "Amsel", "ebird_code": "eurbla"}])
+        self.assertEqual(first["candidates"][0], ["Turdus merula", "Eurasian Blackbird", 0.91])
 
     def test_offline_everything_waits(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

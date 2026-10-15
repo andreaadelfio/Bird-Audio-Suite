@@ -17,6 +17,7 @@ from pathlib import Path
 from .audio import (
     apply_clip_span_policy,
     aggregate_detections_by_species,
+    birdnet_candidates,
     detection_segments,
     denoise_signal,
     export_detection_clips,
@@ -343,6 +344,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--watch",
         action="store_true",
         help="Keep running: send each clip as soon as the live writes it (the bird-audio-suite-sync service).",
+    )
+
+    subparsers.add_parser(
+        "refresh-species",
+        help="Fill the eBird and iNaturalist codes of the species on Supabase that lack them.",
     )
 
     backfill_parser = subparsers.add_parser(
@@ -1883,7 +1889,9 @@ def run_backfill_segments(args: argparse.Namespace) -> int:
             duration = len(samples) / float(sample_rate)
             segments = [[round(start, 2), round(min(end, duration), 2), round(confidence, 3)]
                         for start, end, confidence in bands]
-            rest.update("clips", {"id": f"eq.{clip['id']}"}, {"segments": segments})
+            # and BirdNET's three most likely species in the clip (what else it could be)
+            rest.update("clips", {"id": f"eq.{clip['id']}"},
+                        {"segments": segments, "candidates": birdnet_candidates(detections)})
             done += 1
             empty += 0 if segments else 1
         except Exception as exc:
@@ -1891,6 +1899,26 @@ def run_backfill_segments(args: argparse.Namespace) -> int:
         if index % 25 == 0:
             print(f"  {index}/{len(clips)}")
     print(f"Fatto: {done} clip aggiornate, {empty} senza nessuna banda (nemmeno sopra {BACKFILL_FALLBACK_CONFIDENCE}).")
+    return 0
+
+
+def run_refresh_species(args: argparse.Namespace) -> int:
+    """eBird code and iNaturalist taxon of each species still without them (links on the site)."""
+    from .cloud import CloudConfig, SupabaseRest
+    from .species_links import species_codes
+
+    rest = SupabaseRest(CloudConfig.load())
+    rows = rest.get("species", {"select": "scientific_name,ebird_code,inat_taxon_id",
+                                "or": "(ebird_code.is.null,inat_taxon_id.is.null)"})
+    print(f"Specie senza codici: {len(rows)}")
+    missing = []
+    for row in rows:
+        codes = species_codes(row["scientific_name"])
+        if codes:
+            rest.update("species", {"scientific_name": f"eq.{row['scientific_name']}"}, codes)
+        if len(codes) < 2:
+            missing.append(row["scientific_name"])
+    print(f"Fatto. Senza codice eBird o iNaturalist: {', '.join(missing) or 'nessuna'}")
     return 0
 
 
@@ -1914,6 +1942,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_denoise(args)
     if args.command == "sync":
         return run_sync(args)
+    if args.command == "refresh-species":
+        return run_refresh_species(args)
     if args.command == "backfill-segments":
         return run_backfill_segments(args)
 

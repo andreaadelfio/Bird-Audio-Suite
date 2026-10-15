@@ -34,6 +34,7 @@ import requests
 
 from .audio import detections_lock, parse_timestamp_from_name
 from .config import OBSERVATION_GAP_MINUTES
+from .species_links import species_codes
 
 DEFAULT_CLOUD_CONFIG = Path.home() / ".config" / "bird-audio-suite" / "cloud.env"
 DEFAULT_CACHE_DIR = Path.home() / ".cache" / "bird-audio-suite"
@@ -280,6 +281,33 @@ def encode_mp3(audio_path: Path, output_path: Path) -> Path:
     return output_path
 
 
+_detector = None
+
+
+def clip_candidates(item) -> list[list] | None:
+    """BirdNET on the whole clip, chunks every second, down to 0.05: its three most likely species.
+    Runs in the uploader (low priority), never in the live; the model loads at the first clip."""
+    global _detector
+    import soundfile
+
+    from .audio import birdnet_candidates
+    from .detector import BirdNetDetector
+
+    if _detector is None:
+        _detector = BirdNetDetector()
+    samples, rate = soundfile.read(str(item.wav), dtype="float32")
+    if samples.ndim > 1:
+        samples = samples.mean(axis=1)
+    data = item.data
+    detections = _detector.detect_samples(
+        samples, rate,
+        latitude=data.get("latitude") if data.get("latitude") is not None else 45.8,
+        longitude=data.get("longitude") if data.get("longitude") is not None else 13.5,
+        when=item.recorded_at, min_confidence=0.05, overlap=2.0,
+    )
+    return birdnet_candidates(detections)
+
+
 def audio_duration(path: Path) -> float:
     import soundfile
 
@@ -340,6 +368,8 @@ class Outbox:
         storage=None,
         render=render_spectrogram,
         encode=encode_mp3,
+        analyse=None,
+        link_codes=species_codes,
     ) -> None:
         self.folder = Path(folder)
         self.names = species_names
@@ -348,6 +378,8 @@ class Outbox:
         self.storage = storage
         self.render = render
         self.encode = encode
+        self.analyse = analyse or clip_candidates  # BirdNET's three most likely species in the clip
+        self.link_codes = link_codes
 
     def _connect(self) -> None:
         if self.rest is None:
@@ -398,7 +430,9 @@ class Outbox:
         name = data["scientific_name"]
         if name not in species_sent:
             self.names.ensure(name, data.get("english_name", ""))
-            self.rest.upsert("species", [self.names.species_row(name)], on_conflict="scientific_name")
+            # with its eBird and iNaturalist codes (only those found: offline nothing is overwritten)
+            self.rest.upsert("species", [{**self.names.species_row(name), **self.link_codes(name)}],
+                             on_conflict="scientific_name")
             species_sent.add(name)
 
         # asked for each clip: the previous one, just sent, may be the one within ten minutes
@@ -412,6 +446,10 @@ class Outbox:
             self.storage.upload(spectrogram, f"{media_path}-spectrogram.jpg")
         if not self.storage.exists(f"{media_path}.mp3"):
             raise RuntimeError("l'MP3 non risulta nel bucket: la clip resta sul PC")
+        try:
+            candidates = self.analyse(item)
+        except Exception:  # never a reason to keep the clip back
+            candidates = None
 
         self.rest.upsert(
             "clips",
@@ -427,6 +465,7 @@ class Outbox:
                     "longitude": data.get("longitude"),
                     "media_path": media_path,
                     "segments": data.get("segments"),  # where BirdNET heard it, seconds from the clip start
+                    "candidates": candidates,
                 }
             ],
             on_conflict="id",

@@ -214,7 +214,7 @@ label { color: var(--ink-soft); font-size: 0.85rem; }
 
 .observation {
   display: grid;
-  grid-template-columns: minmax(250px, 300px) minmax(0, 1fr);
+  grid-template-columns: minmax(260px, 330px) minmax(0, 1fr);
   grid-template-areas:
     "head  clips"
     "meta  clips"
@@ -284,6 +284,27 @@ label { color: var(--ink-soft); font-size: 0.85rem; }
 .species-links a { display: block; width: 1.35rem; height: 1.35rem; border-radius: 999px; }
 .species-links svg { display: block; width: 100%; height: 100%; }
 .species-links a:hover, .species-links a:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* ♪: an example of the species from iNaturalist, played here */
+.example-button {
+  display: grid;
+  place-items: center;
+  width: 1.35rem;
+  min-height: 1.35rem;
+  padding: 0;
+  border-radius: 50%;
+  color: var(--accent-deep);
+}
+.example-button svg { width: 0.85rem; height: 0.85rem; fill: currentColor; }
+.example-button.on { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.example-button.working { animation: working 0.8s ease-in-out infinite alternate; }
+
+/* BirdNET's most likely species in a clip */
+.candidates { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem; padding: 0 0.3rem 0.3rem; font-size: 0.75rem; color: var(--ink-soft); }
+.candidate { min-height: 1.5rem; padding: 0 0.4rem; border-radius: 999px; font-size: 0.75rem; }
+.candidate b { font-weight: 600; }
+.candidate.conf-likely b { color: var(--likely); }
+.candidate.conf-unsure b { color: var(--unsure); }
 
 /* the species BirdNET should have said: opened from the actions, saved when you leave the field */
 .fix { grid-area: fix; display: flex; align-items: center; gap: 0.35rem; font-size: 0.85rem; color: var(--ink-soft); }
@@ -394,9 +415,11 @@ button.inat { border-color: var(--uploaded); color: var(--uploaded); }
 .clip-info { top: 3px; left: 3px; }
 .player-time { right: 3px; bottom: 3px; }
 
-.player { display: flex; align-items: center; gap: 0.25rem; padding: 0.3rem; }
-.player > button { flex: none; }
-.player .spacer { flex: 1; }
+/* playback on the left; unlink, reject and delete together on the right, on a line of their own
+   only when the clip is too narrow for both */
+.player { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem; padding: 0.3rem; }
+.player button { flex: none; }
+.clip-tools { display: flex; gap: 0.25rem; margin-left: auto; }
 
 .play-button {
   display: grid;
@@ -614,6 +637,9 @@ button.denoise.strong { background: var(--accent-deep); border-color: var(--acce
   button.tool { min-height: 2.3rem; padding: 0 0.6rem; font-size: 0.85rem; }
   .trash-button { width: 2.3rem; }
   .trim-chip { line-height: 1.9; }
+  .species-links a, .example-button { width: 1.75rem; min-height: 1.75rem; height: 1.75rem; }
+  .example-button svg { width: 1rem; height: 1rem; }
+  .candidate { min-height: 2rem; font-size: 0.8rem; }
 
   .actions { margin-top: 0.2rem; }
   .actions > button:not(.round) { flex: 1 1 0; }

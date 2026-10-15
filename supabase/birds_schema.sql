@@ -6,7 +6,7 @@
 --     media_path of its files (URLs are built from it, never stored);
 --   * birds.observations (a visit: clips of a species at most 10 minutes apart, the same bird
 --     still there): only what you decide while reviewing;
---   * birds.species: only the names.
+--   * birds.species: the names, and the codes that link the species to eBird and iNaturalist.
 -- Everything computed (max confidence of the day, first/last heard, counts, rarity) comes
 -- from the views at the bottom, never from stored copies.
 --
@@ -28,7 +28,9 @@ create table if not exists birds.species (
   scientific_name text primary key,
   english_name    text not null default '',
   italian_name    text not null default '',
-  german_name     text not null default ''
+  german_name     text not null default '',
+  ebird_code      text,    -- eBird / Macaulay Library species code (e.g. eurnut2), from the eBird taxonomy
+  inat_taxon_id   bigint   -- iNaturalist taxon, for direct links (they open the app on Android)
 );
 
 -- a visit (clips of one species at most 10 minutes apart): the unit you confirm, reject or upload
@@ -67,6 +69,7 @@ create table if not exists birds.clips (
                  check (review in ('unreviewed', 'correct', 'wrong')),
   inat_sound_id  bigint,           -- set once uploaded to iNaturalist, so uploads resume
   media_deleted_at timestamptz,    -- files removed from Storage (a week after the iNaturalist upload)
+  candidates     jsonb,            -- BirdNET's three most likely species in the clip: [[scientific, english, confidence], ...]
   created_at     timestamptz not null default now()
 );
 
@@ -98,6 +101,9 @@ alter table birds.clips add column if not exists trim_start_s real;
 alter table birds.clips add column if not exists trim_end_s real;
 alter table birds.clips add column if not exists media_deleted_at timestamptz;
 alter table birds.observations add column if not exists uploaded_at timestamptz;
+alter table birds.clips add column if not exists candidates jsonb;
+alter table birds.species add column if not exists ebird_code text;
+alter table birds.species add column if not exists inat_taxon_id bigint;
 -- already uploaded before uploaded_at existed: the last change is when it happened
 update birds.observations set uploaded_at = coalesce(reviewed_at, updated_at)
 where status = 'uploaded' and uploaded_at is null;
@@ -237,6 +243,8 @@ select
   s.english_name,
   s.italian_name,
   s.german_name,
+  s.ebird_code,
+  s.inat_taxon_id,
   min(h.day)                                                   as first_seen_date,
   max(h.day)                                                   as last_seen_date,
   count(distinct h.day)                                        as observed_days,
@@ -254,7 +262,7 @@ from birds.species s
 left join heard h using (scientific_name)
 group by s.scientific_name;
 
--- per observation (species x day): what the report and the live table show
+-- per observation (a visit): what the report and the live table show
 create view birds.daily_summary with (security_invoker = on) as
 select
   o.id                             as observation_id,

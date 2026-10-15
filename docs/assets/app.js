@@ -110,9 +110,13 @@ function createClient() {
 // ---------------------------------------------------------------- data
 
 async function loadSpecies() {
-  const { data, error } = await state.client
+  let { data, error } = await state.client
     .from("species_stats")
-    .select("scientific_name,italian_name,english_name,first_seen_date");
+    .select("scientific_name,italian_name,english_name,first_seen_date,ebird_code,inat_taxon_id");
+  if (error) {
+    // the database without the eBird / iNaturalist codes yet (schema not re-run): just the names
+    ({ data, error } = await state.client.from("species_stats").select("scientific_name,italian_name,english_name,first_seen_date"));
+  }
   if (error) throw error;
   state.species = new Map(data.map((row) => [row.scientific_name, row]));
   $("#species-list").innerHTML = data
@@ -197,7 +201,11 @@ const SPECIES_LINK_ICONS = {
     <text x="16" y="22" text-anchor="middle" font-family="Georgia, 'Times New Roman', serif" font-size="17" fill="#202122">W</text></svg>`,
   inaturalist: `<svg viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="15" fill="#74ac00"/>
     <text x="16" y="21" text-anchor="middle" font-family="system-ui, sans-serif" font-size="13" font-weight="700" fill="#fff">iN</text></svg>`,
+  ebird: `<svg viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="15" fill="#2a6ebb"/>
+    <text x="16" y="21" text-anchor="middle" font-family="system-ui, sans-serif" font-size="12" font-weight="700" fill="#fff">eB</text></svg>`,
 };
+const ICON_NOTE = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg>';
+const ICON_UNLINK = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17 7h-4v1.9h4a3.1 3.1 0 0 1 0 6.2h-4V17h4a5 5 0 0 0 0-10zM2 4.27 4.73 7A5 5 0 0 0 7 17h4v-1.9H7a3.1 3.1 0 0 1-2.53-4.88L6.56 12.3 8 13h1.27L11 14.73V13h.73l4.25 4.25 1.27-1.25L3.27 3 2 4.27zM7 8.9h1.73l-1.9-1.9L7 7v1.9z"/></svg>';
 
 // "Pica pica  W iN  status" over "Gazza · Eurasian Magpie"
 function speciesHeaderHtml(observation, label, kind = observation.status) {
@@ -214,17 +222,29 @@ function speciesHeaderHtml(observation, label, kind = observation.status) {
       </header>`;
 }
 
+// where to check a species: icons, the name stays in the tooltip and for screen readers.
+// iNaturalist points at the exact taxon when its id is known (on Android the app opens it), eBird
+// at the species page (the same Macaulay Library sounds Merlin plays); ♪ plays an example here.
 function speciesLinks(scientificName) {
   const name = String(scientificName || "").trim();
   if (!name) return "";
+  const known = state.species.get(name) || {};
   const links = [
     ["wikipedia", `https://it.wikipedia.org/wiki/${encodeURIComponent(name.replace(/ /g, "_"))}`, `${name} su Wikipedia`],
-    ["inaturalist", `https://www.inaturalist.org/taxa/search?q=${encodeURIComponent(name)}`, `${name} su iNaturalist`],
+    ["inaturalist", known.inat_taxon_id
+      ? `https://www.inaturalist.org/taxa/${Number(known.inat_taxon_id)}`
+      : `https://www.inaturalist.org/taxa/search?q=${encodeURIComponent(name)}`, `${name} su iNaturalist`],
   ];
+  if (known.ebird_code) {
+    links.push(["ebird", `https://ebird.org/species/${encodeURIComponent(known.ebird_code)}`,
+      `${name} su eBird (foto e suoni della Macaulay Library, quelli di Merlin)`]);
+  }
   return `<span class="species-links">${links
     .map(([icon, url, label]) => `<a href="${escapeHtml(url)}" target="_blank" rel="noopener"
       title="${escapeHtml(label)}" aria-label="${escapeHtml(label)}">${SPECIES_LINK_ICONS[icon]}</a>`)
-    .join("")}</span>`;
+    .join("")}<button type="button" class="example-button" data-example="${escapeHtml(name)}"
+      title="Ascolta un esempio (iNaturalist, i più votati): tocca ancora per il successivo"
+      aria-label="Ascolta un esempio di ${escapeHtml(name)}">${ICON_NOTE}</button></span>`;
 }
 
 // ---------------------------------------------------------------- clip player
@@ -312,12 +332,16 @@ function clipHtml(clip, folded = false) {
         <button type="button" class="tool" data-player="loop" title="Ripeti in continuazione" aria-label="Ripeti">${ICON_LOOP}</button>
         <button type="button" class="tool denoise" data-player="denoise" aria-label="Riduci il rumore"
           title="Riduci il rumore: stima il fondo fuori dalle bande e lo sottrae. Tocca ancora per più forte, poi per l'originale">${ICON_DENOISE}</button>
-        <span class="spacer"></span>
+        <span class="clip-tools">
+        <button type="button" class="tool" data-player="unlink" title="Non è lo stesso uccello (o la stessa specie): stacca la clip in un'osservazione a sé"
+          aria-label="Stacca la clip">${ICON_UNLINK}</button>
         <button type="button" class="tool${wrong ? " on" : ""}" data-clip-review="wrong"
           title="${wrong ? "Rimetti la clip nell'osservazione" : "La clip non contiene la specie: va nel Cestino"}">${wrong ? "Ripristina" : "Scarta"}</button>
         <button type="button" class="tool trash-button" data-delete-clip
           title="Elimina subito e per sempre questa clip" aria-label="Elimina definitivamente questa clip">${ICON_TRASH}</button>
+        </span>
       </div>
+      ${candidatesHtml(clip)}
       <div class="selection-actions hidden">
         <span class="selection-label"></span>
         <button type="button" class="tool" data-player="play-selection">▶ Ascolta</button>
@@ -814,6 +838,9 @@ content.addEventListener("click", async (event) => {
       case "denoise":
         await cycleDenoise(figure, control);
         break;
+      case "unlink":
+        await unlinkClip(figure);
+        break;
     }
   } catch (error) {
     setStatus(`Errore: ${error.message}`, true);
@@ -894,6 +921,129 @@ async function cycleDenoise(figure, button) {
   } finally {
     button.classList.remove("working");
   }
+}
+
+// ---------------------------------------------------------------- examples, candidates, unlink
+
+// an example of the species from iNaturalist (research grade, most voted), played here; a second
+// tap plays the next one, a tap while it plays stops it. Its own <audio>, outside the volume gain:
+// iNaturalist's files cannot go through Web Audio (no CORS), and examples are loud enough.
+const examples = new Map(); // scientific name -> [{ url, attribution }]
+const exampleNext = new Map();
+let exampleAudio = null;
+
+async function exampleSounds(name) {
+  if (!examples.has(name)) {
+    const taxon = state.species.get(name)?.inat_taxon_id;
+    const query = taxon ? `taxon_id=${Number(taxon)}` : `taxon_name=${encodeURIComponent(name)}`;
+    const response = await fetch(`${INAT_API}/observations?${query}&sounds=true&quality_grade=research&order_by=votes&per_page=10`);
+    if (!response.ok) throw new Error(`iNaturalist ${response.status}`);
+    const data = await response.json();
+    examples.set(name, (data.results || []).flatMap((observation) => (observation.sounds || [])
+      .filter((sound) => sound.file_url)
+      .map((sound) => ({ url: sound.file_url, attribution: sound.attribution || "iNaturalist" }))));
+  }
+  return examples.get(name);
+}
+
+function stopExample() {
+  if (!exampleAudio) return;
+  exampleAudio.pause();
+  document.querySelectorAll(".example-button.on").forEach((button) => button.classList.remove("on"));
+}
+
+async function playExample(name, button) {
+  if (exampleAudio && !exampleAudio.paused && button.classList.contains("on")) {
+    stopExample();
+    return;
+  }
+  stopExample();
+  document.querySelectorAll("#content audio").forEach((audio) => audio.pause());
+  button.classList.add("working");
+  try {
+    const sounds = await exampleSounds(name);
+    if (!sounds.length) {
+      setStatus(`Nessun esempio audio di ${name} su iNaturalist.`);
+      return;
+    }
+    const index = (exampleNext.get(name) || 0) % sounds.length;
+    exampleNext.set(name, index + 1);
+    exampleAudio = new Audio(sounds[index].url);
+    exampleAudio.addEventListener("ended", () => button.classList.remove("on"));
+    await exampleAudio.play();
+    button.classList.add("on");
+    setStatus(`Esempio ${index + 1} di ${sounds.length}: ${sounds[index].attribution} (iNaturalist)`);
+  } catch (error) {
+    setStatus(`Esempio non disponibile: ${error.message}`, true);
+  } finally {
+    button.classList.remove("working");
+  }
+}
+
+document.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-example]");
+  if (button) playExample(button.dataset.example, button);
+});
+content.addEventListener("play", stopExample, true); // a clip starts: the example stops
+
+// BirdNET's three most likely species in the clip; a tap opens the correction with that name
+function candidatesHtml(clip) {
+  const candidates = Array.isArray(clip.candidates) ? clip.candidates : [];
+  if (!candidates.length) return "";
+  return `<div class="candidates" title="Le specie più probabili per BirdNET in questa clip: tocca per correggere l'osservazione">
+      <span>BirdNET:</span>${candidates.map(([name, english, confidence]) => {
+        const label = state.species.get(name)?.italian_name || english || name;
+        return `<button type="button" class="candidate conf-${confidenceClass(confidence)}" data-candidate="${escapeHtml(name)}"
+          title="${escapeHtml(name)}">${escapeHtml(label)} <b>${Number(confidence).toFixed(2)}</b></button>`;
+      }).join("")}
+    </div>`;
+}
+
+content.addEventListener("click", (event) => {
+  const chip = event.target.closest("[data-candidate]");
+  if (!chip) return;
+  const card = chip.closest(".observation");
+  const fix = card?.querySelector(".fix");
+  if (!fix) return;
+  fix.classList.remove("hidden");
+  const input = fix.querySelector("input");
+  input.value = chip.dataset.candidate;
+  input.focus();
+  setStatus(card.querySelectorAll(".clip").length > 1
+    ? "Vale per tutta l'osservazione: se è solo questa clip, prima staccala (catena spezzata). Esci dal campo per salvare."
+    : "Esci dal campo per salvare la correzione.");
+});
+
+// a clip that is not the same bird (or species) as the rest: it becomes an observation of its own
+function localDay(iso) {
+  const date = new Date(iso);
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+async function unlinkClip(figure) {
+  const found = findClip(figure.dataset.clip);
+  const card = figure.closest(".observation");
+  if (!found?.observation || !card) return;
+  if ((found.observation.clips || []).length < 2) {
+    setStatus("È già l'unica clip della sua osservazione.");
+    return;
+  }
+  const { data, error } = await state.client.from("observations")
+    .insert({ day: localDay(found.clip.recorded_at), scientific_name: found.observation.scientific_name, status: "pending" })
+    .select("*, species(italian_name,english_name,german_name)").single();
+  if (error) throw error;
+  const { error: moveError } = await state.client.from("clips").update({ observation_id: data.id }).eq("id", found.clip.id);
+  if (moveError) throw moveError;
+  found.observation.clips = found.observation.clips.filter((clip) => clip.id !== found.clip.id);
+  const separate = { ...data, clips: [found.clip] };
+  state.observations.set(separate.id, separate);
+  figure.querySelector("audio")?.pause();
+  card.outerHTML = observationHtml(found.observation);
+  content.querySelector(`.observation[data-id="${found.observation.id}"]`)
+    .insertAdjacentHTML("afterend", observationHtml(separate));
+  refreshCounts();
+  setStatus("Clip staccata: ora è un'osservazione a sé, da rivedere (correggi la specie con la matita se serve).");
 }
 
 // keyboard on a computer: space plays/pauses the last clip used, arrows move by 2 s

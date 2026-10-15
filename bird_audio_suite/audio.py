@@ -181,6 +181,18 @@ def detection_segments(detections: list[dict], min_confidence: float) -> dict[st
     return {name: merge_segments(segments) for name, segments in by_species.items()}
 
 
+def birdnet_candidates(detections: list[dict], top: int = 3) -> list[list]:
+    """BirdNET's most likely species in a clip: [[scientific, english, best confidence], ...]."""
+    best: dict[str, tuple[float, str]] = {}
+    for detection in detections:
+        name = detection.get("scientific_name", "")
+        confidence = float(detection.get("confidence", 0.0))
+        if name and confidence > best.get(name, (0.0, ""))[0]:
+            best[name] = (confidence, detection.get("common_name", ""))
+    ranked = sorted(best.items(), key=lambda item: -item[1][0])[:top]
+    return [[name, english, round(confidence, 3)] for name, (confidence, english) in ranked]
+
+
 def clip_relative_segments(segments: list[Segment], clip_start: float, clip_end: float) -> list[list[float]]:
     """Bands inside a clip, in seconds from its start (what the spectrogram highlights)."""
     relative = []
