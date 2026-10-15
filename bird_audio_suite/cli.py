@@ -69,12 +69,14 @@ BIRDNET_SAMPLE_RATE = 48000
 AUDIO_STALL_TIMEOUT_SECONDS = 30.0
 LIVE_MAX_CLIP_SECONDS = 120.0
 TABLE_REFRESH_SECONDS = 60.0
-SEGMENT_MIN_CONFIDENCE = 0.5  # bands highlighted on the spectrogram
+# bands on the spectrogram: where BirdNET hears the clip's species, also weakly, so you see the
+# whole visit; the site colours them likely (>= 0.8) or unsure
+SEGMENT_MIN_CONFIDENCE = 0.3
 # BirdNET's 3 s chunks every 1 s: where a call falls inside a chunk changes its score a lot (a
 # chiffchaff heard at 0.95 scored 0.42 in fixed chunks), so the live missed clear birds
 LIVE_OVERLAP_SECONDS = 2.0
 BACKFILL_OVERLAP_SECONDS = 2.0  # backfill: 3 s chunks every 1 s
-BACKFILL_FALLBACK_CONFIDENCE = 0.1  # backfill: below 0.5, the best chunk is still shown
+BACKFILL_FALLBACK_CONFIDENCE = 0.1  # backfill: nothing above the band threshold, the best chunk is still shown
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -350,6 +352,8 @@ def build_parser() -> argparse.ArgumentParser:
     backfill_parser.add_argument("--limit", type=int, help="At most N clips.")
     backfill_parser.add_argument("--retry-empty", action="store_true",
                                  help="Also clips already analysed where nothing was found.")
+    backfill_parser.add_argument("--all", action="store_true",
+                                 help="Every clip with its files, again (after a change of the band threshold).")
 
     return parser
 
@@ -1842,7 +1846,8 @@ def run_backfill_segments(args: argparse.Namespace) -> int:
         {
             "select": "id,media_path,recorded_at,latitude,longitude,observations(scientific_name)",
             "media_deleted_at": "is.null",  # files already removed (on iNaturalist): nothing to analyse
-            **({"or": "(segments.is.null,segments.eq.[])"} if args.retry_empty else {"segments": "is.null"}),
+            **({} if args.all else {"or": "(segments.is.null,segments.eq.[])"} if args.retry_empty
+               else {"segments": "is.null"}),
             "order": "recorded_at",
             "limit": str(args.limit or 100000),
         },

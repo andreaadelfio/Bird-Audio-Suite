@@ -5,7 +5,7 @@ import json
 import tempfile
 import types
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import numpy as np
@@ -47,7 +47,8 @@ class FakeRest:
         self.deleted = list(deleted)
         self.offline = offline
         self.upserts: list[tuple[str, list[dict]]] = []
-        self.observations: dict[tuple[str, str], int] = {}
+        self.observations: dict[int, tuple[str, str]] = {}  # id -> (day, species)
+        self.clip_times: list[tuple[int, str, datetime]] = []  # (observation id, species, time)
 
     def select_column(self, table, column):
         if self.offline:
@@ -57,9 +58,19 @@ class FakeRest:
 
     def upsert(self, table, rows, on_conflict):
         self.upserts.append((table, rows))
+        if table == "clips":
+            for row in rows:
+                species = next(sp for oid, (_, sp) in self.observations.items() if oid == row["observation_id"])
+                self.clip_times.append((row["observation_id"], species, datetime.fromisoformat(row["recorded_at"])))
 
-    def observation_id(self, day, scientific_name):
-        return self.observations.setdefault((day, scientific_name), len(self.observations) + 1)
+    def observation_for(self, scientific_name, recorded_at):
+        near = [(abs(time - recorded_at), oid) for oid, species, time in self.clip_times
+                if species == scientific_name and abs(time - recorded_at) <= timedelta(minutes=10)]
+        if near:
+            return min(near)[1]
+        oid = len(self.observations) + 1
+        self.observations[oid] = (recorded_at.date().isoformat(), scientific_name)
+        return oid
 
 
 class FakeStorage:
@@ -133,8 +144,8 @@ class PushTests(unittest.TestCase):
             left = [path.name for path in folder.iterdir() if path.name != ".lock"]
 
         self.assertEqual((report.sent, report.errors, left), (2, [], []))
-        # two clips of the same species and day: one observation
-        self.assertEqual(rest.observations, {("2026-10-09", "Turdus merula"): 1})
+        # the same species hours apart: two observations (a visit lasts while it is heard within 10 min)
+        self.assertEqual(rest.observations, {1: ("2026-10-09", "Turdus merula"), 2: ("2026-10-09", "Turdus merula")})
         clip_rows = [row for table, rows in rest.upserts if table == "clips" for row in rows]
         self.assertEqual([row["confidence"] for row in clip_rows], [0.91, 0.97])
         first = clip_rows[0]
@@ -192,6 +203,22 @@ class PushTests(unittest.TestCase):
 
         self.assertTrue(report.busy)
         self.assertEqual(report.sent, 0)
+
+
+class ObservationVisitTests(unittest.TestCase):
+    def test_clips_within_ten_minutes_are_one_observation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            for when in (datetime(2026, 10, 15, 12, 20), datetime(2026, 10, 15, 12, 27), datetime(2026, 10, 15, 12, 36),
+                         datetime(2026, 10, 15, 12, 50), datetime(2026, 10, 15, 23, 58), datetime(2026, 10, 16, 0, 3)):
+                export(folder, when)
+            rest = FakeRest()
+            outbox(folder, rest).push()
+        clip_rows = [row for table, rows in rest.upserts if table == "clips" for row in rows]
+        groups = [row["observation_id"] for row in clip_rows]
+        # 12:20, 12:27, 12:36 chain within 10 min; 12:50 is 14 min later; across midnight still one
+        self.assertEqual(groups, [1, 1, 1, 2, 3, 3])
+        self.assertEqual(rest.observations[3][0], "2026-10-15")  # dated its first clip
 
 
 class LegacyConversionTests(unittest.TestCase):

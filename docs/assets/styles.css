@@ -337,19 +337,22 @@ button.inat { border-color: var(--uploaded); color: var(--uploaded); }
 
 .spectrogram { display: block; width: 100%; height: 100%; object-fit: fill; pointer-events: none; }
 
-/* where BirdNET heard the species: tap one to hear just that part */
+/* where BirdNET heard the species, from 0.3: green when likely (>= 0.8), amber when unsure;
+   the stronger, the more visible. Tap one to hear just that part */
 .band {
+  --band: 255, 196, 80;
   position: absolute;
   top: 0;
   bottom: 0;
-  background: rgba(255, 214, 102, calc(0.1 + 0.26 * var(--strength, 0.5)));
-  border-left: 2px solid rgba(255, 214, 102, 0.95);
-  border-right: 2px solid rgba(255, 214, 102, 0.95);
+  background: rgba(var(--band), calc(0.08 + 0.28 * var(--strength, 0.5)));
+  border-left: 2px solid rgba(var(--band), calc(0.45 + 0.5 * var(--strength, 0.5)));
+  border-right: 2px solid rgba(var(--band), calc(0.45 + 0.5 * var(--strength, 0.5)));
   pointer-events: none;
   transition: background-color 0.15s;
 }
 
-.spectrogram-box:hover .band { background: rgba(255, 214, 102, calc(0.16 + 0.3 * var(--strength, 0.5))); }
+.band-likely { --band: 120, 225, 145; }
+.spectrogram-box:hover .band { background: rgba(var(--band), calc(0.14 + 0.32 * var(--strength, 0.5))); }
 .trim-shade { position: absolute; top: 0; bottom: 0; background: rgba(0, 0, 0, 0.62); pointer-events: none; }
 
 .selection {

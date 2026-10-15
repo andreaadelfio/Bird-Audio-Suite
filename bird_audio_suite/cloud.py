@@ -3,11 +3,11 @@
 The laptop writes each detection into ``detections/`` (WAV + JSON, see
 ``audio.export_detection_clips``); :class:`Outbox` sends it to Supabase and then removes it:
 the MP3 and the spectrogram go to the Storage bucket ``bird-audio``, a row to ``birds.clips``,
-and the observation (species x day) is created if it does not exist yet. Nothing is stored
-twice: the clip row keeps only the path of its files, and every statistic comes from the
-views of supabase/birds_schema.sql. Whatever cannot be sent (offline) stays in the folder and
-goes at the next attempt: the live service tries right after each clip and every minute, the
-`sync` timer every 15 minutes.
+and the clip joins the observation of the same species heard within 10 minutes (the same
+visit) or starts a new one. Nothing is stored twice: the clip row keeps only the path of its
+files, and every statistic comes from the views of supabase/birds_schema.sql. Whatever cannot
+be sent (offline) stays in the folder for the next attempt of the uploader service
+(uploader.py: moments after each clip, then every minute).
 
 Settings, outside the repository, in ``~/.config/bird-audio-suite/cloud.env``:
 
@@ -33,6 +33,7 @@ from pathlib import Path
 import requests
 
 from .audio import detections_lock, parse_timestamp_from_name
+from .config import OBSERVATION_GAP_MINUTES
 
 DEFAULT_CLOUD_CONFIG = Path.home() / ".config" / "bird-audio-suite" / "cloud.env"
 DEFAULT_CACHE_DIR = Path.home() / ".cache" / "bird-audio-suite"
@@ -103,7 +104,7 @@ class SupabaseRest:
             raise RuntimeError(f"Supabase {what} ({response.status_code}): {response.text[:300]}")
         return response
 
-    def get(self, table: str, params: dict) -> list[dict]:
+    def get(self, table: str, params: dict | list[tuple[str, str]]) -> list[dict]:
         response = self.session.get(f"{self.base}/{table}", params=params, timeout=self.timeout)
         return self._check(response, f"{table} read").json()
 
@@ -140,23 +141,27 @@ class SupabaseRest:
         )
         self._check(response, f"{table} update")
 
-    def observation_id(self, day: str, scientific_name: str) -> int:
-        """The observation (species x day), created if missing; review columns never touched."""
-        query = {"select": "id", "day": f"eq.{day}", "scientific_name": f"eq.{scientific_name}"}
-        found = self.get("observations", query)
-        if found:
-            return int(found[0]["id"])
+    def observation_for(self, scientific_name: str, recorded_at: datetime,
+                        gap: timedelta = timedelta(minutes=OBSERVATION_GAP_MINUTES)) -> int:
+        """The observation a clip belongs to: the one with a clip of the same species within `gap`
+        of it (the nearest, if more), else a new one dated the clip's day. Review columns are never
+        touched; across midnight it works too (it looks at times, not days)."""
+        near = self.get("clips", [
+            ("select", "observation_id,recorded_at,observations!inner(scientific_name)"),
+            ("observations.scientific_name", f"eq.{scientific_name}"),
+            ("recorded_at", f"gte.{(recorded_at - gap).isoformat()}"),
+            ("recorded_at", f"lte.{(recorded_at + gap).isoformat()}"),
+        ])
+        if near:
+            nearest = min(near, key=lambda row: abs(datetime.fromisoformat(row["recorded_at"]) - recorded_at))
+            return int(nearest["observation_id"])
         response = self.session.post(
             f"{self.base}/observations",
-            params={"on_conflict": "day,scientific_name"},
-            data=json.dumps([{"day": day, "scientific_name": scientific_name}]),
-            headers={"Prefer": "resolution=ignore-duplicates,return=representation"},
+            data=json.dumps([{"day": recorded_at.astimezone().date().isoformat(), "scientific_name": scientific_name}]),
+            headers={"Prefer": "return=representation"},
             timeout=self.timeout,
         )
-        created = self._check(response, "observations insert").json()
-        if created:
-            return int(created[0]["id"])
-        return int(self.get("observations", query)[0]["id"])  # created meanwhile by someone else
+        return int(self._check(response, "observations insert").json()[0]["id"])
 
 
 # ---------------------------------------------------------------- media
@@ -374,14 +379,13 @@ class Outbox:
                 report.errors.append(f"Supabase non raggiungibile: {exc}")
                 return report
             species_sent: set[str] = set()
-            observation_ids: dict[tuple[str, str], int] = {}
             for item in items:
                 try:
                     if item.clip_id in deleted:
                         self._remove(item)
                         report.discarded += 1
                         continue
-                    self._send(item, species_sent, observation_ids)
+                    self._send(item, species_sent)
                     self._remove(item)
                     report.sent += 1
                     report.sent_ids.append(item.clip_id)
@@ -389,7 +393,7 @@ class Outbox:
                     report.errors.append(f"{item.clip_id}: {exc}")
         return report
 
-    def _send(self, item: OutboxItem, species_sent: set[str], observation_ids: dict) -> None:
+    def _send(self, item: OutboxItem, species_sent: set[str]) -> None:
         data = item.data
         name = data["scientific_name"]
         if name not in species_sent:
@@ -397,10 +401,8 @@ class Outbox:
             self.rest.upsert("species", [self.names.species_row(name)], on_conflict="scientific_name")
             species_sent.add(name)
 
-        day = item.recorded_at.date().isoformat()
-        key = (day, name)
-        if key not in observation_ids:
-            observation_ids[key] = self.rest.observation_id(day, name)
+        # asked for each clip: the previous one, just sent, may be the one within ten minutes
+        observation_id = self.rest.observation_for(name, item.recorded_at)
 
         media_path = media_path_for(item.clip_id, item.recorded_at)
         with tempfile.TemporaryDirectory() as work:
@@ -416,7 +418,7 @@ class Outbox:
             [
                 {
                     "id": item.clip_id,
-                    "observation_id": observation_ids[key],
+                    "observation_id": observation_id,
                     "recorded_at": data["recorded_at"],
                     "confidence": data["confidence"],
                     "duration_s": data.get("duration_s") or round(audio_duration(item.wav), 2),

@@ -19,6 +19,9 @@ DEFAULT_LIVE_MIN_CONFIDENCE = 0.7
 # from here an identification is "likely", below (down to the threshold) "unsure": the site and
 # the live table colour them
 LIKELY_CONFIDENCE = 0.8
+# clips of a species closer than this belong to the same observation (the same bird, still there);
+# a longer silence starts a new one
+OBSERVATION_GAP_MINUTES = 10
 DEFAULT_LIVE_BACKEND = "sounddevice"
 DEFAULT_LIVE_DEVICE_INDEX = -1
 DEFAULT_ENABLE_PLAYBACK_SUBTRACTION = True

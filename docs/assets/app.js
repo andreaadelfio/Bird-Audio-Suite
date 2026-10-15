@@ -292,9 +292,9 @@ function clipHtml(clip, folded = false) {
   const wrong = clip.review === "wrong";
   return `
     <figure class="clip review-${clip.review}${folded ? " folded" : ""}" data-clip="${escapeHtml(clip.id)}" data-duration="${duration}">
-      <div class="spectrogram-box" title="Tocca una banda gialla per sentire dove BirdNET riconosce la specie, altrove per ascoltare da lì; trascina per selezionare">
+      <div class="spectrogram-box" title="Tocca una banda (verde: likely, ambra: unsure) per sentire dove BirdNET riconosce la specie, altrove per ascoltare da lì; trascina per selezionare">
         <img class="spectrogram" src="${escapeHtml(urls.spectrogram)}" alt="Spettrogramma" loading="lazy" draggable="false">
-        ${segments.map(([start, end, confidence]) => `<span class="band" style="left:${percentOf(start, duration)};width:${percentOf(end - start, duration)};--strength:${confidence}"></span>`).join("")}
+        ${segments.map(([start, end, confidence]) => `<span class="band band-${confidenceClass(confidence)}" style="left:${percentOf(start, duration)};width:${percentOf(end - start, duration)};--strength:${confidence}"></span>`).join("")}
         ${trimmed ? `<span class="trim-shade" style="left:0;width:${percentOf(clip.trim_start_s, duration)}"></span>
           <span class="trim-shade" style="left:${percentOf(clip.trim_end_s, duration)};right:0"></span>` : ""}
         <span class="selection hidden"></span>
@@ -311,7 +311,7 @@ function clipHtml(clip, folded = false) {
         <button type="button" class="tool" data-player="speed" title="Velocità: metà per sentire i dettagli">1×</button>
         <button type="button" class="tool" data-player="loop" title="Ripeti in continuazione" aria-label="Ripeti">${ICON_LOOP}</button>
         <button type="button" class="tool denoise" data-player="denoise" aria-label="Riduci il rumore"
-          title="Riduci il rumore: stima il fondo fuori dalle bande gialle e lo sottrae. Tocca ancora per più forte, poi per l'originale">${ICON_DENOISE}</button>
+          title="Riduci il rumore: stima il fondo fuori dalle bande e lo sottrae. Tocca ancora per più forte, poi per l'originale">${ICON_DENOISE}</button>
         <span class="spacer"></span>
         <button type="button" class="tool${wrong ? " on" : ""}" data-clip-review="wrong"
           title="${wrong ? "Rimetti la clip nell'osservazione" : "La clip non contiene la specie: va nel Cestino"}">${wrong ? "Ripristina" : "Scarta"}</button>
@@ -1383,8 +1383,10 @@ async function renderReport(days = Number(localStorage.getItem("reportDays") || 
 
   const bySpecies = new Map();
   for (const row of rows) {
-    const entry = bySpecies.get(row.scientific_name) || { ...row, days: 0, clips: 0, seconds: 0, best: 0 };
-    entry.days += 1;
+    // one row per observation (a visit): a species can have several in a day
+    const entry = bySpecies.get(row.scientific_name) || { ...row, dayset: new Set(), clips: 0, seconds: 0, best: 0 };
+    entry.dayset.add(row.day);
+    entry.days = entry.dayset.size;
     entry.clips += row.clips;
     entry.seconds += Number(row.seconds);
     entry.best = Math.max(entry.best, Number(row.max_confidence));

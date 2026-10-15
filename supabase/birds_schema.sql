@@ -4,7 +4,8 @@
 --   * storage (bucket `bird-audio`): the files, <media_path>.mp3 and <media_path>-spectrogram.jpg;
 --   * birds.clips: one row per detection, with its own time, confidence, place and the
 --     media_path of its files (URLs are built from it, never stored);
---   * birds.observations (species x day): only what you decide while reviewing;
+--   * birds.observations (a visit: clips of a species at most 10 minutes apart, the same bird
+--     still there): only what you decide while reviewing;
 --   * birds.species: only the names.
 -- Everything computed (max confidence of the day, first/last heard, counts, rarity) comes
 -- from the views at the bottom, never from stored copies.
@@ -30,7 +31,8 @@ create table if not exists birds.species (
   german_name     text not null default ''
 );
 
--- species x day: the unit you confirm, reject or upload to iNaturalist
+-- a visit (clips of one species at most 10 minutes apart): the unit you confirm, reject or upload
+-- to iNaturalist; `day` is the day of its first clip
 create table if not exists birds.observations (
   id                        bigint generated always as identity primary key,
   day                       date not null,
@@ -44,8 +46,7 @@ create table if not exists birds.observations (
   inat_uuid                 text,
   uploaded_at               timestamptz,  -- on iNaturalist since: a week later its files leave Storage
   created_at                timestamptz not null default now(),
-  updated_at                timestamptz not null default now(),
-  unique (day, scientific_name)
+  updated_at                timestamptz not null default now()
 );
 
 -- one detection
@@ -78,6 +79,7 @@ create table if not exists birds.deleted_clips (
 create index if not exists clips_observation_idx on birds.clips (observation_id);
 create index if not exists clips_recorded_idx on birds.clips (recorded_at desc);
 create index if not exists observations_status_day_idx on birds.observations (status, day desc);
+create index if not exists observations_species_day_idx on birds.observations (scientific_name, day);
 
 -- ---------------------------------------------------------------- from the previous version
 
@@ -152,6 +154,55 @@ alter table birds.species
   drop column if exists updated_at;
 drop table if exists birds.allowed_users;
 drop table if exists birds.settings;
+
+-- one observation per species and day until October 2026: now one per visit
+do $$
+declare
+  c record;
+begin
+  for c in select conname from pg_constraint
+           where conrelid = 'birds.observations'::regclass and contype = 'u' loop
+    execute format('alter table birds.observations drop constraint %I', c.conname);
+  end loop;
+end
+$$;
+
+-- split the old day-long observations into visits: a gap of more than 10 minutes between two
+-- clips starts a new observation, with the same status and correction (you decided for the whole
+-- day). Those already on iNaturalist stay whole, so their link stays right. Safe to re-run:
+-- afterwards no observation has such a gap.
+do $$
+declare
+  part record;
+  new_id bigint;
+begin
+  for part in
+    with ordered as (
+      select c.id, c.observation_id, c.recorded_at,
+             case when c.recorded_at - lag(c.recorded_at) over w > interval '10 minutes' then 1 else 0 end as gap
+      from birds.clips c
+      window w as (partition by c.observation_id order by c.recorded_at)
+    ),
+    visits as (
+      select id, observation_id, recorded_at,
+             sum(gap) over (partition by observation_id order by recorded_at) as visit
+      from ordered
+    )
+    select v.observation_id, v.visit, array_agg(v.id) as clip_ids, min(v.recorded_at) as first_heard
+    from visits v
+    join birds.observations o on o.id = v.observation_id
+    where v.visit > 0 and o.status <> 'uploaded'
+    group by v.observation_id, v.visit
+  loop
+    insert into birds.observations (day, scientific_name, status, corrected_scientific_name, notes, reviewed_at)
+    select (part.first_heard at time zone 'Europe/Rome')::date, o.scientific_name, o.status,
+           o.corrected_scientific_name, o.notes, o.reviewed_at
+    from birds.observations o where o.id = part.observation_id
+    returning id into new_id;
+    update birds.clips set observation_id = new_id where id = any(part.clip_ids);
+  end loop;
+end
+$$;
 
 -- ---------------------------------------------------------------- triggers
 
