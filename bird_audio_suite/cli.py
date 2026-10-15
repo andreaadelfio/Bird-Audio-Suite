@@ -1317,7 +1317,10 @@ def detect_live_slice(
         detections = detect(working_samples)
 
     suppressed_species: set[str] = set()
-    if playback_samples is not None and rms_level(playback_samples) > ACTIVE_RMS:
+    # BirdNET on the PC audio only when the mic has a bird above the threshold: only then does it
+    # matter whether it came from the PC (a call would otherwise double the work all along)
+    heard_a_bird = any(float(d.get("confidence", 0)) >= args.min_confidence for d in detections)
+    if heard_a_bird and playback_samples is not None and rms_level(playback_samples) > ACTIVE_RMS:
         playback_min_confidence = getattr(
             args,
             "playback_suppression_min_confidence",
@@ -1428,6 +1431,7 @@ def subtract_playback_from_frames(frames, sample_rate: int, args: argparse.Names
 
     log = lambda message: print(f"{datetime.now():%H:%M:%S} - {message}")
     subtractor = PlaybackSubtractor(sample_rate, log=log if getattr(args, "verbose", False) else None)
+    LIVE_METRICS.subtractor = subtractor
     if getattr(args, "verbose", False):
         print(f"{datetime.now():%H:%M:%S} - Sottrazione audio PC attiva")
     try:

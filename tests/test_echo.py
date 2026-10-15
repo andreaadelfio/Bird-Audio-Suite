@@ -41,6 +41,30 @@ class EchoCancellerTests(unittest.TestCase):
         out_full = np.concatenate([full.process(mic[part], reference[part]) for part in blocks])
         np.testing.assert_allclose(out_fast, out_full, atol=1e-5)
 
+    def test_a_video_call_is_removed_and_never_blows_up(self) -> None:
+        # band-limited voice with pauses (no energy above 3.4 kHz, silent spells), heard by the mic
+        # with wideband room noise: the weights used to grow without bound and the output got 30 dB
+        # louder than the mic
+        from scipy.signal import butter, sosfilt
+
+        rate, seconds = 48_000, 20
+        rng = np.random.default_rng(0)
+        n = rate * seconds
+        voice = sosfilt(butter(6, [300, 3400], btype="band", fs=rate, output="sos"), rng.standard_normal(n))
+        talking = np.repeat(rng.random(seconds // 2 + 1) > 0.35, 2 * rate)[:n]
+        reference = (0.2 * voice * talking).astype(np.float32)
+        room = (0.01 * rng.standard_normal(n)).astype(np.float32)
+        mic = room.copy()
+        mic[200:] += 0.15 * reference[:-200]
+        canceller = EchoCanceller()
+        out = np.concatenate([canceller.process(mic[i:i + 1536], reference[i:i + 1536])
+                              for i in range(0, n, 1536)])[canceller.latency:]
+        tail = slice(10 * rate, n - canceller.latency)
+        power = lambda x: float(np.mean(np.asarray(x[tail], np.float64) ** 2))
+        self.assertLess(power(out), power(mic))  # never louder than what the mic heard
+        self.assertLess(10 * np.log10(power(out) / power(room[:out.size])), 1.0)  # the call is gone
+        self.assertLess(float(np.abs(canceller.weights).max()), 1.0)
+
     def test_matching_reference_is_subtracted_without_suppressing_unrelated_audio(self) -> None:
         sample_rate = 48_000
         t = np.arange(sample_rate * 2, dtype=np.float32) / sample_rate

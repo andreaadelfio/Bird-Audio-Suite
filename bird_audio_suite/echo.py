@@ -31,6 +31,12 @@ FRAME = 1024
 HOP = 256
 TAPS = 16
 STEP = 0.2
+# Safety, learnt from a video call (band-limited voice with pauses) that blew the output up by
+# 30 dB: where the reference has no energy (above the codec's band, in pauses) the filter used to
+# "explain" the room noise with a near-zero reference and its weights grew without bound.
+REGULARISATION = 0.05  # x the long-term reference power per bin: bins without excitation do not learn
+MAX_WEIGHT = 2.0  # loudspeaker to mic never gains: a bigger weight is a filter going astray
+DIVERGENCE_RATIO = 2.0  # a frame coming out with twice the mic's power: start again, pass the mic
 LAG_MARGIN_SECONDS = 0.02  # the filter only looks back: the reference leads the mic by this much
 LAG_SEARCH_SECONDS = 0.5
 MIN_SHARPNESS = 8.0  # correlation peak vs the rest: below this the mic does not hear the PC
@@ -63,11 +69,12 @@ class EchoCanceller:
         self.weights = np.zeros((self.taps, bins), np.complex64)
         self.history = np.zeros((self.taps, bins), np.complex64)
         self._silent_frames = self.taps  # the history holds only silence
+        self._reference_power = 0.0  # long-term mean power of a reference bin
+        self.resets = getattr(self, "resets", 0)
 
     def process(self, mic: np.ndarray, reference: np.ndarray) -> np.ndarray:
         mic_buffer = np.concatenate((self._mic, np.asarray(mic, np.float32)))
         ref_buffer = np.concatenate((self._ref, np.asarray(reference, np.float32)))
-        floor = 1e-10 + 1e-4 * self.frame * float(np.mean(ref_buffer ** 2))
         produced = []
         start = 0
         while start + self.frame <= mic_buffer.size:
@@ -82,9 +89,25 @@ class EchoCanceller:
                 spectrum = np.fft.rfft(mic_frame * self.window)
                 self.history = np.roll(self.history, 1, axis=0)
                 self.history[0] = np.fft.rfft(ref_frame * self.window)
+                frame_power = float(np.mean(np.abs(self.history[0]) ** 2))
+                if frame_power > 0:
+                    self._reference_power = (frame_power if self._reference_power == 0
+                                             else 0.99 * self._reference_power + 0.01 * frame_power)
                 error = spectrum - (self.weights * self.history).sum(axis=0)
-                power = (np.abs(self.history) ** 2).sum(axis=0) + floor
-                self.weights += (self.step * np.conj(self.history) * error / power).astype(np.complex64)
+                mic_energy = float(np.sum(np.abs(spectrum) ** 2))
+                if float(np.sum(np.abs(error) ** 2)) > DIVERGENCE_RATIO * mic_energy + 1e-20:
+                    # going astray: forget what was learnt, this frame passes as it came in
+                    self.weights[:] = 0
+                    self.resets += 1
+                    error = spectrum
+                else:
+                    regularisation = 1e-12 + REGULARISATION * self.taps * self._reference_power
+                    power = (np.abs(self.history) ** 2).sum(axis=0) + regularisation
+                    self.weights += (self.step * np.conj(self.history) * error / power).astype(np.complex64)
+                    magnitude = np.abs(self.weights)
+                    too_big = magnitude > MAX_WEIGHT
+                    if too_big.any():
+                        self.weights[too_big] *= (MAX_WEIGHT / magnitude[too_big]).astype(np.float32)
                 # sqrt-Hann on both sides at a quarter-frame hop adds up to 2
                 self._overlap += np.fft.irfft(error, self.frame).astype(np.float32) * self.window / 2
             produced.append(self._overlap[:self.hop].copy())
@@ -236,6 +259,11 @@ class PlaybackSubtractor:
         self.next_alignment = 0
         self.playing = False
         self.last_sound = -1
+        # for the live table: does the mic hear the PC, and how much quieter is it once subtracted
+        self.heard_by_mic: bool | None = None  # None: not checked yet in this stretch of playback
+        self.sharpness = 0.0
+        self.energy_in = 0.0
+        self.energy_out = 0.0
 
     def close(self) -> None:
         self.monitor.stop()
@@ -262,7 +290,18 @@ class PlaybackSubtractor:
             reference = self.monitor.read(start + self.offset, block.size)
         self._track_playing(reference)
         self._remember(block, reference)
-        return self.canceller.process(block, reference), reference
+        out = self.canceller.process(block, reference)
+        if self.playing:
+            # a few seconds of memory: what the mic had against what goes on to BirdNET
+            self.energy_in = 0.995 * self.energy_in + float(np.mean(block.astype(np.float64) ** 2))
+            self.energy_out = 0.995 * self.energy_out + float(np.mean(out.astype(np.float64) ** 2))
+        return out, reference
+
+    def status(self) -> dict:
+        reduction = (10 * np.log10(self.energy_in / self.energy_out)
+                     if self.energy_in > 0 and self.energy_out > 0 else None)
+        return {"playing": self.playing, "heard": self.heard_by_mic, "sharpness": round(self.sharpness, 1),
+                "reduction_db": round(float(reduction), 1) if reduction is not None else None}
 
     def _rough_offset(self, arrived_at: float) -> int | None:
         """From arrival times: tens of ms off, fixed by _align as soon as the PC plays."""
@@ -278,6 +317,8 @@ class PlaybackSubtractor:
             self.last_sound = self.mic_count
             if not self.playing:
                 self.playing = True
+                self.heard_by_mic = None
+                self.energy_in = self.energy_out = 0.0
                 self.log("il PC sta suonando: lo sottraggo dal microfono")
         elif self.playing and self.mic_count - self.last_sound > QUIET_SECONDS * self.sample_rate:
             self.playing = False
@@ -301,7 +342,9 @@ class PlaybackSubtractor:
             return
         lag, sharpness = estimate_lag(np.concatenate(self.history_mic), reference,
                                       int(LAG_SEARCH_SECONDS * self.sample_rate))
-        if sharpness < MIN_SHARPNESS:
+        self.sharpness = sharpness
+        self.heard_by_mic = sharpness >= MIN_SHARPNESS
+        if not self.heard_by_mic:
             return  # e.g. headphones: the mic does not hear the PC, nothing to line up
         shift = lag - self.margin
         if abs(shift) > self.sample_rate // 500:  # more than 2 ms off: line up and learn again
