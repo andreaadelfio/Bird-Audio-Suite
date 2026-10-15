@@ -109,7 +109,8 @@ def outbox(folder, rest, storage=None) -> Outbox:
     config = CloudConfig(supabase_url="https://example.supabase.co", supabase_key="k")
     return Outbox(folder, FakeNames(), config, rest=rest, storage=storage or FakeStorage(),
                   render=fake_render, encode=fake_encode,
-                  analyse=lambda item: [["Turdus merula", "Eurasian Blackbird", 0.91], ["Turdus philomelos", "Song Thrush", 0.2]],
+                  analyse=lambda item: {"confidence": round(item.data["confidence"] - 0.1, 3), "segments": [[0.0, 1.0, 0.8]],
+                                        "candidates": [["Turdus merula", "Eurasian Blackbird", 0.91], ["Turdus philomelos", "Song Thrush", 0.2]]},
                   link_codes=lambda name: {"ebird_code": "eurbla"})
 
 
@@ -149,14 +150,16 @@ class PushTests(unittest.TestCase):
         # the same species hours apart: two observations (a visit lasts while it is heard within 10 min)
         self.assertEqual(rest.observations, {1: ("2026-10-09", "Turdus merula"), 2: ("2026-10-09", "Turdus merula")})
         clip_rows = [row for table, rows in rest.upserts if table == "clips" for row in rows]
-        self.assertEqual([row["confidence"] for row in clip_rows], [0.91, 0.97])
+        # clip_conf from the analysis of the saved clip; the live's score kept apart
+        self.assertEqual([row["confidence"] for row in clip_rows], [0.81, 0.87])
+        self.assertEqual([row["live_confidence"] for row in clip_rows], [0.91, 0.97])
         first = clip_rows[0]
         self.assertEqual(first["media_path"], "20261009/merlo_20261009_065500_0-910")
         # no URLs, no review columns: only what the clip is
         self.assertEqual(
             sorted(first),
-            ["candidates", "confidence", "duration_s", "id", "latitude", "longitude", "media_path", "observation_id",
-             "place_name", "recorded_at", "segments"],
+            ["candidates", "confidence", "duration_s", "id", "latitude", "live_confidence", "longitude", "media_path",
+             "observation_id", "place_name", "recorded_at", "segments"],
         )
         self.assertEqual(sorted(storage.objects), [
             "20261009/merlo_20261009_065500_0-910-spectrogram.jpg", "20261009/merlo_20261009_065500_0-910.mp3",

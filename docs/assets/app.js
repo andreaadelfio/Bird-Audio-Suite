@@ -291,8 +291,12 @@ function findClip(clipId) {
   return null;
 }
 
+// clip_conf: BirdNET on the saved clip (the bands come from the same analysis); the live's own
+// score, from other chunks of the stream, in the tooltip
 function clipFacts(clip) {
-  return `${timeFormat.format(new Date(clip.recorded_at))} · clip_conf <b class="conf-${confidenceClass(clip.confidence)}">${Number(clip.confidence).toFixed(3)}</b>
+  const live = clip.live_confidence != null && Math.abs(clip.live_confidence - clip.confidence) >= 0.005
+    ? ` title="BirdNET sulla clip salvata; il live aveva dato ${Number(clip.live_confidence).toFixed(3)}"` : "";
+  return `${timeFormat.format(new Date(clip.recorded_at))} · clip_conf <b class="conf-${confidenceClass(clip.confidence)}"${live}>${Number(clip.confidence).toFixed(3)}</b>
     · ${Math.round(clip.duration_s || 0)} s`;
 }
 

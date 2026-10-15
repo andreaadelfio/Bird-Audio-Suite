@@ -281,31 +281,22 @@ def encode_mp3(audio_path: Path, output_path: Path) -> Path:
     return output_path
 
 
-_detector = None
-
-
-def clip_candidates(item) -> list[list] | None:
-    """BirdNET on the whole clip, chunks every second, down to 0.05: its three most likely species.
-    Runs in the uploader (low priority), never in the live; the model loads at the first clip."""
-    global _detector
+def clip_analysis(item) -> dict:
+    """analysis.py on the clip about to be sent: its confidence, bands and candidates."""
     import soundfile
 
-    from .audio import birdnet_candidates
-    from .detector import BirdNetDetector
+    from .analysis import analyse_samples
 
-    if _detector is None:
-        _detector = BirdNetDetector()
     samples, rate = soundfile.read(str(item.wav), dtype="float32")
     if samples.ndim > 1:
         samples = samples.mean(axis=1)
     data = item.data
-    detections = _detector.detect_samples(
-        samples, rate,
+    return analyse_samples(
+        samples, rate, data["scientific_name"],
         latitude=data.get("latitude") if data.get("latitude") is not None else 45.8,
         longitude=data.get("longitude") if data.get("longitude") is not None else 13.5,
-        when=item.recorded_at, min_confidence=0.05, overlap=2.0,
+        when=item.recorded_at,
     )
-    return birdnet_candidates(detections)
 
 
 def audio_duration(path: Path) -> float:
@@ -378,7 +369,7 @@ class Outbox:
         self.storage = storage
         self.render = render
         self.encode = encode
-        self.analyse = analyse or clip_candidates  # BirdNET's three most likely species in the clip
+        self.analyse = analyse or clip_analysis  # confidence, bands and candidates from the saved audio
         self.link_codes = link_codes
 
     def _connect(self) -> None:
@@ -447,9 +438,9 @@ class Outbox:
         if not self.storage.exists(f"{media_path}.mp3"):
             raise RuntimeError("l'MP3 non risulta nel bucket: la clip resta sul PC")
         try:
-            candidates = self.analyse(item)
-        except Exception:  # never a reason to keep the clip back
-            candidates = None
+            analysis = self.analyse(item)
+        except Exception:  # never a reason to keep the clip back: the live's numbers then
+            analysis = None
 
         self.rest.upsert(
             "clips",
@@ -458,14 +449,16 @@ class Outbox:
                     "id": item.clip_id,
                     "observation_id": observation_id,
                     "recorded_at": data["recorded_at"],
-                    "confidence": data["confidence"],
+                    "confidence": analysis["confidence"] if analysis else data["confidence"],
+                    "live_confidence": data["confidence"],  # what the live scored while listening
                     "duration_s": data.get("duration_s") or round(audio_duration(item.wav), 2),
                     "place_name": data.get("place_name") or "",
                     "latitude": data.get("latitude"),
                     "longitude": data.get("longitude"),
                     "media_path": media_path,
-                    "segments": data.get("segments"),  # where BirdNET heard it, seconds from the clip start
-                    "candidates": candidates,
+                    # where BirdNET hears it, seconds from the clip start; its three likely species
+                    "segments": analysis["segments"] if analysis else data.get("segments"),
+                    "candidates": analysis["candidates"] if analysis else None,
                 }
             ],
             on_conflict="id",

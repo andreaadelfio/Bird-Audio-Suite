@@ -56,7 +56,8 @@ create table if not exists birds.clips (
   id             text primary key, -- "<Nome>_YYYYMMDD_HHMMSS_<conf>.wav", as written by the laptop
   observation_id bigint not null references birds.observations (id) on delete cascade,
   recorded_at    timestamptz not null,
-  confidence     real not null,
+  confidence     real not null,    -- BirdNET on the saved clip (analysis.py): what clip_conf shows
+  live_confidence real,            -- what the live scored while listening (other chunks, older pipelines)
   duration_s     real,
   place_name     text not null default '',
   latitude       double precision,
@@ -102,6 +103,9 @@ alter table birds.clips add column if not exists trim_end_s real;
 alter table birds.clips add column if not exists media_deleted_at timestamptz;
 alter table birds.observations add column if not exists uploaded_at timestamptz;
 alter table birds.clips add column if not exists candidates jsonb;
+alter table birds.clips add column if not exists live_confidence real;
+-- the live's score, kept before the analysis of the saved clips replaces confidence
+update birds.clips set live_confidence = confidence where live_confidence is null;
 alter table birds.species add column if not exists ebird_code text;
 alter table birds.species add column if not exists inat_taxon_id bigint;
 -- already uploaded before uploaded_at existed: the last change is when it happened

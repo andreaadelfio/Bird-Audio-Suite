@@ -14,10 +14,10 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from .analysis import BAND_MIN_CONFIDENCE
 from .audio import (
     apply_clip_span_policy,
     aggregate_detections_by_species,
-    birdnet_candidates,
     detection_segments,
     denoise_signal,
     export_detection_clips,
@@ -71,13 +71,12 @@ AUDIO_STALL_TIMEOUT_SECONDS = 30.0
 LIVE_MAX_CLIP_SECONDS = 120.0
 TABLE_REFRESH_SECONDS = 60.0
 # bands on the spectrogram: where BirdNET hears the clip's species, also weakly, so you see the
-# whole visit; the site colours them likely (>= 0.8) or unsure
-SEGMENT_MIN_CONFIDENCE = 0.3
+# whole visit; the site colours them likely (>= 0.8) or unsure. The same threshold as the analysis
+# of the saved clip (analysis.py), which replaces these bands once the clip is on Supabase
+SEGMENT_MIN_CONFIDENCE = BAND_MIN_CONFIDENCE
 # BirdNET's 3 s chunks every 1 s: where a call falls inside a chunk changes its score a lot (a
 # chiffchaff heard at 0.95 scored 0.42 in fixed chunks), so the live missed clear birds
 LIVE_OVERLAP_SECONDS = 2.0
-BACKFILL_OVERLAP_SECONDS = 2.0  # backfill: 3 s chunks every 1 s
-BACKFILL_FALLBACK_CONFIDENCE = 0.1  # backfill: nothing above the band threshold, the best chunk is still shown
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1832,17 +1831,13 @@ def run_sync(args: argparse.Namespace) -> int:
 
 
 def run_backfill_segments(args: argparse.Namespace) -> int:
-    """Clips saved before BirdNET's bands were kept: analyse their MP3 again and store where the
-    clip's own species is heard.
-
-    The chunks overlap (1 s step): the clip's start is not aligned with the live windows, and a
-    call cut in two by a chunk border can drop from 0.9 to 0.3. When nothing reaches
-    SEGMENT_MIN_CONFIDENCE the best chunk is kept anyway (if at least BACKFILL_FALLBACK_CONFIDENCE),
-    as a fainter band showing where to look. Clips with nothing at all get an empty list, retried
-    only with --retry-empty."""
+    """analysis.py on the clips already on Supabase: their MP3 analysed again, confidence, bands and
+    candidates replaced (the live's own score stays in live_confidence). Without --all only the
+    clips never analysed; --retry-empty also those where the species was not found."""
     import requests
     import soundfile
 
+    from .analysis import analyse_samples, detector
     from .cloud import CloudConfig, SupabaseRest, SupabaseStorage
 
     config = CloudConfig.load()
@@ -1858,11 +1853,10 @@ def run_backfill_segments(args: argparse.Namespace) -> int:
             "limit": str(args.limit or 100000),
         },
     )
-    print(f"Clip senza bande: {len(clips)}")
-    detector = BirdNetDetector()
+    print(f"Clip da analizzare: {len(clips)}")
+    model = detector()
     done = empty = 0
     for index, clip in enumerate(clips, start=1):
-        species = clip["observations"]["scientific_name"]
         try:
             response = requests.get(storage.public_url(f"{clip['media_path']}.mp3"), timeout=60)
             response.raise_for_status()
@@ -1872,33 +1866,20 @@ def run_backfill_segments(args: argparse.Namespace) -> int:
                 samples, sample_rate = soundfile.read(handle.name, dtype="float32")
             if samples.ndim > 1:
                 samples = samples.mean(axis=1)
-            detections = detector.detect_samples(
-                samples, sample_rate,
+            analysis = analyse_samples(
+                samples, sample_rate, clip["observations"]["scientific_name"],
                 latitude=clip["latitude"] if clip["latitude"] is not None else DEFAULT_LATITUDE,
                 longitude=clip["longitude"] if clip["longitude"] is not None else DEFAULT_LONGITUDE,
-                when=datetime.fromisoformat(clip["recorded_at"]),
-                min_confidence=BACKFILL_FALLBACK_CONFIDENCE,
-                overlap=BACKFILL_OVERLAP_SECONDS,
+                when=datetime.fromisoformat(clip["recorded_at"]), model=model,
             )
-            bands = detection_segments(detections, SEGMENT_MIN_CONFIDENCE).get(species, [])
-            if not bands:
-                own = [d for d in detections if d.get("scientific_name") == species]
-                if own:
-                    best = max(own, key=lambda d: d["confidence"])
-                    bands = [(float(best["start_time"]), float(best["end_time"]), float(best["confidence"]))]
-            duration = len(samples) / float(sample_rate)
-            segments = [[round(start, 2), round(min(end, duration), 2), round(confidence, 3)]
-                        for start, end, confidence in bands]
-            # and BirdNET's three most likely species in the clip (what else it could be)
-            rest.update("clips", {"id": f"eq.{clip['id']}"},
-                        {"segments": segments, "candidates": birdnet_candidates(detections)})
+            rest.update("clips", {"id": f"eq.{clip['id']}"}, analysis)
             done += 1
-            empty += 0 if segments else 1
+            empty += 0 if analysis["segments"] else 1
         except Exception as exc:
             print(f"  {clip['id']}: {exc}")
         if index % 25 == 0:
             print(f"  {index}/{len(clips)}")
-    print(f"Fatto: {done} clip aggiornate, {empty} senza nessuna banda (nemmeno sopra {BACKFILL_FALLBACK_CONFIDENCE}).")
+    print(f"Fatto: {done} clip analizzate, {empty} dove BirdNET non ritrova la specie (nemmeno sopra 0.1).")
     return 0
 
 

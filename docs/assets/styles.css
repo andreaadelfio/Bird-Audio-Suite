@@ -412,7 +412,7 @@ button.inat { border-color: var(--uploaded); color: var(--uploaded); }
   pointer-events: none;
 }
 
-.clip-info { top: 3px; left: 3px; }
+.clip-info { top: 3px; left: 3px; pointer-events: auto; } /* its tooltip: the live's own score */
 .player-time { right: 3px; bottom: 3px; }
 
 /* playback on the left; unlink, reject and delete together on the right, on a line of their own
