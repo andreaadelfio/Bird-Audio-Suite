@@ -1,42 +1,42 @@
 {
  "test (pytest, intera suite)": {
-  "seconds": 5.215,
+  "seconds": 6.014,
   "rss_mb": 271
  },
  "BirdNET: import e caricamento modello": {
-  "seconds": 0.6198,
+  "seconds": 0.8762,
   "rss_mb": 230
  },
  "live: BirdNET su una finestra da 9.6 s": {
-  "seconds": 0.1549,
-  "rss_mb": 263
+  "seconds": 0.5939,
+  "rss_mb": 265
  },
  "live: finestra con il PC che suona": {
-  "seconds": 0.3173,
+  "seconds": 1.2654,
   "rss_mb": 283
  },
  "live: sottrazione, PC che suona, 60 s": {
-  "seconds": 1.9285,
+  "seconds": 2.3919,
   "rss_mb": 349
  },
  "live: sottrazione, PC in silenzio, 60 s": {
-  "seconds": 0.1325,
+  "seconds": 0.1656,
   "rss_mb": 349
  },
  "sync: MP3 di una clip da 30 s": {
-  "seconds": 0.5688,
-  "rss_mb": 349
+  "seconds": 0.6884,
+  "rss_mb": 350
  },
  "sync: spettrogramma di una clip da 30 s": {
-  "seconds": 1.3438,
-  "rss_mb": 465
+  "seconds": 1.7157,
+  "rss_mb": 466
  },
  "backfill: BirdNET su 30 s sovrapposti": {
-  "seconds": 1.5155,
-  "rss_mb": 466
+  "seconds": 2.2906,
+  "rss_mb": 467
  },
  "picco RAM del benchmark": {
   "seconds": null,
-  "rss_mb": 466
+  "rss_mb": 467
  }
 }

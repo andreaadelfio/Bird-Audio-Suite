@@ -115,7 +115,8 @@ def measure() -> list[dict]:
     when = datetime(2026, 6, 1, 6, 30)
 
     def birdnet_window():
-        detector.detect_samples(window, SAMPLE_RATE, latitude=45.8, longitude=13.5, when=when, min_confidence=0.5)
+        detector.detect_samples(window, SAMPLE_RATE, latitude=45.8, longitude=13.5, when=when, min_confidence=0.5,
+                                overlap=2.0)  # as the live does
 
     quiet(birdnet_window)()  # warm-up
     seconds = timed(quiet(birdnet_window), repeat=5)

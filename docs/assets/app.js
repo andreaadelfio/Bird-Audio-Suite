@@ -211,6 +211,10 @@ function speciesLinks(scientificName) {
 const ICON_PLAY = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>';
 const ICON_PAUSE = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5h4v14H6zm8 0h4v14h-4z"/></svg>';
 const ICON_TRASH = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3h6l1 2h4v2H4V5h4l1-2zM6 9h12l-1 12H7L6 9zm4 2v8h2v-8h-2zm4 0v8h2v-8h-2z"/></svg>';
+const ICON_CHECK = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 16.2 4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4z"/></svg>';
+const ICON_CROSS = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 6.4 17.6 5 12 10.6 6.4 5 5 6.4 10.6 12 5 17.6 6.4 19 12 13.4 17.6 19 19 17.6 13.4 12z"/></svg>';
+const ICON_UNDO = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12.5 8c-2.65 0-5.05 1-6.9 2.6L2 7v9h9l-3.62-3.62A7.97 7.97 0 0 1 20.1 15.5l2.37-.78A10.48 10.48 0 0 0 12.5 8z"/></svg>';
+const ICON_EDIT = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>';
 const ICON_LOOP = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/></svg>';
 const SKIP_SECONDS = 2;
 const BAND_PADDING_SECONDS = 0.5;
@@ -323,7 +327,8 @@ function observationActions(observation) {
   const status = observation.status;
   const buttons = [];
   if (status === "pending" || status === "rejected") {
-    buttons.push('<button type="button" data-status="confirmed" class="primary" title="La specie è giusta">✓ Conferma</button>');
+    buttons.push(`<button type="button" data-status="confirmed" class="round confirm" title="Conferma: la specie è giusta"
+      aria-label="Conferma">${ICON_CHECK}</button>`);
   }
   if (status === "confirmed") {
     buttons.push('<button type="button" class="inat" data-inat-upload title="Carica su iNaturalist (serve il token, pannello iNat)">↑ iNaturalist</button>');
@@ -333,13 +338,15 @@ function observationActions(observation) {
       target="_blank" rel="noopener">Vedi su iNat ↗</a>`);
   }
   if (status !== "rejected" && status !== "uploaded") {
-    buttons.push('<button type="button" data-status="rejected" title="Non è questa specie: va nel Cestino">✕ Scarta</button>');
+    buttons.push(`<button type="button" data-status="rejected" class="round reject" title="Scarta: non è questa specie, va nel Cestino"
+      aria-label="Scarta">${ICON_CROSS}</button>`);
   }
   if (status !== "pending") {
-    buttons.push('<button type="button" class="ghost" data-status="pending" title="Rimetti da rivedere">↺</button>');
+    buttons.push(`<button type="button" class="round ghost" data-status="pending" title="Rimetti da rivedere"
+      aria-label="Rimetti da rivedere">${ICON_UNDO}</button>`);
   }
-  buttons.push(`<button type="button" class="ghost" data-fix-toggle title="Correggi la specie se BirdNET ha sbagliato"
-    aria-label="Correggi la specie">✎</button>`);
+  buttons.push(`<button type="button" class="round ghost" data-fix-toggle title="Correggi la specie se BirdNET ha sbagliato"
+    aria-label="Correggi la specie">${ICON_EDIT}</button>`);
   return buttons.join("");
 }
 

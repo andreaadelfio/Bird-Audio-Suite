@@ -69,6 +69,9 @@ AUDIO_STALL_TIMEOUT_SECONDS = 30.0
 LIVE_MAX_CLIP_SECONDS = 120.0
 TABLE_REFRESH_SECONDS = 60.0
 SEGMENT_MIN_CONFIDENCE = 0.5  # bands highlighted on the spectrogram
+# BirdNET's 3 s chunks every 1 s: where a call falls inside a chunk changes its score a lot (a
+# chiffchaff heard at 0.95 scored 0.42 in fixed chunks), so the live missed clear birds
+LIVE_OVERLAP_SECONDS = 2.0
 BACKFILL_OVERLAP_SECONDS = 2.0  # backfill: 3 s chunks every 1 s
 BACKFILL_FALLBACK_CONFIDENCE = 0.1  # backfill: below 0.5, the best chunk is still shown
 
@@ -1281,6 +1284,7 @@ def detect_live_slice(
                 if min_confidence is None
                 else min_confidence
             ),
+            overlap=LIVE_OVERLAP_SECONDS,
         )
 
     detections = detect(working_samples)

@@ -272,6 +272,23 @@ label { color: var(--ink-soft); font-size: 0.85rem; }
 
 .actions { grid-area: acts; display: flex; flex-wrap: wrap; gap: 0.3rem; align-items: center; }
 .actions .primary { font-weight: 600; }
+
+/* confirm / reject / back to review / correct: round icon buttons, the words in their tooltips */
+button.round {
+  display: grid;
+  place-items: center;
+  width: 2.2rem;
+  min-height: 2.2rem;
+  padding: 0;
+  border-radius: 50%;
+}
+
+button.round svg { width: 1.25rem; height: 1.25rem; fill: currentColor; }
+button.round.confirm { background: var(--positive); border-color: var(--positive); color: var(--on-accent); }
+button.round.confirm:hover { background: color-mix(in srgb, var(--positive) 85%, var(--ink)); }
+button.round.reject { border-color: color-mix(in srgb, var(--negative) 50%, transparent); color: var(--negative); }
+button.round.reject:hover { background: color-mix(in srgb, var(--negative) 12%, transparent); border-color: var(--negative); }
+button.round.ghost svg { width: 1.05rem; height: 1.05rem; }
 button.inat { border-color: var(--uploaded); color: var(--uploaded); }
 .inat-link { padding: 0 0.3rem; color: var(--uploaded); font-weight: 600; white-space: nowrap; }
 
@@ -556,8 +573,9 @@ button.inat { border-color: var(--uploaded); color: var(--uploaded); }
   .trim-chip { line-height: 1.9; }
 
   .actions { margin-top: 0.2rem; }
-  .actions > button { flex: 1 1 0; }
-  .actions > .ghost { flex: 0 0 auto; }
+  .actions > button:not(.round) { flex: 1 1 0; }
+  button.round { width: 2.7rem; min-height: 2.7rem; }
+  button.round svg { width: 1.45rem; height: 1.45rem; }
 
   .more, .show-clips { width: 100%; }
   .report-grid { grid-template-columns: minmax(0, 1fr); }
