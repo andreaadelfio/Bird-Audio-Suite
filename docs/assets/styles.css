@@ -424,6 +424,24 @@ button.inat { border-color: var(--uploaded); color: var(--uploaded); }
 }
 .trim-chip:hover { background: rgba(0, 0, 0, 0.8); }
 
+/* noise reduction for listening: off / media / forte */
+button.denoise.strong { background: var(--accent-deep); border-color: var(--accent-deep); }
+.denoise.working { animation: working 0.8s ease-in-out infinite alternate; cursor: progress; }
+@keyframes working { from { opacity: 1; } to { opacity: 0.35; } }
+.spectrogram-box[data-denoise]::after {
+  content: "rumore ridotto: " attr(data-denoise);
+  position: absolute;
+  left: 3px;
+  bottom: 3px;
+  padding: 0 0.3rem;
+  border-radius: 4px;
+  background: rgba(63, 109, 86, 0.85);
+  color: #fff;
+  font-size: 0.7rem;
+  line-height: 1.5;
+  pointer-events: none;
+}
+
 /* "Scarta" marks the clip wrong (it goes to the Cestino); the bin deletes it for good */
 .player [data-clip-review].on { background: var(--negative); border-color: var(--negative); color: var(--on-accent); }
 .trash-button { width: 1.75rem; padding: 0; display: grid; place-items: center; color: var(--negative); }

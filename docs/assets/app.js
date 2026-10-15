@@ -236,6 +236,7 @@ const ICON_CHECK = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 16.2
 const ICON_CROSS = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 6.4 17.6 5 12 10.6 6.4 5 5 6.4 10.6 12 5 17.6 6.4 19 12 13.4 17.6 19 19 17.6 13.4 12z"/></svg>';
 const ICON_UNDO = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12.5 8c-2.65 0-5.05 1-6.9 2.6L2 7v9h9l-3.62-3.62A7.97 7.97 0 0 1 20.1 15.5l2.37-.78A10.48 10.48 0 0 0 12.5 8z"/></svg>';
 const ICON_EDIT = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>';
+const ICON_DENOISE = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7.5 5.6 10 7 8.6 4.5 10 2 7.5 3.4 5 2l1.4 2.5L5 7zm12 9.8L17 14l1.4 2.5L17 19l2.5-1.4L22 19l-1.4-2.5L22 14zM22 2l-2.5 1.4L17 2l1.4 2.5L17 7l2.5-1.4L22 7l-1.4-2.5zm-7.63 5.29a1 1 0 0 0-1.41 0L1.29 18.96a1 1 0 0 0 0 1.41l2.34 2.34a1 1 0 0 0 1.41 0L16.7 11.05a1 1 0 0 0 0-1.41l-2.33-2.35zm-1.03 5.49-2.12-2.12 2.44-2.44 2.12 2.12-2.44 2.44z"/></svg>';
 const ICON_LOOP = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/></svg>';
 const SKIP_SECONDS = 2;
 const BAND_PADDING_SECONDS = 0.5;
@@ -309,6 +310,8 @@ function clipHtml(clip, folded = false) {
         <button type="button" class="tool" data-player="back" title="Indietro di ${SKIP_SECONDS} secondi">−${SKIP_SECONDS}s</button>
         <button type="button" class="tool" data-player="speed" title="Velocità: metà per sentire i dettagli">1×</button>
         <button type="button" class="tool" data-player="loop" title="Ripeti in continuazione" aria-label="Ripeti">${ICON_LOOP}</button>
+        <button type="button" class="tool denoise" data-player="denoise" aria-label="Riduci il rumore"
+          title="Riduci il rumore: stima il fondo fuori dalle bande gialle e lo sottrae. Tocca ancora per più forte, poi per l'originale">${ICON_DENOISE}</button>
         <span class="spacer"></span>
         <button type="button" class="tool${wrong ? " on" : ""}" data-clip-review="wrong"
           title="${wrong ? "Rimetti la clip nell'osservazione" : "La clip non contiene la specie: va nel Cestino"}">${wrong ? "Ripristina" : "Scarta"}</button>
@@ -808,11 +811,90 @@ content.addEventListener("click", async (event) => {
       case "untrim":
         await saveTrim(figure, null, null);
         break;
+      case "denoise":
+        await cycleDenoise(figure, control);
+        break;
     }
   } catch (error) {
     setStatus(`Errore: ${error.message}`, true);
   }
 });
+
+// ---------------------------------------------------------------- noise reduction (listening only)
+
+// Off -> medium -> strong -> off. The noise is the clip outside its yellow bands; the work runs in
+// assets/denoise-worker.js. Measured on 14 real clips: medium lowers the background ~6 dB and
+// lifts the bird over it in every clip (+2.5 dB); strong lowers it ~18 dB (+7 dB on average) but
+// can eat a faint bird. Only for your ears: the file on Supabase, BirdNET and iNaturalist keep the
+// original (BirdNET even scores denoised audio lower: it learnt on raw field recordings).
+const DENOISE_LEVELS = [
+  null,
+  { label: "media", options: { overSubtraction: 1, floor: 0.3, percentile: 0.3 } },
+  { label: "forte", options: { overSubtraction: 2, floor: 0.1, percentile: 0.5 } },
+];
+const denoisedUrls = new Map(); // "clip id|level" -> blob URL of the cleaned WAV
+let denoiseWorker = null;
+let denoiseJobs = 0;
+const denoiseWaiting = new Map();
+
+function denoiseInWorker(samples, rate, segments, options) {
+  if (!denoiseWorker) {
+    denoiseWorker = new Worker("./assets/denoise-worker.js?v=1");
+    denoiseWorker.onmessage = (event) => {
+      const { id, samples: cleaned } = event.data;
+      denoiseWaiting.get(id)?.(cleaned);
+      denoiseWaiting.delete(id);
+    };
+  }
+  const id = ++denoiseJobs;
+  return new Promise((resolve) => {
+    denoiseWaiting.set(id, resolve);
+    const copy = new Float32Array(samples); // transferred to the worker
+    denoiseWorker.postMessage({ id, samples: copy, rate, segments, options }, [copy.buffer]);
+  });
+}
+
+async function denoisedUrl(clip, level) {
+  const key = `${clip.id}|${level}`;
+  if (!denoisedUrls.has(key)) {
+    const { samples, rate } = await decodeMono(mediaUrls(clip.media_path).audio);
+    const cleaned = await denoiseInWorker(samples, rate, clipSegments(clip), DENOISE_LEVELS[level].options);
+    denoisedUrls.set(key, URL.createObjectURL(wavBlob(cleaned, rate)));
+  }
+  return denoisedUrls.get(key);
+}
+
+// another source in the same player: same point, still playing if it was
+function swapSource(audio, url) {
+  const at = audio.currentTime;
+  const playing = !audio.paused;
+  audio.preload = "auto";
+  audio.src = url;
+  audio.load();
+  seekWhenReady(audio, at);
+  if (playing) audio.play().catch((error) => setStatus(`Audio: ${error.message}`, true));
+}
+
+async function cycleDenoise(figure, button) {
+  const found = findClip(figure.dataset.clip);
+  if (!found || button.classList.contains("working")) return;
+  const player = playerState(figure);
+  const level = ((player.denoise || 0) + 1) % DENOISE_LEVELS.length;
+  const audio = figure.querySelector("audio");
+  button.classList.add("working");
+  try {
+    swapSource(audio, level ? await denoisedUrl(found.clip, level) : mediaUrls(found.clip.media_path).audio);
+    player.denoise = level;
+    button.classList.toggle("on", level > 0);
+    button.classList.toggle("strong", level === 2);
+    // written on the spectrogram ("rumore ridotto: media"): the button stays one icon
+    const box = figure.querySelector(".spectrogram-box");
+    if (level) box.dataset.denoise = DENOISE_LEVELS[level].label;
+    else delete box.dataset.denoise;
+  } finally {
+    button.classList.remove("working");
+  }
+}
 
 // keyboard on a computer: space plays/pauses the last clip used, arrows move by 2 s
 document.addEventListener("keydown", (event) => {
@@ -1094,12 +1176,16 @@ async function resolveTaxonId(scientificName) {
 }
 
 // the trimmed part of a clip as a 16-bit mono WAV, built in the browser from its MP3
-async function trimmedWav(url, start, end) {
+// a clip's MP3 as mono samples at 48 kHz (from the browser cache once it has been played)
+async function decodeMono(url) {
   const response = await fetch(url);
   if (!response.ok) throw new Error(`audio non scaricabile (${response.status})`);
   const decoded = await new OfflineAudioContext(1, 1, 48000).decodeAudioData(await response.arrayBuffer());
-  const rate = decoded.sampleRate;
-  const samples = decoded.getChannelData(0).subarray(Math.floor(start * rate), Math.min(decoded.length, Math.ceil(end * rate)));
+  return { samples: decoded.getChannelData(0), rate: decoded.sampleRate };
+}
+
+// 16-bit mono WAV
+function wavBlob(samples, rate) {
   const buffer = new ArrayBuffer(44 + samples.length * 2);
   const view = new DataView(buffer);
   const text = (offset, value) => [...value].forEach((char, index) => view.setUint8(offset + index, char.charCodeAt(0)));
@@ -1116,8 +1202,16 @@ async function trimmedWav(url, start, end) {
   view.setUint16(34, 16, true);
   text(36, "data");
   view.setUint32(40, samples.length * 2, true);
-  samples.forEach((sample, index) => view.setInt16(44 + index * 2, Math.max(-1, Math.min(1, sample)) * 0x7fff, true));
+  for (let index = 0; index < samples.length; index += 1) {
+    view.setInt16(44 + index * 2, Math.max(-1, Math.min(1, samples[index])) * 0x7fff, true);
+  }
   return new Blob([buffer], { type: "audio/wav" });
+}
+
+// the trimmed part of a clip as a WAV, built in the browser from its MP3
+async function trimmedWav(url, start, end) {
+  const { samples, rate } = await decodeMono(url);
+  return wavBlob(samples.subarray(Math.floor(start * rate), Math.min(samples.length, Math.ceil(end * rate))), rate);
 }
 
 function localDateTime(iso) {
