@@ -360,6 +360,21 @@ class DeviceSelectionTests(unittest.TestCase):
 
 
 class LiveSummaryTests(unittest.TestCase):
+    def test_a_species_leaves_the_live_memory_once_its_clip_is_written(self) -> None:
+        from bird_audio_suite.cli import LiveToday
+
+        heard = datetime(2026, 10, 15, 12, 27, 42).astimezone()
+        today = LiveToday()
+        today.add("Parus major", "Great Tit", 0.79, heard)
+        today.add("Sitta europaea", "Eurasian Nuthatch", 0.66, heard)
+        with tempfile.TemporaryDirectory() as directory:
+            wav = Path(directory) / "Cinciallegra_20261015_122742_0.792.wav"
+            wav.with_suffix(".json").write_text(json.dumps({"scientific_name": "Parus major",
+                                                            "recorded_at": heard.isoformat()}))
+            today.clips_written([wav])
+        # the great tit is in the transit folder (then on Supabase): if it is deleted there, it is gone
+        self.assertEqual([row["scientific_name"] for row in today.of_day("2026-10-15")], ["Sitta europaea"])
+
     def test_supabase_transit_and_memory_become_one_row_per_species(self) -> None:
         remote = [{"scientific_name": "Pica pica", "english_name": "Magpie", "italian_name": "Gazza",
                    "german_name": "Elster", "max_confidence": 0.99, "last_heard": "2026-10-10T08:00:00+00:00",

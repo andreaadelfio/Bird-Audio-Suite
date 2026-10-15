@@ -58,7 +58,7 @@ from .echo import ACTIVE_RMS, PlaybackMonitor, PlaybackSubtractor
 from .geolocation import resolve_location
 from .health import HeartbeatWriter
 from .inputgain import SOUND_SERVER_DEVICES, SourceVolumeCompensation
-from .metrics import LiveMetrics, NearMisses
+from .metrics import LiveMetrics
 from .uploader import read_status as read_uploader_status, status_line as uploader_status_line
 from .live import LiveDetectionTracker, run_sliding_window_loop
 from .species import SpeciesNames
@@ -920,8 +920,9 @@ def collect_batch_files(file_args: list[str] | None, directory: Path | None, rec
 
 
 class LiveToday:
-    """What the live service heard today, kept in memory so the table shows a species at once,
-    before its clip closes and reaches Supabase, and also offline."""
+    """Species whose clip is still open, so the table shows them at once. Only until the clip is
+    written: from then on the table takes it from the transit folder and, once sent, from Supabase,
+    the one truth (a clip deleted or an observation rejected on the site must not come back)."""
 
     def __init__(self) -> None:
         self.lock = threading.Lock()
@@ -939,11 +940,20 @@ class LiveToday:
         with self.lock:
             return [dict(row) for (row_day, _), row in self.rows.items() if row_day == day]
 
+    def clips_written(self, paths) -> None:
+        """Their clips are in the transit folder now: forget those species (next call reopens)."""
+        for path in paths:
+            try:
+                data = json.loads(Path(path).with_suffix(".json").read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            day = datetime.fromisoformat(data["recorded_at"]).date().isoformat()
+            with self.lock:
+                self.rows.pop((day, data.get("scientific_name", "")), None)
+
 
 LIVE_TODAY = LiveToday()
 LIVE_METRICS = LiveMetrics()
-LIVE_NEAR_MISSES = NearMisses()
-NEAR_MISS_MIN_CONFIDENCE = 0.2  # below the clip threshold, still listed under the live table
 _PRINT_LOCK = threading.Lock()
 _REMOTE: dict = {"loaded": False, "client": None}
 
@@ -1050,7 +1060,7 @@ def print_daily_detection_summary(detections_dir: Path, names: SpeciesNames | No
             print("(Supabase non raggiungibile: solo i dati di questo PC)")
         # how fast and how heavy the live is, under the table (see metrics.py)
         performance = LIVE_METRICS.summary_lines()
-        footer = ["", near_misses_line(names), *performance, uploader_status_line(read_uploader_status())]
+        footer = ["", *performance, uploader_status_line(read_uploader_status())]
         if not rows:
             print("\n".join(["No observations today.", *footer]))
             return
@@ -1074,22 +1084,6 @@ def colour_confidence(text: str) -> str:
     except ValueError:
         return text
     return f"\033[{32 if value >= LIKELY_CONFIDENCE else 33}m{text}\033[0m"
-
-
-def near_misses_line(names: SpeciesNames | None, limit: int = 6) -> str:
-    """Heard below the clip threshold in the last 10 minutes (best score, when)."""
-    threshold = LIVE_NEAR_MISSES.threshold
-    head = f"Sotto soglia{f' {threshold:.2f}' if threshold else ''} (10 min): "
-    entries = LIVE_NEAR_MISSES.recent()
-    if not entries:
-        return head + f"niente sopra {NEAR_MISS_MIN_CONFIDENCE}"
-    parts = []
-    for scientific_name, entry in entries[:limit]:
-        name = names.display_names(scientific_name, entry["english"])[0] if names else scientific_name
-        note = " dal PC" if entry["from_pc"] else ""
-        parts.append(f"{name} {entry['confidence']:.2f} {datetime.fromtimestamp(entry['at']):%H:%M}{note}")
-    more = f" (+{len(entries) - limit})" if len(entries) > limit else ""
-    return head + " · ".join(parts) + more
 
 
 def record_live_detection_observation(
@@ -1307,10 +1301,9 @@ def detect_live_slice(
             longitude=args.lon,
             when=datetime.now(),
             # lower than the clip threshold: weaker calls of a species already heard are
-            # highlighted on its spectrogram (>= 0.5), weak ones listed as near misses (>= 0.2);
-            # clips start only above args.min_confidence
+            # still highlighted on its spectrogram; clips start only above args.min_confidence
             min_confidence=(
-                min(args.min_confidence, SEGMENT_MIN_CONFIDENCE, NEAR_MISS_MIN_CONFIDENCE)
+                min(args.min_confidence, SEGMENT_MIN_CONFIDENCE)
                 if min_confidence is None
                 else min_confidence
             ),
@@ -1337,20 +1330,11 @@ def detect_live_slice(
             if float(detection.get("confidence", 0.0)) >= playback_min_confidence
         }
         if suppressed_species:
-            for detection in detections:
-                if detection.get("scientific_name", "") in suppressed_species:
-                    LIVE_NEAR_MISSES.add(detection["scientific_name"], detection.get("common_name", ""),
-                                         float(detection.get("confidence", 0.0)), from_pc=True)
             detections = [
                 detection
                 for detection in detections
                 if detection.get("scientific_name", "") not in suppressed_species
             ]
-
-    for detection in detections:
-        confidence = float(detection.get("confidence", 0.0))
-        if NEAR_MISS_MIN_CONFIDENCE <= confidence < args.min_confidence:
-            LIVE_NEAR_MISSES.add(detection.get("scientific_name", ""), detection.get("common_name", ""), confidence)
 
     if getattr(args, "verbose", False):
         print(
@@ -1468,7 +1452,6 @@ def run_live_detection(
     """Shared live pipeline for every backend: ``frames`` yields float32 blocks in [-1, 1]."""
     args.detections_dir = Path(args.detections_dir)
     heartbeat = HeartbeatWriter()
-    LIVE_NEAR_MISSES.threshold = args.min_confidence
 
     def record_observation(scientific_name: str, english_name: str, confidence: float, heard_at: datetime) -> None:
         record_live_detection_observation(
@@ -1492,6 +1475,7 @@ def run_live_detection(
     wake_table, stop_table = start_table_refresher(args.detections_dir, species_names)
 
     def on_exported(paths: list[Path]) -> None:
+        LIVE_TODAY.clips_written(paths)
         if args.verbose:
             for path in paths:
                 print(f"{datetime.now():%H:%M:%S} - Clip pronta: {path.name}")

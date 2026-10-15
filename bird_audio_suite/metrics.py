@@ -112,31 +112,3 @@ class LiveMetrics:
         if self.input_gain is not None and self.input_gain.volume_db is not None:
             resources.append(f"mic di sistema {self.input_gain.volume_db:.1f} dB (compensato {self.input_gain.gain_db:+.1f})")
         return [timing, " · ".join(resources)]
-
-
-class NearMisses:
-    """What BirdNET heard below the clip threshold in the last minutes, best score per species:
-    when you hear a bird and no clip comes, the live table says whether it was heard weakly
-    (and how weakly) or not at all. Also the species dropped because the PC was playing them."""
-
-    def __init__(self, window_seconds: float = WINDOW_SECONDS, clock=time.time) -> None:
-        self.window_seconds = window_seconds
-        self.clock = clock
-        self.lock = threading.Lock()
-        self.species: dict[str, dict] = {}
-        self.threshold: float | None = None  # the clip threshold of the live, for the label
-
-    def add(self, scientific_name: str, english_name: str, confidence: float, from_pc: bool = False) -> None:
-        now = self.clock()
-        with self.lock:
-            entry = self.species.get(scientific_name)
-            if entry is None or now - entry["at"] > self.window_seconds or confidence >= entry["confidence"]:
-                self.species[scientific_name] = {"english": english_name, "confidence": confidence, "at": now,
-                                                 "from_pc": from_pc}
-
-    def recent(self) -> list[tuple[str, dict]]:
-        now = self.clock()
-        with self.lock:
-            for name in [name for name, entry in self.species.items() if now - entry["at"] > self.window_seconds]:
-                del self.species[name]
-            return sorted(self.species.items(), key=lambda item: -item[1]["confidence"])
