@@ -1723,47 +1723,51 @@ async function fetchAll(makeQuery, pageSize = 1000) {
   }
 }
 
-// How often a species is on iNaturalist in each month of the year, over the whole history (all
-// years together): among the days of that month with observations you uploaded, the share with
-// that species. Raw counts would make the months you listened to and reviewed more look richer.
+// Species by month, on what is on iNaturalist (what you are sure of), over the whole history (all
+// years together): how many times a day each species is identified, i.e. its uploaded observations
+// in that month divided by the month's days with uploads. A species heard every day still shows
+// whether it is once or ten times a day.
 const MONTH_LETTERS = ["G", "F", "M", "A", "M", "G", "L", "A", "S", "O", "N", "D"];
 const monthNameFormat = new Intl.DateTimeFormat("it-IT", { month: "long" });
 const MONTH_NAMES = MONTH_LETTERS.map((_, month) => monthNameFormat.format(new Date(2026, month, 1)));
 
+function perDay(value) {
+  return value >= 10 ? String(Math.round(value)) : value.toFixed(1);
+}
+
 function seasonHtml(uploaded) {
-  const months = () => Array.from({ length: 12 }, () => new Set());
-  const listened = months(); // days with something on iNaturalist
+  const days = Array.from({ length: 12 }, () => new Set()); // days with uploads, per month
   const bySpecies = new Map();
   let firstDay = "";
   for (const row of uploaded) {
     const month = Number(row.day.slice(5, 7)) - 1;
-    listened[month].add(row.day);
+    days[month].add(row.day);
     if (!firstDay || row.day < firstDay) firstDay = row.day;
-    const entry = bySpecies.get(row.scientific_name) || { row, months: months(), days: new Set() };
-    entry.months[month].add(row.day);
-    entry.days.add(row.day);
+    const entry = bySpecies.get(row.scientific_name) || { row, counts: Array(12).fill(0), total: 0 };
+    entry.counts[month] += 1;
+    entry.total += 1;
     bySpecies.set(row.scientific_name, entry);
   }
   if (!bySpecies.size) return '<p class="empty">Ancora nessuna osservazione caricata.</p>';
-  const species = [...bySpecies.values()].sort((a, b) => b.days.size - a.days.size);
-  const head = MONTH_LETTERS.map((letter, month) => `<th title="${MONTH_NAMES[month]}: ${listened[month].size} giorni con osservazioni caricate">
-    ${letter}<small>${listened[month].size || ""}</small></th>`).join("");
-  const body = species.map(({ row, months: heard }) => {
+  const species = [...bySpecies.values()].sort((a, b) => b.total - a.total);
+  const top = Math.max(...species.flatMap(({ counts }) => counts.map((count, month) => count / (days[month].size || 1))));
+  const head = MONTH_LETTERS.map((letter, month) => `<th title="${MONTH_NAMES[month]}: ${days[month].size} giorni con osservazioni caricate">
+    ${letter}<small>${days[month].size || ""}</small></th>`).join("");
+  const body = species.map(({ row, counts }) => {
     const name = row.italian_name || row.scientific_name;
-    const cells = heard.map((days, month) => {
-      const total = listened[month].size;
+    const cells = counts.map((count, month) => {
+      const total = days[month].size;
       if (!total) return `<td class="none" title="${MONTH_NAMES[month]}: nessuna osservazione caricata">·</td>`;
-      const share = days.size / total;
-      const label = `${escapeHtml(name)}, ${MONTH_NAMES[month]}: ${days.size} giorni su ${total}`;
-      return days.size
-        ? `<td class="${share >= 0.5 ? "strong" : ""}" style="--share:${Math.round(15 + share * 85)}%" title="${label}">${Math.round(share * 100)}</td>`
-        : `<td title="${label}"></td>`;
+      if (!count) return `<td title="${escapeHtml(name)}, ${MONTH_NAMES[month]}: mai"></td>`;
+      const rate = count / total;
+      return `<td class="${rate / top >= 0.5 ? "strong" : ""}" style="--share:${Math.round(15 + (rate / top) * 85)}%"
+        title="${escapeHtml(name)}, ${MONTH_NAMES[month]}: ${count} in ${total} giorni">${perDay(rate)}</td>`;
     }).join("");
     return `<tr><th scope="row"><button type="button" class="species-link" data-species="${escapeHtml(row.scientific_name)}"
       data-from="${firstDay}" title="Vedi le sue osservazioni">${escapeHtml(name)}</button></th>${cells}</tr>`;
   }).join("");
   return `<div class="table-scroll"><table class="season-table">
-      <thead><tr><th>Specie <small>giorni con caricate →</small></th>${head}</tr></thead>
+      <thead><tr><th>Specie <small>giorni →</small></th>${head}</tr></thead>
       <tbody>${body}</tbody>
     </table></div>`;
 }
@@ -1782,17 +1786,18 @@ function isoDaysAgo(days) {
   return date.toISOString().slice(0, 10);
 }
 
+// One thing in one place: the period's numbers, when the birds were heard, the species (NEW the
+// first time ever), and, folded on top, what is on iNaturalist with its species by month. Every
+// count is of observations (visits), the unit you review; clips and reviewing stay in their tabs.
 async function renderReport(days = Number(localStorage.getItem("reportDays") || 7)) {
   const from = isoDaysAgo(days - 1);
   // a species name opens its observations of exactly this period
   const speciesLink = (row) => `<button type="button" class="species-link" data-species="${escapeHtml(row.scientific_name)}"
     data-from="${from}" title="Vedi le osservazioni di questo periodo">${escapeHtml(row.italian_name || row.scientific_name)}</button>`;
   // the rows stay when the files leave Storage after iNaturalist: a year back is all there
-  const [rows, clips, onInat, inatHistory] = await Promise.all([
+  const [rows, onInat, inatHistory] = await Promise.all([
     fetchAll(() => state.client.from("daily_summary").select("*").gte("day", from).neq("status", "rejected")
       .order("observation_id")),
-    fetchAll(() => state.client.from("clips").select("id, recorded_at, observations!inner(status,day)")
-      .gte("observations.day", from).neq("observations.status", "rejected").neq("review", "wrong").order("id")),
     fetchAll(() => state.client.from("observations").select("id, inat_observation_id").eq("status", "uploaded")
       .gte("day", from).order("id")),
     // the seasons need every month, whatever period is chosen
@@ -1805,36 +1810,38 @@ async function renderReport(days = Number(localStorage.getItem("reportDays") || 
     .sort((a, b) => String(b.first_heard).localeCompare(String(a.first_heard)));
 
   const bySpecies = new Map();
+  const hours = Array.from({ length: 24 }, () => 0);
   for (const row of rows) {
     // one row per observation (a visit): a species can have several in a day
-    const entry = bySpecies.get(row.scientific_name) || { ...row, dayset: new Set(), clips: 0, seconds: 0, best: 0 };
+    const entry = bySpecies.get(row.scientific_name) || { ...row, dayset: new Set(), observations: 0, seconds: 0, best: 0 };
     entry.dayset.add(row.day);
     entry.days = entry.dayset.size;
-    entry.clips += row.clips;
+    entry.observations += 1;
     entry.seconds += Number(row.seconds);
     entry.best = Math.max(entry.best, Number(row.max_confidence));
     if (row.last_heard && (!entry.last_heard || row.last_heard > entry.last_heard)) entry.last_heard = row.last_heard;
     bySpecies.set(row.scientific_name, entry);
+    if (row.first_heard) hours[new Date(row.first_heard).getHours()] += 1;
   }
-  const speciesRows = [...bySpecies.values()].sort((a, b) => b.days - a.days || b.clips - a.clips);
-  const newSpecies = speciesRows.filter((row) => (state.species.get(row.scientific_name)?.first_seen_date || "") >= from);
-  const hours = Array.from({ length: 24 }, () => 0);
-  for (const clip of clips) hours[new Date(clip.recorded_at).getHours()] += 1;
+  const speciesRows = [...bySpecies.values()].sort((a, b) => b.days - a.days || b.observations - a.observations);
   const maxHour = Math.max(1, ...hours);
   const totalMinutes = Math.round(speciesRows.reduce((sum, row) => sum + row.seconds, 0) / 60);
-  const pending = rows.filter((row) => row.status === "pending").length;
+  // NEW: heard for the first time ever in this period; meaningless when the period reaches back
+  // to the first day of listening (then every species would be new)
+  const firstEver = [...state.species.values()].map((row) => row.first_seen_date).filter(Boolean).sort()[0] || "";
+  const firstSeen = (row) => state.species.get(row.scientific_name)?.first_seen_date || "";
+  const isNew = (row) => firstEver && from > firstEver && firstSeen(row) >= from;
 
   content.innerHTML = `
     <div class="report-head">
-      <h2>Ultimi ${days} giorni</h2>
-      <div class="segmented">
-        ${[7, 30, 90, 365].map((n) => `<button type="button" data-days="${n}" class="${n === days ? "on" : ""}">${n === 365 ? "1 anno" : `${n} gg`}</button>`).join("")}
+      <div class="segmented" role="group" aria-label="Periodo">
+        ${[7, 30, 90, 365].map((n) => `<button type="button" data-days="${n}" class="${n === days ? "on" : ""}">${n === 365 ? "1 anno" : `${n} giorni`}</button>`).join("")}
       </div>
     </div>
     <details class="inat-uploads">
       <summary>Su iNaturalist <b>${uploaded.length}</b> <small>caricate in questo periodo</small></summary>
       ${uploaded.length ? `<div class="table-scroll"><table class="report-table inat-table">
-        <thead><tr><th>Specie</th><th>Quando</th><th>Clip</th><th></th></tr></thead>
+        <thead><tr><th>Specie</th><th>Quando</th><th></th></tr></thead>
         <tbody>${uploaded.map((row) => {
           const inatId = Number(inatIds.get(row.observation_id));
           const heard = row.first_heard ? new Date(row.first_heard) : null;
@@ -1843,12 +1850,11 @@ async function renderReport(days = Number(localStorage.getItem("reportDays") || 
             <td>${speciesLink(row)}${speciesNote(row, row.birdnet_scientific_name && row.birdnet_scientific_name !== row.scientific_name
               ? `BirdNET: ${escapeHtml(state.species.get(row.birdnet_scientific_name)?.italian_name || row.birdnet_scientific_name)}` : "")}</td>
             <td>${heard ? `${shortDateFormat.format(heard)} ${hourFormat.format(heard)}` : ""}</td>
-            <td>${row.clips}</td>
             <td>${inatId ? `<a class="inat-link" href="https://www.inaturalist.org/observations/${inatId}" target="_blank" rel="noopener">iNat ↗</a>` : ""}</td>
           </tr>`;
         }).join("")}</tbody>
       </table></div>` : '<p class="empty">Nessuna osservazione caricata in questo periodo.</p>'}
-      <h3>Specie per mese <small>tutte le caricate, da sempre: % dei giorni del mese con caricate in cui c'è la specie</small></h3>
+      <h3>Specie per mese <small>identificazioni caricate al giorno, da sempre</small></h3>
       ${seasonHtml(inatHistory)}
     </details>
     <div class="report-grid">
@@ -1856,15 +1862,11 @@ async function renderReport(days = Number(localStorage.getItem("reportDays") || 
         <div class="tiles">
           <div class="tile"><b>${speciesRows.length}</b><span>specie</span></div>
           <div class="tile"><b>${rows.length}</b><span>osservazioni</span></div>
-          <div class="tile"><b>${pending}</b><span>da rivedere</span></div>
-          <div class="tile"><b>${clips.length}</b><span>clip</span></div>
           <div class="tile"><b>${totalMinutes}</b><span>min di audio</span></div>
-          <div class="tile"><b>${newSpecies.length}</b><span>specie nuove</span></div>
         </div>
-        ${newSpecies.length ? `<p class="new-species">Prima volta: ${newSpecies.map(speciesLink).join(", ")}</p>` : ""}
-        <h3>Attività per ora</h3>
+        <h3>Osservazioni per ora</h3>
         <div class="hours">${hours.map((count, hour) => `
-          <div class="hour" title="${hour}:00 · ${count} clip">
+          <div class="hour" title="${hour}:00 · ${count} osservazioni">
             <span class="bar" style="height:${Math.round((count / maxHour) * 100)}%"></span>
             <span class="label">${hour}</span>
           </div>`).join("")}</div>
@@ -1872,11 +1874,12 @@ async function renderReport(days = Number(localStorage.getItem("reportDays") || 
       <section>
         <h3>Specie</h3>
         ${speciesRows.length ? `<div class="table-scroll"><table class="report-table">
-          <thead><tr><th>Specie</th><th>Giorni</th><th>Clip</th><th title="Confidenza massima">Conf.</th><th>Ultima</th></tr></thead>
+          <thead><tr><th>Specie</th><th title="Osservazioni">Oss.</th><th>Giorni</th><th title="Confidenza massima di BirdNET">Conf.</th><th>Ultima</th></tr></thead>
           <tbody>${speciesRows.map((row) => `
             <tr>
-              <td>${speciesLink(row)}${speciesNote(row)}</td>
-              <td>${row.days}</td><td>${row.clips}</td><td>${row.best ? row.best.toFixed(3) : "—"}</td>
+              <td>${speciesLink(row)}${isNew(row) ? `<span class="new-badge" title="Prima volta in assoluto: ${formatDay(firstSeen(row))}">NEW</span>` : ""}${speciesNote(row)}</td>
+              <td>${row.observations}</td><td>${row.days}</td>
+              <td class="${row.best ? `conf-${confidenceClass(row.best)}` : ""}">${row.best ? row.best.toFixed(2) : "—"}</td>
               <td>${row.last_heard ? shortDateFormat.format(new Date(row.last_heard)) : ""}</td>
             </tr>`).join("")}</tbody>
         </table></div>` : '<p class="empty">Nessuna specie in questo periodo.</p>'}

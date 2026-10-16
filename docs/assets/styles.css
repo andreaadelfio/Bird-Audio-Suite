@@ -541,7 +541,19 @@ button.denoise.strong { background: var(--accent-deep); border-color: var(--acce
 .tile { display: grid; padding: 0.45rem 0.6rem; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); }
 .tile b { font-size: 1.3rem; line-height: 1.2; color: var(--accent-deep); }
 .tile span { color: var(--ink-soft); font-size: 0.8rem; }
-.new-species { margin: 0.5rem 0 0; color: var(--positive); }
+.new-badge {
+  margin-left: 0.3rem;
+  padding: 0 0.3rem;
+  border-radius: 999px;
+  background: var(--positive);
+  color: var(--on-accent);
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  vertical-align: 1px;
+}
+.report-table td.conf-likely { color: var(--likely); }
+.report-table td.conf-unsure { color: var(--unsure); }
 
 /* what is on iNaturalist: first, folded */
 .inat-uploads { margin-bottom: 0.7rem; }
@@ -555,8 +567,7 @@ button.denoise.strong { background: var(--accent-deep); border-color: var(--acce
 .inat-uploads > h3 { margin: 0.8rem 0 0.3rem; font-size: 0.9rem; color: var(--ink-soft); font-weight: 600; }
 .inat-uploads > h3 small { font-weight: 400; }
 
-/* species by month, in the iNaturalist list: among the month's days with uploads, the share with
-   each species */
+/* species by month, in the iNaturalist list: identifications a day (the darker, the more) */
 .season-table { border-collapse: separate; border-spacing: 2px; font-variant-numeric: tabular-nums; }
 .season-table th, .season-table td { font-size: 0.72rem; text-align: center; }
 .season-table thead th { color: var(--ink-soft); font-weight: 600; vertical-align: bottom; }
@@ -608,7 +619,6 @@ button.denoise.strong { background: var(--accent-deep); border-color: var(--acce
   white-space: normal;
 }
 
-.new-species .species-link { color: var(--positive); }
 
 .hours {
   display: grid;
