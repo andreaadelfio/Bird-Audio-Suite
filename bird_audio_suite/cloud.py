@@ -562,26 +562,6 @@ class Outbox:
             purged += 1
         return purged
 
-    def analyse_stored(self, limit: int = 5, model=None) -> int:
-        """Clips on Supabase still waiting for the analysis of their saved audio (segments null):
-        those linked on the site to another observation, or moved there, analysed for its species."""
-        self._connect()
-        clips = self.rest.get("clips", {
-            "select": "id,media_path,recorded_at,latitude,longitude,observations(scientific_name)",
-            "segments": "is.null", "media_deleted_at": "is.null", "order": "created_at", "limit": str(limit),
-        })
-        done = 0
-        for clip in clips:
-            try:
-                analysis = analyse_stored_clip(self.storage, clip, model)
-            except requests.RequestException:
-                continue  # offline: the next round tries again
-            except Exception:
-                analysis = {"segments": []}  # unreadable audio: do not try it again every minute
-            self.rest.update("clips", {"id": f"eq.{clip['id']}"}, analysis)
-            done += 1
-        return done
-
 
 # ---------------------------------------------------------------- previous version
 

@@ -112,7 +112,6 @@ def run_uploader(
     last_signature = None
     last_push = -retry_seconds
     last_purge = -purge_every_seconds
-    last_analysis = -retry_seconds
     while not should_stop():
         signature = folder_signature(detections_dir)
         # push when the folder changed, and every retry_seconds anyway (failed clips, fresh status)
@@ -134,15 +133,6 @@ def run_uploader(
                 if error or (report is not None and report.errors):
                     log(f"{datetime.now():%H:%M:%S} - in attesa: {error or report.errors[0]}")
                 status.write(outbox_items(detections_dir), report, seconds, error)
-        if clock() - last_analysis >= retry_seconds:
-            # clips linked or moved on the site to another observation: analysed for its species
-            last_analysis = clock()
-            try:
-                analysed = outbox.analyse_stored()
-                if analysed:
-                    log(f"{datetime.now():%H:%M:%S} - analizzate {analysed} clip collegate o spostate sul sito")
-            except Exception as exc:
-                log(f"{datetime.now():%H:%M:%S} - analisi delle clip collegate rimandata: {exc!r}")
         if clock() - last_purge >= purge_every_seconds:
             last_purge = clock()
             try:

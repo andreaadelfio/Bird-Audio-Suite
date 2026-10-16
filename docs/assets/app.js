@@ -34,7 +34,9 @@ function observationFacts(observation) {
   const first = clips[0] || {};
   return {
     clips,
+    // clips placed by hand have no score for this species (confidence 0): they never raise it
     maxConfidence: clips.reduce((best, clip) => Math.max(best, Number(clip.confidence) || 0), 0),
+    byHandOnly: clips.length > 0 && clips.every((clip) => clip.manual),
     firstHeard: first.recorded_at || null,
     lastHeard: clips.length ? clips[clips.length - 1].recorded_at : null,
     place: first.place_name || "",
@@ -293,19 +295,28 @@ function findClip(clipId) {
 }
 
 // clip_conf: BirdNET on the saved clip (the bands come from the same analysis); the live's own
-// score, from other chunks of the stream, in the tooltip
+// score, from other chunks of the stream, in the tooltip. A clip placed by hand in an observation
+// of another species has neither: BirdNET's numbers were for the species it came from.
 function clipFacts(clip) {
+  const when = timeFormat.format(new Date(clip.recorded_at));
+  const seconds = `${Math.round(clip.duration_s || 0)} s`;
+  if (clip.manual) {
+    const also = clip.linked_from ? " La stessa registrazione è anche nell'osservazione da cui viene." : "";
+    return `${when} · <b class="by-hand" title="Messa qui a mano: BirdNET l'aveva analizzata per un'altra specie, quindi niente clip_conf né bande.${also}">collegata a mano</b> · ${seconds}`;
+  }
   const live = clip.live_confidence != null && Math.abs(clip.live_confidence - clip.confidence) >= 0.005
     ? ` title="BirdNET sulla clip salvata; il live aveva dato ${Number(clip.live_confidence).toFixed(3)}"` : "";
   const linked = clip.linked_from ? ' · <span title="La stessa registrazione è anche in un\'altra osservazione">collegata</span>' : "";
   if (clip.segments == null) {
-    return `${timeFormat.format(new Date(clip.recorded_at))} · clip_conf in analisi… · ${Math.round(clip.duration_s || 0)} s${linked}`;
+    return `${when} · clip_conf in analisi… · ${seconds}${linked}`;
   }
-  return `${timeFormat.format(new Date(clip.recorded_at))}${linked} · clip_conf <b class="conf-${confidenceClass(clip.confidence)}"${live}>${Number(clip.confidence).toFixed(3)}</b>
-    · ${Math.round(clip.duration_s || 0)} s`;
+  return `${when}${linked} · clip_conf <b class="conf-${confidenceClass(clip.confidence)}"${live}>${Number(clip.confidence).toFixed(3)}</b>
+    · ${seconds}`;
 }
 
-function clipHtml(clip, folded = false) {
+// canUnlink: only when the observation has other clips (a lone clip is already on its own, and
+// can still be linked elsewhere)
+function clipHtml(clip, folded = false, canUnlink = true) {
   if (clip.media_deleted_at) {
     // a week after the iNaturalist upload the files leave Supabase (the PC's uploader removes them)
     return `
@@ -344,8 +355,8 @@ function clipHtml(clip, folded = false) {
         <span class="clip-tools">
         <button type="button" class="tool" data-player="link" title="Collega la clip anche a un'altra osservazione (o spostala): poi «Collega qui» su quella giusta"
           aria-label="Collega a un'altra osservazione">${ICON_LINK}</button>
-        <button type="button" class="tool" data-player="unlink" title="Non è lo stesso uccello (o la stessa specie): stacca la clip in un'osservazione a sé"
-          aria-label="Stacca la clip">${ICON_UNLINK}</button>
+        ${canUnlink ? `<button type="button" class="tool" data-player="unlink" title="Non è lo stesso uccello (o la stessa specie): stacca la clip in un'osservazione a sé"
+          aria-label="Stacca la clip">${ICON_UNLINK}</button>` : ""}
         <button type="button" class="tool${wrong ? " on" : ""}" data-clip-review="wrong"
           title="${wrong ? "Rimetti la clip nell'osservazione" : "La clip non contiene la specie: va nel Cestino"}">${wrong ? "Ripristina" : "Scarta"}</button>
         <button type="button" class="tool trash-button" data-delete-clip
@@ -368,14 +379,15 @@ function observationMeta(observation, facts, extra = "") {
   const hours = last && last !== first ? `${first}–${last}` : first;
   return `<p class="meta"><span>${formatDay(observation.day)} ${hours}</span>
     ${facts.place ? `<span class="place">${escapeHtml(placeLabel(facts.place))}</span>` : ""}
-    <span>max_obs_conf <b class="conf-${confidenceClass(facts.maxConfidence)}">${facts.maxConfidence.toFixed(3)}</b>
-      <span class="conf-tag conf-${confidenceClass(facts.maxConfidence)}">${confidenceClass(facts.maxConfidence)}</span></span>
+    ${facts.byHandOnly ? '<span>max_obs_conf <b class="by-hand">a mano</b></span>'
+      : `<span>max_obs_conf <b class="conf-${confidenceClass(facts.maxConfidence)}">${facts.maxConfidence.toFixed(3)}</b>
+      <span class="conf-tag conf-${confidenceClass(facts.maxConfidence)}">${confidenceClass(facts.maxConfidence)}</span></span>`}
     <span>${facts.clips.length} clip</span>${extra}</p>`;
 }
 
-function clipsHtml(clips) {
+function clipsHtml(clips, canUnlink) {
   return `<div class="obs-clips">
-      <div class="clips">${clips.map((clip, index) => clipHtml(clip, index >= VISIBLE_CLIPS)).join("")}</div>
+      <div class="clips">${clips.map((clip, index) => clipHtml(clip, index >= VISIBLE_CLIPS, canUnlink)).join("")}</div>
       ${clips.length > VISIBLE_CLIPS
         ? `<button type="button" class="show-clips" data-show-clips>Mostra altre ${clips.length - VISIBLE_CLIPS} clip</button>`
         : ""}
@@ -428,7 +440,7 @@ function observationHtml(observation) {
         ${corrected ? speciesLinks(corrected) : ""}
       </div>
       <div class="actions">${observationActions(observation)}</div>
-      ${clipsHtml(facts.clips)}
+      ${clipsHtml(facts.clips, facts.clips.length > 1)}
     </article>`;
 }
 
@@ -818,7 +830,7 @@ async function saveTrim(figure, start, end) {
   Object.assign(found.clip, values);
   const folded = figure.classList.contains("folded");
   figure.querySelector("audio").pause();
-  figure.outerHTML = clipHtml(found.clip, folded);
+  figure.outerHTML = clipHtml(found.clip, folded, (found.observation?.clips || []).length > 1);
   setStatus(start == null ? "Taglio tolto." : `Clip tagliata: ${values.trim_start_s}–${values.trim_end_s} s (il file resta intero).`);
 }
 
@@ -1062,6 +1074,7 @@ async function unlinkClip(figure) {
   const { error: moveError } = await state.client.from("clips").update({ observation_id: data.id }).eq("id", found.clip.id);
   if (moveError) throw moveError;
   found.observation.clips = found.observation.clips.filter((clip) => clip.id !== found.clip.id);
+  found.clip.observation_id = data.id;
   const separate = { ...data, clips: [found.clip] };
   state.observations.set(separate.id, separate);
   figure.querySelector("audio")?.pause();
@@ -1075,9 +1088,11 @@ async function unlinkClip(figure) {
 // ---------------------------------------------------------------- link a clip to another observation
 
 // "Collega" on a clip, then "Collega qui" on another observation: the clip appears there too
-// ("anche qui": a second clip row with the same files) or moves there ("sposta"). Either way the
-// uploader analyses it again, within a minute, for the species of its new observation (its
-// segments are left empty until then: "in analisi").
+// ("anche qui": a second clip row with the same files) or moves there ("sposta"), and is part of it
+// from then on, ready for iNaturalist. No new analysis: you know what is in it. In an observation of
+// another species BirdNET's numbers no longer apply (they were for the species it came from): the
+// clip is marked as placed by hand (clips.manual), without clip_conf or bands, and leaves
+// max_obs_conf alone; its candidates stay, they still say what BirdNET hears in it.
 function showLinking() {
   const banner = $("#link-banner");
   banner.classList.toggle("hidden", !state.linking);
@@ -1119,12 +1134,13 @@ async function linkClipTo(targetId) {
   const { clip, observation: source, mode } = state.linking;
   const target = state.observations.get(targetId);
   if (!target) return;
-  const waiting = { segments: null, candidates: null, confidence: 0 }; // until the uploader analyses it
+  const sameSpecies = target.scientific_name === source.scientific_name;
+  const byHand = sameSpecies ? {} : { manual: true, confidence: 0, segments: [] };
   if (mode === "move") {
-    const { error } = await state.client.from("clips").update({ observation_id: targetId, ...waiting }).eq("id", clip.id);
+    const { error } = await state.client.from("clips").update({ observation_id: targetId, ...byHand }).eq("id", clip.id);
     if (error) throw error;
     source.clips = source.clips.filter((item) => item.id !== clip.id);
-    Object.assign(clip, { observation_id: targetId, ...waiting });
+    Object.assign(clip, { observation_id: targetId, ...byHand });
     target.clips = [...(target.clips || []), clip];
     if (!source.clips.length) {
       // its only clip went: the observation goes too
@@ -1136,7 +1152,7 @@ async function linkClipTo(targetId) {
     }
   } else {
     const { created_at: _created, ...fields } = clip;
-    const copy = { ...fields, ...waiting, id: `${clip.linked_from || clip.id}@${targetId}`, observation_id: targetId,
+    const copy = { ...fields, ...byHand, id: `${clip.linked_from || clip.id}@${targetId}`, observation_id: targetId,
       review: "unreviewed", inat_sound_id: null, linked_from: clip.linked_from || clip.id };
     const { error } = await state.client.from("clips").insert(copy);
     if (error) throw new Error(error.code === "23505" ? "la clip è già in quell'osservazione" : error.message);
@@ -1145,7 +1161,7 @@ async function linkClipTo(targetId) {
   stopLinking();
   redrawObservation(target);
   refreshCounts();
-  setStatus(`Clip ${mode === "move" ? "spostata" : "collegata anche"} qui: BirdNET la rianalizza per questa specie entro un minuto.`);
+  setStatus(`Clip ${mode === "move" ? "spostata" : "collegata anche"} qui: fa parte di questa osservazione e si carica con lei su iNaturalist.`);
 }
 
 $("#link-cancel").addEventListener("click", stopLinking);
@@ -1234,7 +1250,7 @@ function trashCardHtml(observation, whole) {
         ${whole ? '<button type="button" class="primary" data-status="pending" title="Rimetti da rivedere">↺ Ripristina</button>' : ""}
         <button type="button" class="danger" data-delete title="Audio, spettrogrammi e righe spariscono da Supabase">Elimina per sempre</button>
       </div>
-      ${clipsHtml(facts.clips)}
+      ${clipsHtml(facts.clips, false)}
     </article>`;
 }
 
@@ -1494,7 +1510,8 @@ async function uploadObservationToInat(observation, onProgress = () => {}) {
   const facts = observationFacts(observation);
   const clips = (observation.clips || [])
     .filter((clip) => clip.review !== "wrong" && !clip.media_deleted_at)
-    .sort((a, b) => b.confidence - a.confidence)
+    // the clips you placed here by hand first (your choice), then BirdNET's best
+    .sort((a, b) => (Boolean(b.manual) - Boolean(a.manual)) || (b.confidence - a.confidence))
     .slice(0, INAT_MAX_SOUNDS);
   if (!clips.length) throw new Error("nessuna clip da caricare (sono tutte scartate)");
 
@@ -1506,7 +1523,7 @@ async function uploadObservationToInat(observation, onProgress = () => {}) {
       species_guess: name,
       observed_on_string: localDateTime(facts.firstHeard),
       place_guess: facts.place,
-      description: `BirdNET confidence ${facts.maxConfidence.toFixed(3)}`,
+      description: facts.byHandOnly ? "" : `BirdNET confidence ${facts.maxConfidence.toFixed(3)}`,
       tag_list: "audio,birdnet",
     };
     if (facts.latitude != null && facts.longitude != null) {

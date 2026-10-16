@@ -274,6 +274,8 @@ label { color: var(--ink-soft); font-size: 0.85rem; }
 .clip-info b { font-weight: 700; }
 .clip-info b.conf-likely { color: #8fe3a2; }
 .clip-info b.conf-unsure { color: #ffcf70; }
+.clip-info b.by-hand { color: #9fd0ff; } /* placed by hand: no BirdNET score for this species */
+.meta b.by-hand { color: var(--accent); }
 .confidence-pills .pill-likely { color: var(--likely); border-color: color-mix(in srgb, var(--likely) 40%, var(--line)); }
 .confidence-pills .pill-unsure { color: var(--unsure); border-color: color-mix(in srgb, var(--unsure) 45%, var(--line)); }
 .confidence-pills .pill-likely.on { background: var(--likely); border-color: var(--likely); color: var(--on-accent); }

@@ -5,7 +5,6 @@ import json
 import tempfile
 import types
 import unittest
-from unittest.mock import patch
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -315,42 +314,6 @@ class PurgeTests(unittest.TestCase):
         self.assertEqual(storage.removed, ["20261004/allocco_x.mp3", "20261004/allocco_x-spectrogram.jpg"])
         self.assertEqual(rest.updates, [("clips", {"media_path": "eq.20261004/allocco_x"},
                                          {"media_deleted_at": "2026-10-18T12:00:00+00:00"})])
-
-
-class LinkedClipAnalysisTests(unittest.TestCase):
-    def test_clips_linked_on_the_site_are_analysed_for_their_new_species(self) -> None:
-        import requests
-
-        from bird_audio_suite import cloud
-
-        class Rest:
-            updates: list = []
-
-            def get(self, table, params):
-                assert params["segments"] == "is.null"
-                return [{"id": "a@412", "observations": {"scientific_name": "Grus grus"}},
-                        {"id": "offline", "observations": {"scientific_name": "Grus grus"}},
-                        {"id": "broken", "observations": {"scientific_name": "Grus grus"}}]
-
-            def update(self, table, filters, values):
-                self.updates.append((filters["id"], values))
-
-        def analyse(storage, clip, model=None):
-            if clip["id"] == "offline":
-                raise requests.ConnectionError("no network")
-            if clip["id"] == "broken":
-                raise ValueError("not an MP3")
-            return {"confidence": 0.81, "segments": [[0.0, 3.0, 0.81]], "candidates": [["Grus grus", "Common Crane", 0.81]]}
-
-        rest = Rest()
-        config = CloudConfig(supabase_url="https://example.supabase.co", supabase_key="k")
-        with patch.object(cloud, "analyse_stored_clip", analyse):
-            done = Outbox(Path("."), FakeNames(), config, rest=rest, storage=object()).analyse_stored()
-        self.assertEqual(done, 2)
-        self.assertEqual(rest.updates[0], ("eq.a@412", {"confidence": 0.81, "segments": [[0.0, 3.0, 0.81]],
-                                                         "candidates": [["Grus grus", "Common Crane", 0.81]]}))
-        # offline: left for the next round; unreadable: marked, not retried every minute
-        self.assertEqual(rest.updates[1], ("eq.broken", {"segments": []}))
 
 
 class StorageTests(unittest.TestCase):
