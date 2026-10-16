@@ -1720,48 +1720,47 @@ async function fetchAll(makeQuery, pageSize = 1000) {
   }
 }
 
-// How often a species is heard in each month of the year, over the whole history (all years
-// together): the share of the days you listened in that month (days with any observation) on which
-// it was heard. Raw counts would make the months with more listening look richer.
+// How often a species is on iNaturalist in each month of the year, over the whole history (all
+// years together): among the days of that month with observations you uploaded, the share with
+// that species. Raw counts would make the months you listened to and reviewed more look richer.
 const MONTH_LETTERS = ["G", "F", "M", "A", "M", "G", "L", "A", "S", "O", "N", "D"];
 const monthNameFormat = new Intl.DateTimeFormat("it-IT", { month: "long" });
 const MONTH_NAMES = MONTH_LETTERS.map((_, month) => monthNameFormat.format(new Date(2026, month, 1)));
 
-function seasonHtml(history) {
+function seasonHtml(uploaded) {
   const months = () => Array.from({ length: 12 }, () => new Set());
-  const listened = months();
+  const listened = months(); // days with something on iNaturalist
   const bySpecies = new Map();
   let firstDay = "";
-  for (const row of history) {
+  for (const row of uploaded) {
     const month = Number(row.day.slice(5, 7)) - 1;
     listened[month].add(row.day);
     if (!firstDay || row.day < firstDay) firstDay = row.day;
-    if (row.status === "rejected") continue; // the PC was listening, but it was not that species
     const entry = bySpecies.get(row.scientific_name) || { row, months: months(), days: new Set() };
     entry.months[month].add(row.day);
     entry.days.add(row.day);
     bySpecies.set(row.scientific_name, entry);
   }
-  if (!bySpecies.size) return '<p class="empty">Ancora niente da mostrare.</p>';
+  if (!bySpecies.size) return '<p class="empty">Ancora nessuna osservazione caricata.</p>';
   const species = [...bySpecies.values()].sort((a, b) => b.days.size - a.days.size);
-  const head = MONTH_LETTERS.map((letter, month) => `<th title="${MONTH_NAMES[month]}: ${listened[month].size} giorni di ascolto">
+  const head = MONTH_LETTERS.map((letter, month) => `<th title="${MONTH_NAMES[month]}: ${listened[month].size} giorni con osservazioni caricate">
     ${letter}<small>${listened[month].size || ""}</small></th>`).join("");
   const body = species.map(({ row, months: heard }) => {
     const name = row.italian_name || row.scientific_name;
     const cells = heard.map((days, month) => {
       const total = listened[month].size;
-      if (!total) return `<td class="none" title="${MONTH_NAMES[month]}: nessun giorno di ascolto">·</td>`;
+      if (!total) return `<td class="none" title="${MONTH_NAMES[month]}: nessuna osservazione caricata">·</td>`;
       const share = days.size / total;
-      const label = `${escapeHtml(name)}, ${MONTH_NAMES[month]}: ${days.size} giorni su ${total} di ascolto`;
+      const label = `${escapeHtml(name)}, ${MONTH_NAMES[month]}: ${days.size} giorni su ${total}`;
       return days.size
         ? `<td class="${share >= 0.5 ? "strong" : ""}" style="--share:${Math.round(15 + share * 85)}%" title="${label}">${Math.round(share * 100)}</td>`
         : `<td title="${label}"></td>`;
     }).join("");
     return `<tr><th scope="row"><button type="button" class="species-link" data-species="${escapeHtml(row.scientific_name)}"
-      data-from="${firstDay}" title="Vedi tutte le sue osservazioni">${escapeHtml(name)}</button></th>${cells}</tr>`;
+      data-from="${firstDay}" title="Vedi le sue osservazioni">${escapeHtml(name)}</button></th>${cells}</tr>`;
   }).join("");
   return `<div class="table-scroll"><table class="season-table">
-      <thead><tr><th>Specie <small>giorni di ascolto →</small></th>${head}</tr></thead>
+      <thead><tr><th>Specie <small>giorni con caricate →</small></th>${head}</tr></thead>
       <tbody>${body}</tbody>
     </table></div>`;
 }
@@ -1778,7 +1777,7 @@ async function renderReport(days = Number(localStorage.getItem("reportDays") || 
   const speciesLink = (row) => `<button type="button" class="species-link" data-species="${escapeHtml(row.scientific_name)}"
     data-from="${from}" title="Vedi le osservazioni di questo periodo">${escapeHtml(row.italian_name || row.scientific_name)}</button>`;
   // the rows stay when the files leave Storage after iNaturalist: a year back is all there
-  const [rows, clips, onInat, history] = await Promise.all([
+  const [rows, clips, onInat, inatHistory] = await Promise.all([
     fetchAll(() => state.client.from("daily_summary").select("*").gte("day", from).neq("status", "rejected")
       .order("observation_id")),
     fetchAll(() => state.client.from("clips").select("id, recorded_at, observations!inner(status,day)")
@@ -1786,8 +1785,8 @@ async function renderReport(days = Number(localStorage.getItem("reportDays") || 
     fetchAll(() => state.client.from("observations").select("id, inat_observation_id").eq("status", "uploaded")
       .gte("day", from).order("id")),
     // the seasons need every month, whatever period is chosen
-    fetchAll(() => state.client.from("daily_summary").select("observation_id, day, scientific_name, italian_name, status")
-      .order("observation_id")),
+    fetchAll(() => state.client.from("daily_summary").select("observation_id, day, scientific_name, italian_name")
+      .eq("status", "uploaded").order("observation_id")),
   ]);
   // what is on iNaturalist (its audio lives there now), the latest first
   const inatIds = new Map(onInat.map((row) => [row.id, row.inat_observation_id]));
@@ -1837,6 +1836,8 @@ async function renderReport(days = Number(localStorage.getItem("reportDays") || 
           </tr>`;
         }).join("")}</tbody>
       </table></div>` : '<p class="empty">Nessuna osservazione caricata in questo periodo.</p>'}
+      <h3>Specie per mese <small>tutte le caricate, da sempre: % dei giorni del mese con caricate in cui c'è la specie</small></h3>
+      ${seasonHtml(inatHistory)}
     </details>
     <div class="report-grid">
       <section>
@@ -1868,11 +1869,7 @@ async function renderReport(days = Number(localStorage.getItem("reportDays") || 
             </tr>`).join("")}</tbody>
         </table></div>` : '<p class="empty">Nessuna specie in questo periodo.</p>'}
       </section>
-    </div>
-    <section class="season">
-      <h3>Specie per mese <small>tutto lo storico: % dei giorni di ascolto del mese in cui l'hai sentita</small></h3>
-      ${seasonHtml(history)}
-    </section>`;
+    </div>`;
 }
 
 content.addEventListener("click", (event) => {

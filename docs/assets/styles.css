@@ -552,11 +552,11 @@ button.denoise.strong { background: var(--accent-deep); border-color: var(--acce
 .inat-uploads > summary b { color: var(--uploaded); }
 .inat-uploads > summary small { font-weight: 400; }
 .inat-uploads > .table-scroll, .inat-uploads > .empty { margin-top: 0.35rem; }
+.inat-uploads > h3 { margin: 0.8rem 0 0.3rem; font-size: 0.9rem; color: var(--ink-soft); font-weight: 600; }
+.inat-uploads > h3 small { font-weight: 400; }
 
-/* species by month: the share of the month's listening days on which each one was heard */
-.season { margin-top: 0.9rem; }
-.season h3 { margin: 0 0 0.3rem; font-size: 0.9rem; color: var(--ink-soft); font-weight: 600; }
-.season h3 small { font-weight: 400; }
+/* species by month, in the iNaturalist list: among the month's days with uploads, the share with
+   each species */
 .season-table { border-collapse: separate; border-spacing: 2px; font-variant-numeric: tabular-nums; }
 .season-table th, .season-table td { font-size: 0.72rem; text-align: center; }
 .season-table thead th { color: var(--ink-soft); font-weight: 600; vertical-align: bottom; }
