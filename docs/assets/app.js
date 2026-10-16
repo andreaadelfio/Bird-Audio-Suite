@@ -418,7 +418,7 @@ function observationActions(observation) {
   }
   // the round ones on the right, within reach of a right thumb; the tick last
   buttons.push('<span class="spacer"></span>');
-  buttons.push(`<button type="button" class="round ghost" data-fix-toggle title="Correggi la specie se BirdNET ha sbagliato"
+  if (status !== "uploaded") buttons.push(`<button type="button" class="round ghost" data-fix-toggle title="Correggi la specie se BirdNET ha sbagliato"
     aria-label="Correggi la specie">${ICON_EDIT}</button>`);
   if (status !== "pending") {
     buttons.push(`<button type="button" class="round ghost" data-status="pending" title="Rimetti da rivedere"
@@ -438,13 +438,16 @@ function observationActions(observation) {
 function observationHtml(observation) {
   const facts = observationFacts(observation);
   const corrected = observation.corrected_scientific_name || "";
+  // on iNaturalist the taxon is iNaturalist's: the PC's uploader copies it here every hour
+  const onInat = observation.status === "uploaded";
   return `
     <article class="observation status-${observation.status} ${confidenceClass(facts.maxConfidence)}" data-id="${observation.id}">
       ${speciesHeaderHtml(observation, STATUS_LABELS[observation.status] || observation.status)}
       ${observationMeta(observation, facts)}
       <div class="fix${corrected ? "" : " hidden"}">
-        <span>Specie corretta</span>
-        <input data-field="corrected" list="species-list" placeholder="nome scientifico" value="${escapeHtml(corrected)}">
+        <span>${onInat ? "Su iNaturalist" : "Specie corretta"}</span>
+        <input data-field="corrected" list="species-list" placeholder="nome scientifico" value="${escapeHtml(corrected)}"
+          ${onInat ? 'readonly title="La decide iNaturalist (identificazioni della comunità e tue): si aggiorna da sola ogni ora"' : ""}>
         ${corrected ? speciesLinks(corrected) : ""}
       </div>
       <div class="actions">${observationActions(observation)}</div>
@@ -1765,6 +1768,14 @@ function seasonHtml(uploaded) {
     </table></div>`;
 }
 
+// beside a species name in the report: its scientific name when the shown name is another one
+// (a genus like Turdus has only that), and an optional remark
+function speciesNote(row, remark = "") {
+  const latin = row.italian_name && row.italian_name !== row.scientific_name ? `<i>${escapeHtml(row.scientific_name)}</i>` : "";
+  const parts = [latin, remark].filter(Boolean);
+  return parts.length ? ` <small>${parts.join(" · ")}</small>` : "";
+}
+
 function isoDaysAgo(days) {
   const date = new Date();
   date.setDate(date.getDate() - days);
@@ -1829,7 +1840,8 @@ async function renderReport(days = Number(localStorage.getItem("reportDays") || 
           const heard = row.first_heard ? new Date(row.first_heard) : null;
           return `
           <tr>
-            <td>${speciesLink(row)} <small><i>${escapeHtml(row.scientific_name)}</i></small></td>
+            <td>${speciesLink(row)}${speciesNote(row, row.birdnet_scientific_name && row.birdnet_scientific_name !== row.scientific_name
+              ? `BirdNET: ${escapeHtml(state.species.get(row.birdnet_scientific_name)?.italian_name || row.birdnet_scientific_name)}` : "")}</td>
             <td>${heard ? `${shortDateFormat.format(heard)} ${hourFormat.format(heard)}` : ""}</td>
             <td>${row.clips}</td>
             <td>${inatId ? `<a class="inat-link" href="https://www.inaturalist.org/observations/${inatId}" target="_blank" rel="noopener">iNat ↗</a>` : ""}</td>
@@ -1863,7 +1875,7 @@ async function renderReport(days = Number(localStorage.getItem("reportDays") || 
           <thead><tr><th>Specie</th><th>Giorni</th><th>Clip</th><th title="Confidenza massima">Conf.</th><th>Ultima</th></tr></thead>
           <tbody>${speciesRows.map((row) => `
             <tr>
-              <td>${speciesLink(row)} <small><i>${escapeHtml(row.scientific_name)}</i></small></td>
+              <td>${speciesLink(row)}${speciesNote(row)}</td>
               <td>${row.days}</td><td>${row.clips}</td><td>${row.best ? row.best.toFixed(3) : "—"}</td>
               <td>${row.last_heard ? shortDateFormat.format(new Date(row.last_heard)) : ""}</td>
             </tr>`).join("")}</tbody>

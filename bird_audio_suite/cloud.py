@@ -41,6 +41,8 @@ DEFAULT_CLOUD_CONFIG = Path.home() / ".config" / "bird-audio-suite" / "cloud.env
 DEFAULT_CACHE_DIR = Path.home() / ".cache" / "bird-audio-suite"
 STORAGE_BUCKET = "bird-audio"
 SCHEMA = "birds"
+INAT_OBSERVATIONS_URL = "https://api.inaturalist.org/v1/observations"
+SPECIES_RANK_LEVEL = 10  # iNaturalist's rank_level of a species (subspecies 5, genus 20)
 
 @dataclass
 class CloudConfig:
@@ -525,12 +527,56 @@ class Outbox:
         item.wav.unlink(missing_ok=True)
         item.sidecar.unlink(missing_ok=True)
 
-    def tidy(self) -> tuple[int, int, int]:
+    def tidy(self) -> tuple[int, int, int, int]:
         """The uploader's hourly housekeeping: files of clips on iNaturalist the site could not
-        remove, observations left empty, and names for species added by a correction. Returns how
-        many of each."""
+        remove, observations left empty, the species iNaturalist shows for the uploaded ones, and
+        names for species added by a correction. Returns how many of each."""
         purged = self.purge_uploaded_media()
-        return purged, self.rest.delete_empty_observations(), self.name_new_species()
+        emptied = self.rest.delete_empty_observations()
+        followed = self.follow_inat_species()
+        return purged, emptied, followed, self.name_new_species()
+
+    def follow_inat_species(self, session=requests) -> int:
+        """Uploaded observations take the taxon iNaturalist shows for them (identifiers can correct
+        it: a "crane" that is a fox; or you, keeping only the genus when unsure). It becomes the
+        observation's correction, which every statistic counts. The same species under another name
+        (BirdNET's Corvus monedula is iNaturalist's Coloeus monedula) is recognised by its
+        iNaturalist taxon and needs no correction. Returns how many observations changed."""
+        self._connect()
+        rows = self.rest.get("observations", {
+            "select": "id,scientific_name,corrected_scientific_name,inat_observation_id",
+            "status": "eq.uploaded", "inat_observation_id": "not.is.null",
+        })
+        if not rows:
+            return 0
+        known = self.rest.get("species", {"select": "scientific_name,inat_taxon_id", "inat_taxon_id": "not.is.null"})
+        by_taxon = {int(row["inat_taxon_id"]): row["scientific_name"] for row in known}
+        taxon_of = {row["scientific_name"]: int(row["inat_taxon_id"]) for row in known}
+        changed = 0
+        for start in range(0, len(rows), 100):
+            part = rows[start:start + 100]
+            response = session.get(INAT_OBSERVATIONS_URL, timeout=30, params={
+                "id": ",".join(str(row["inat_observation_id"]) for row in part), "per_page": 200})
+            response.raise_for_status()
+            shown = {int(item["id"]): inat_shown_taxon(item) for item in response.json().get("results", [])}
+            for row in part:
+                taxon = shown.get(int(row["inat_observation_id"]))
+                if taxon is None:
+                    continue  # no identification left, or deleted on iNaturalist: as it is
+                taxon_id, name = taxon
+                wanted = by_taxon.get(taxon_id, name)
+                if wanted == row["scientific_name"] or taxon_of.get(row["scientific_name"]) == taxon_id:
+                    wanted = None  # what BirdNET heard
+                if wanted == row["corrected_scientific_name"]:
+                    continue
+                if wanted and wanted not in taxon_of:
+                    # a taxon new here (the fox): its row, with the link; names come with name_new_species
+                    self.rest.upsert("species", [{"scientific_name": wanted, "inat_taxon_id": taxon_id}],
+                                     on_conflict="scientific_name")
+                    by_taxon[taxon_id], taxon_of[wanted] = wanted, taxon_id
+                self.rest.update("observations", {"id": f"eq.{row['id']}"}, {"corrected_scientific_name": wanted})
+                changed += 1
+        return changed
 
     def name_new_species(self, limit: int = 20) -> int:
         """Species added by a correction on the site (the database trigger writes only the
@@ -576,6 +622,17 @@ class Outbox:
             self.rest.update("clips", {"media_path": f"eq.{clip['media_path']}"}, {"media_deleted_at": now.isoformat()})
             purged += 1
         return purged
+
+
+def inat_shown_taxon(observation: dict) -> tuple[int, str] | None:
+    """(taxon id, name) iNaturalist shows for an observation: the community's when there is one,
+    otherwise the observer's. A subspecies counts as its species; a genus stays a genus."""
+    taxon = observation.get("taxon") or {}
+    if not taxon.get("id") or not taxon.get("name"):
+        return None
+    if float(taxon.get("rank_level") or SPECIES_RANK_LEVEL) < SPECIES_RANK_LEVEL and taxon.get("min_species_taxon_id"):
+        return int(taxon["min_species_taxon_id"]), " ".join(taxon["name"].split()[:2])
+    return int(taxon["id"]), taxon["name"]
 
 
 # ---------------------------------------------------------------- previous version

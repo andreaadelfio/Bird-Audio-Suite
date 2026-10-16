@@ -351,6 +351,58 @@ class CorrectedSpeciesTests(unittest.TestCase):
         self.assertEqual(birdnet_english_name("Nomen ignotum"), "")
 
 
+class InatSpeciesTests(unittest.TestCase):
+    def test_uploaded_observations_take_the_taxon_inaturalist_shows(self) -> None:
+        observations = [
+            # (our id, BirdNET, correction, iNaturalist id) -> iNaturalist shows...
+            (356, "Grus grus", None, 9001),                 # Vulpes vulpes: identifiers said fox
+            (377, "Turdus philomelos", None, 9002),         # Turdus: you kept only the genus
+            (300, "Corvus monedula", None, 9003),           # Coloeus monedula: same species, other name
+            (301, "Parus major", None, 9004),               # Parus major major: a subspecies
+            (302, "Sitta europaea", "Certhia familiaris", 9005),  # back to BirdNET's species
+            (303, "Pica pica", None, 9006),                 # not returned (deleted on iNaturalist)
+        ]
+        shown = {
+            9001: {"id": 42069, "name": "Vulpes vulpes", "rank_level": 10},
+            9002: {"id": 12705, "name": "Turdus", "rank_level": 20},
+            9003: {"id": 891704, "name": "Coloeus monedula", "rank_level": 10},
+            9004: {"id": 555, "name": "Parus major major", "rank_level": 5, "min_species_taxon_id": 203153},
+            9005: {"id": 14824, "name": "Sitta europaea", "rank_level": 10},
+        }
+
+        class Rest:
+            def __init__(self) -> None:
+                self.updates, self.upserts = [], []
+
+            def get(self, table, params):
+                if table == "observations":
+                    return [{"id": oid, "scientific_name": name, "corrected_scientific_name": fix,
+                             "inat_observation_id": inat} for oid, name, fix, inat in observations]
+                return [{"scientific_name": "Corvus monedula", "inat_taxon_id": 891704},
+                        {"scientific_name": "Sitta europaea", "inat_taxon_id": 14824},
+                        {"scientific_name": "Parus major", "inat_taxon_id": 203153}]
+
+            def update(self, table, filters, values):
+                self.updates.append((filters["id"], values["corrected_scientific_name"]))
+
+            def upsert(self, table, rows, on_conflict):
+                self.upserts.append(rows[0])
+
+        class Session:
+            def get(self, url, params, timeout):
+                ids = [int(i) for i in params["id"].split(",")]
+                results = [{"id": i, "taxon": shown[i]} for i in ids if i in shown]
+                return types.SimpleNamespace(raise_for_status=lambda: None, json=lambda: {"results": results})
+
+        rest = Rest()
+        config = CloudConfig(supabase_url="https://example.supabase.co", supabase_key="k")
+        box = Outbox(Path("."), FakeNames(), config, rest=rest, storage=FakeStorage())
+        self.assertEqual(box.follow_inat_species(session=Session()), 3)
+        self.assertEqual(rest.updates, [("eq.356", "Vulpes vulpes"), ("eq.377", "Turdus"), ("eq.302", None)])
+        self.assertEqual(rest.upserts, [{"scientific_name": "Vulpes vulpes", "inat_taxon_id": 42069},
+                                        {"scientific_name": "Turdus", "inat_taxon_id": 12705}])
+
+
 class StorageTests(unittest.TestCase):
     def test_uploads_to_the_public_bucket_with_upsert(self) -> None:
         posts = []
