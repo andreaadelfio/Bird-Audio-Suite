@@ -12,8 +12,9 @@ const STATUS_LABELS = {
   uploaded: "caricata",
 };
 
-// the live keeps everything from 0.6; from 0.8 an identification is "likely", below "unsure"
-const LIKELY_CONFIDENCE = 0.8;
+// from here an identification is "likely", below "unsure": LIKELY_CONFIDENCE of the PC's
+// config.py, which the uploader copies to birds.shared_settings (this value only until it is read)
+let LIKELY_CONFIDENCE = 0.9;
 
 function confidenceClass(confidence) {
   return Number(confidence) >= LIKELY_CONFIDENCE ? "likely" : "unsure";
@@ -110,6 +111,15 @@ function createClient() {
 }
 
 // ---------------------------------------------------------------- data
+
+async function loadSharedSettings() {
+  const { data, error } = await state.client.from("shared_settings").select("key,value");
+  if (error) return; // the table not created yet (schema not re-run): the value above stays
+  const likely = Number(data.find((row) => row.key === "likely_confidence")?.value);
+  if (Number.isFinite(likely) && likely > 0) LIKELY_CONFIDENCE = likely;
+  $('[data-filter-confidence="likely"]').title = `Almeno una clip con confidenza da ${LIKELY_CONFIDENCE} in su`;
+  $('[data-filter-confidence="unsure"]').title = `Nessuna clip da ${LIKELY_CONFIDENCE} in su`;
+}
 
 async function loadSpecies() {
   let { data, error } = await state.client
@@ -322,14 +332,6 @@ function clipFacts(clip) {
 // can still be linked elsewhere); onInat: its observation is on iNaturalist (the bin then removes
 // only the files)
 function clipHtml(clip, { folded = false, canUnlink = true, onInat = false } = {}) {
-  if (clip.media_deleted_at) {
-    // on iNaturalist: its files left Supabase right after the upload (the row stays for the reports)
-    return `
-    <figure class="clip media-gone${folded ? " folded" : ""}" data-clip="${escapeHtml(clip.id)}">
-      <p>${clipFacts(clip)}</p>
-      <p>Audio tolto da Supabase il ${new Date(clip.media_deleted_at).toLocaleDateString("it-IT")}: è su iNaturalist.</p>
-    </figure>`;
-  }
   const urls = mediaUrls(clip.media_path);
   const duration = Number(clip.duration_s) || 1;
   const segments = clipSegments(clip);
@@ -393,7 +395,11 @@ function observationMeta(observation, facts, extra = "") {
     <span>${facts.clips.length} clip</span>${extra}</p>`;
 }
 
-function clipsHtml(clips, options = {}) {
+// the clips still with their files: those on iNaturalist lost them after the upload and are not
+// shown (their rows stay, counted in the card's facts and in the reports)
+function clipsHtml(allClips, options = {}) {
+  const clips = allClips.filter((clip) => !clip.media_deleted_at);
+  if (!clips.length) return "";
   return `<div class="obs-clips">
       <div class="clips">${clips.map((clip, index) => clipHtml(clip, { ...options, folded: index >= VISIBLE_CLIPS })).join("")}</div>
       ${clips.length > VISIBLE_CLIPS
@@ -441,7 +447,7 @@ function observationHtml(observation) {
   // on iNaturalist the taxon is iNaturalist's: the PC's uploader copies it here every hour
   const onInat = observation.status === "uploaded";
   return `
-    <article class="observation status-${observation.status} ${confidenceClass(facts.maxConfidence)}" data-id="${observation.id}">
+    <article class="observation status-${observation.status} ${confidenceClass(facts.maxConfidence)}${facts.clips.some((clip) => !clip.media_deleted_at) ? "" : " no-clips"}" data-id="${observation.id}">
       ${speciesHeaderHtml(observation, STATUS_LABELS[observation.status] || observation.status)}
       ${observationMeta(observation, facts)}
       <div class="fix${corrected ? "" : " hidden"}">
@@ -515,9 +521,9 @@ content.addEventListener("click", async (event) => {
     figure.querySelector("audio").pause();
     const deleted = await deleteForGood([{ observationId: found.observationId, whole: false, clips: [found.clip] }],
       { ask: false });
-    if (deleted && found.clip.media_deleted_at) {
+    if (deleted && found.clip.media_deleted_at && found.observation) {
       // on iNaturalist: only its files went, the clip stays in its observation and in the reports
-      figure.outerHTML = clipHtml(found.clip, { folded: figure.classList.contains("folded") });
+      redrawObservation(found.observation);
     } else if (deleted && state.view !== "trash") {
       if (found.observation) found.observation.clips = found.observation.clips.filter((clip) => clip.id !== found.clip.id);
       figure.remove();
@@ -1780,6 +1786,60 @@ function speciesNote(row, remark = "") {
   return parts.length ? ` <small>${parts.join(" · ")}</small>` : "";
 }
 
+// The species table sorts by any column: tap a header, tap it again to reverse. The choice is
+// remembered on this device; ties keep the most frequent first.
+const SPECIES_COLUMNS = {
+  name: { label: "Specie", first: "asc", value: (row) => (row.italian_name || row.scientific_name).toLocaleLowerCase("it") },
+  observations: { label: "Oss.", title: "Osservazioni", first: "desc", value: (row) => row.observations },
+  days: { label: "Giorni", first: "desc", value: (row) => row.days },
+  best: { label: "Conf.", title: "Confidenza massima di BirdNET", first: "desc", value: (row) => row.best || 0 },
+  last: { label: "Ultima", title: "Ultima volta sentita", first: "desc", value: (row) => row.last_heard || "" },
+};
+const SPECIES_SORT_KEY = "speciesSort";
+const speciesTable = { rows: [], rowHtml: () => "" }; // the report on screen, to sort it again
+
+function speciesSort() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(SPECIES_SORT_KEY) || "null");
+    if (saved && SPECIES_COLUMNS[saved.key] && ["asc", "desc"].includes(saved.dir)) return saved;
+  } catch {
+    // unreadable or blocked storage: the default
+  }
+  return { key: "days", dir: "desc" };
+}
+
+function sortedSpecies(rows) {
+  const { key, dir } = speciesSort();
+  const value = SPECIES_COLUMNS[key].value;
+  const sign = dir === "asc" ? 1 : -1;
+  return [...rows].sort((a, b) => {
+    const x = value(a), y = value(b);
+    const order = typeof x === "string" ? x.localeCompare(y, "it") : x - y;
+    return sign * order || b.days - a.days || b.observations - a.observations;
+  });
+}
+
+function speciesHeadHtml() {
+  const { key: sortedBy, dir } = speciesSort();
+  return Object.entries(SPECIES_COLUMNS).map(([key, column]) => `
+    <th aria-sort="${key === sortedBy ? (dir === "asc" ? "ascending" : "descending") : "none"}"><button type="button" class="sort"
+      data-sort="${key}"${column.title ? ` title="${column.title}"` : ""}>${column.label}</button></th>`).join("");
+}
+
+function sortSpeciesTable(key) {
+  const current = speciesSort();
+  const dir = current.key === key ? (current.dir === "asc" ? "desc" : "asc") : SPECIES_COLUMNS[key].first;
+  try {
+    localStorage.setItem(SPECIES_SORT_KEY, JSON.stringify({ key, dir }));
+  } catch {
+    // not remembered: it still sorts now
+  }
+  const table = content.querySelector(".species-table");
+  if (!table) return;
+  table.querySelector("thead tr").innerHTML = speciesHeadHtml();
+  table.querySelector("tbody").innerHTML = sortedSpecies(speciesTable.rows).map(speciesTable.rowHtml).join("");
+}
+
 function isoDaysAgo(days) {
   const date = new Date();
   date.setDate(date.getDate() - days);
@@ -1823,7 +1883,7 @@ async function renderReport(days = Number(localStorage.getItem("reportDays") || 
     bySpecies.set(row.scientific_name, entry);
     if (row.first_heard) hours[new Date(row.first_heard).getHours()] += 1;
   }
-  const speciesRows = [...bySpecies.values()].sort((a, b) => b.days - a.days || b.observations - a.observations);
+  const speciesRows = [...bySpecies.values()];
   const maxHour = Math.max(1, ...hours);
   const totalMinutes = Math.round(speciesRows.reduce((sum, row) => sum + row.seconds, 0) / 60);
   // NEW: heard for the first time ever in this period; meaningless when the period reaches back
@@ -1831,6 +1891,14 @@ async function renderReport(days = Number(localStorage.getItem("reportDays") || 
   const firstEver = [...state.species.values()].map((row) => row.first_seen_date).filter(Boolean).sort()[0] || "";
   const firstSeen = (row) => state.species.get(row.scientific_name)?.first_seen_date || "";
   const isNew = (row) => firstEver && from > firstEver && firstSeen(row) >= from;
+  speciesTable.rows = speciesRows;
+  speciesTable.rowHtml = (row) => `
+            <tr>
+              <td>${speciesLink(row)}${isNew(row) ? `<span class="new-badge" title="Prima volta in assoluto: ${formatDay(firstSeen(row))}">NEW</span>` : ""}${speciesNote(row)}</td>
+              <td>${row.observations}</td><td>${row.days}</td>
+              <td class="${row.best ? `conf-${confidenceClass(row.best)}` : ""}">${row.best ? row.best.toFixed(2) : "—"}</td>
+              <td>${row.last_heard ? shortDateFormat.format(new Date(row.last_heard)) : ""}</td>
+            </tr>`;
 
   content.innerHTML = `
     <div class="report-head">
@@ -1873,15 +1941,9 @@ async function renderReport(days = Number(localStorage.getItem("reportDays") || 
       </section>
       <section>
         <h3>Specie</h3>
-        ${speciesRows.length ? `<div class="table-scroll"><table class="report-table">
-          <thead><tr><th>Specie</th><th title="Osservazioni">Oss.</th><th>Giorni</th><th title="Confidenza massima di BirdNET">Conf.</th><th>Ultima</th></tr></thead>
-          <tbody>${speciesRows.map((row) => `
-            <tr>
-              <td>${speciesLink(row)}${isNew(row) ? `<span class="new-badge" title="Prima volta in assoluto: ${formatDay(firstSeen(row))}">NEW</span>` : ""}${speciesNote(row)}</td>
-              <td>${row.observations}</td><td>${row.days}</td>
-              <td class="${row.best ? `conf-${confidenceClass(row.best)}` : ""}">${row.best ? row.best.toFixed(2) : "—"}</td>
-              <td>${row.last_heard ? shortDateFormat.format(new Date(row.last_heard)) : ""}</td>
-            </tr>`).join("")}</tbody>
+        ${speciesRows.length ? `<div class="table-scroll"><table class="report-table species-table">
+          <thead><tr>${speciesHeadHtml()}</tr></thead>
+          <tbody>${sortedSpecies(speciesRows).map(speciesTable.rowHtml).join("")}</tbody>
         </table></div>` : '<p class="empty">Nessuna specie in questo periodo.</p>'}
       </section>
     </div>`;
@@ -1891,6 +1953,11 @@ content.addEventListener("click", (event) => {
   const speciesButton = event.target.closest("[data-species]");
   if (speciesButton) {
     showSpeciesObservations(speciesButton.dataset.species, speciesButton.dataset.from);
+    return;
+  }
+  const sortButton = event.target.closest("[data-sort]");
+  if (sortButton) {
+    sortSpeciesTable(sortButton.dataset.sort);
     return;
   }
   const button = event.target.closest("[data-days]");
@@ -1980,7 +2047,7 @@ $("#more").addEventListener("click", loadMore);
 
 $("#refresh").addEventListener("click", async () => {
   try {
-    await loadSpecies();
+    await Promise.all([loadSpecies(), loadSharedSettings()]);
     await refreshCounts();
   } catch (error) {
     setStatus(`Errore: ${error.message}`, true);
@@ -1994,7 +2061,7 @@ $("#more-filters").open = window.matchMedia("(min-width: 721px)").matches;
 
 async function start() {
   try {
-    await loadSpecies();
+    await Promise.all([loadSpecies(), loadSharedSettings()]);
     await refreshCounts();
   } catch (error) {
     setStatus(`Errore: ${error.message}`, true);

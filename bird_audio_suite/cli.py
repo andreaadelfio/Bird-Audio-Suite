@@ -49,11 +49,12 @@ from .config import (
     DEFAULT_LONGITUDE,
     DEFAULT_PLACE_NAME,
     DEFAULT_PLAYBACK_SUPPRESSION_MIN_CONFIDENCE,
-    LIKELY_CONFIDENCE,
     DEFAULT_RECORDER_SAMPLE_RATE,
     DEFAULT_SLICE_INTERVAL,
     DEFAULT_NOISE_REDUCTION_FACTOR,
 )
+from . import config as settings  # read at use: config.py is reloaded while running (config_watch)
+from .config_watch import ConfigWatcher
 from .detector import BirdNetDetector
 from .echo import ACTIVE_RMS, PlaybackMonitor, PlaybackSubtractor
 from .geolocation import resolve_location
@@ -1097,12 +1098,13 @@ def print_daily_detection_summary(detections_dir: Path, names: SpeciesNames | No
 
 
 def colour_confidence(text: str) -> str:
-    """Likely (>= 0.8) green, unsure yellow, like on the site (the terminal of Ctrl+Alt+L shows it)."""
+    """Likely (from LIKELY_CONFIDENCE) green, unsure yellow, like on the site (the terminal of
+    Ctrl+Alt+L shows it)."""
     try:
         value = float(text)
     except ValueError:
         return text
-    return f"\033[{32 if value >= LIKELY_CONFIDENCE else 33}m{text}\033[0m"
+    return f"\033[{32 if value >= settings.LIKELY_CONFIDENCE else 33}m{text}\033[0m"
 
 
 def record_live_detection_observation(
@@ -1467,6 +1469,20 @@ def subtract_playback_from_frames(frames, sample_rate: int, args: argparse.Names
         subtractor.close()
 
 
+# config.py values the live takes while running (the others need a restart): the threshold, the
+# playback one, and LIKELY_CONFIDENCE for the table's colours (read at use)
+LIVE_CONFIG_VALUES = {"DEFAULT_LIVE_MIN_CONFIDENCE", "DEFAULT_PLAYBACK_SUPPRESSION_MIN_CONFIDENCE", "LIKELY_CONFIDENCE"}
+
+
+def apply_config_changes(args: argparse.Namespace, changes: dict[str, tuple]) -> None:
+    """New thresholds from config.py, from this window on. A value given on the command line (not
+    the one config.py had) stays."""
+    for name, attribute in (("DEFAULT_LIVE_MIN_CONFIDENCE", "min_confidence"),
+                            ("DEFAULT_PLAYBACK_SUPPRESSION_MIN_CONFIDENCE", "playback_suppression_min_confidence")):
+        if name in changes and getattr(args, attribute, None) == changes[name][0]:
+            setattr(args, attribute, changes[name][1])
+
+
 def run_live_detection(
     args: argparse.Namespace,
     frames,
@@ -1510,7 +1526,10 @@ def run_live_detection(
     def on_error(exc: Exception) -> None:
         print(f"{datetime.now():%H:%M:%S} - Detection error: {exc!r}")
 
+    watcher = ConfigWatcher(LIVE_CONFIG_VALUES)
+
     def detect_window(window, playback_window=None):
+        apply_config_changes(args, watcher.poll())
         result = detect_live_slice(window, sample_rate, detector, args, playback_window)
         heartbeat.beat(rms_level(window), device=device_label, place_name=args.place_name,
                        **LIVE_METRICS.snapshot())

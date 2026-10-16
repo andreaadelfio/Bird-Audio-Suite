@@ -33,7 +33,7 @@ from pathlib import Path
 import requests
 
 from .audio import detections_lock, parse_timestamp_from_name
-from .config import OBSERVATION_GAP_MINUTES
+from . import config as settings  # read at use: the uploader reloads config.py while running
 from .species import birdnet_english_name
 from .species_links import species_codes
 
@@ -142,11 +142,11 @@ class SupabaseRest:
         )
         self._check(response, f"{table} update")
 
-    def observation_for(self, scientific_name: str, recorded_at: datetime,
-                        gap: timedelta = timedelta(minutes=OBSERVATION_GAP_MINUTES)) -> int:
+    def observation_for(self, scientific_name: str, recorded_at: datetime, gap: timedelta | None = None) -> int:
         """The observation a clip belongs to: the one with a clip of the same species within `gap`
         of it (the nearest, if more), else a new one dated the clip's day. Review columns are never
         touched; across midnight it works too (it looks at times, not days)."""
+        gap = gap or timedelta(minutes=settings.OBSERVATION_GAP_MINUTES)
         near = self.get("clips", [
             ("select", "observation_id,recorded_at,observations!inner(scientific_name)"),
             ("observations.scientific_name", f"eq.{scientific_name}"),
@@ -526,6 +526,14 @@ class Outbox:
     def _remove(item: OutboxItem) -> None:
         item.wav.unlink(missing_ok=True)
         item.sidecar.unlink(missing_ok=True)
+
+    def publish_settings(self) -> None:
+        """The config.py values the site needs too (the "likely" threshold), into
+        birds.shared_settings: the site reads them when it opens."""
+        self._connect()
+        self.rest.upsert("shared_settings", [{"key": "likely_confidence", "value": settings.LIKELY_CONFIDENCE,
+                                              "updated_at": datetime.now(timezone.utc).isoformat()}],
+                         on_conflict="key")
 
     def tidy(self) -> tuple[int, int, int, int]:
         """The uploader's hourly housekeeping: files of clips on iNaturalist the site could not

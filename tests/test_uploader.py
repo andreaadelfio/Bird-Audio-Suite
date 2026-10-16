@@ -20,7 +20,12 @@ class FakeOutbox:
 
     def __init__(self, folder: Path) -> None:
         self.folder, self.pushes, self.offline, self.busy = folder, 0, False, False
-        self.purges = 0
+        self.purges = self.published = 0
+
+    def publish_settings(self) -> None:
+        if self.offline:
+            raise RuntimeError("offline")
+        self.published += 1
 
     def tidy(self) -> tuple[int, int, int, int]:
         self.purges += 1
@@ -65,12 +70,21 @@ class UploaderLoopTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.runtime.cleanup()
 
-    def run_loop(self, folder: Path, outbox: FakeOutbox, script) -> dict | None:
+    def run_loop(self, folder: Path, outbox: FakeOutbox, script, watcher=None) -> dict | None:
         loop = Loop(script)
         run_uploader(folder, lambda: outbox, poll_seconds=3, retry_seconds=60,
                      status=UploaderStatus(self.status_path), log=lambda message: None,
-                     should_stop=loop.stop, sleep=loop.sleep, clock=lambda: loop.now)
+                     should_stop=loop.stop, sleep=loop.sleep, clock=lambda: loop.now,
+                     watcher=watcher or types.SimpleNamespace(poll=lambda: {}))
         return read_status(self.status_path)
+
+    def test_the_likely_threshold_goes_to_the_site_at_start_and_when_config_changes(self) -> None:
+        changes = iter([{}, {}, {"LIKELY_CONFIDENCE": (0.8, 0.9)}])
+        watcher = types.SimpleNamespace(poll=lambda: next(changes, {}))
+        with tempfile.TemporaryDirectory() as directory:
+            outbox = FakeOutbox(Path(directory))
+            self.run_loop(Path(directory), outbox, [lambda: None] * 30, watcher=watcher)  # 90 s
+        self.assertEqual(outbox.published, 2)  # at start, and once after the change (not every poll)
 
     def test_a_new_clip_is_sent_within_a_poll_and_nothing_is_redone_while_idle(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

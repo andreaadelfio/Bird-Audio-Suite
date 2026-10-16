@@ -21,7 +21,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
+from .config_watch import ConfigWatcher
 from .health import UPLOADER_STATUS_FILE as STATUS_FILE
+
 POLL_SECONDS = 3.0
 RETRY_SECONDS = 60.0
 NAMES_REFRESH_SECONDS = 3600.0
@@ -103,17 +105,34 @@ def run_uploader(
     should_stop: Callable[[], bool] = lambda: False,
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
+    watcher: ConfigWatcher | None = None,
 ) -> None:
     """Push whenever the folder changes, and every `retry_seconds` while something waits.
-    `make_outbox()` builds the Outbox (again every `names_refresh_seconds`, for fresh names)."""
+    `make_outbox()` builds the Outbox (again every `names_refresh_seconds`, for fresh names).
+    config.py is read again when it changes (the gap between visits applies to the next clip), and
+    the "likely" threshold goes to Supabase for the site, at start and after each change."""
     from .cloud import outbox_items
 
     status = status or UploaderStatus()
+    watcher = watcher or ConfigWatcher({"OBSERVATION_GAP_MINUTES", "LIKELY_CONFIDENCE"}, report_others=False,
+                                       log=log, clock=clock)
     outbox, built_at = make_outbox(), clock()
     last_signature = None
     last_push = -retry_seconds
     last_purge = -purge_every_seconds
+    settings_due, settings_tried, settings_failed = True, -retry_seconds, False
     while not should_stop():
+        if "LIKELY_CONFIDENCE" in watcher.poll():
+            settings_due = True
+        if settings_due and clock() - settings_tried >= retry_seconds:
+            settings_tried = clock()
+            try:
+                outbox.publish_settings()
+                settings_due = settings_failed = False
+            except Exception as exc:  # offline, or the table not created yet: the next minute
+                if not settings_failed:
+                    log(f"{datetime.now():%H:%M:%S} - soglie per il sito non inviate: {exc!r}")
+                settings_failed = True
         signature = folder_signature(detections_dir)
         # push when the folder changed, and every retry_seconds anyway (failed clips, fresh status)
         if signature != last_signature or clock() - last_push >= retry_seconds:

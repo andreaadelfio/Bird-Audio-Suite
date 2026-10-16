@@ -212,6 +212,13 @@ label { color: var(--ink-soft); font-size: 0.85rem; }
 #content { transition: opacity 0.15s; }
 #content.busy { opacity: 0.45; pointer-events: none; }
 
+/* on iNaturalist with no clip left to play: just the observation's facts, full width */
+.observation.no-clips {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas: "head" "meta" "fix" "acts";
+  grid-template-rows: auto;
+}
+
 .observation {
   display: grid;
   grid-template-columns: minmax(260px, 330px) minmax(0, 1fr);
@@ -479,8 +486,6 @@ button.denoise.strong { background: var(--accent-deep); border-color: var(--acce
 .selection-label { margin-right: auto; font-weight: 600; font-size: 0.8rem; font-variant-numeric: tabular-nums; }
 
 /* a week after the iNaturalist upload: the files are gone from Supabase, the clip's facts stay */
-.clip.media-gone { display: grid; align-content: center; min-height: 6rem; padding: 0.5rem 0.6rem; color: var(--ink-soft); font-size: 0.85rem; }
-.clip.media-gone p { margin: 0; }
 
 /* ---------------------------------------------------------------- lists */
 
@@ -553,6 +558,19 @@ button.denoise.strong { background: var(--accent-deep); border-color: var(--acce
   vertical-align: 1px;
 }
 .report-table td.conf-likely { color: var(--likely); }
+/* sortable headers: the column in use carries the arrow */
+.report-table th .sort {
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.report-table th[aria-sort="ascending"] .sort::after { content: " ▲"; font-size: 0.65em; }
+.report-table th[aria-sort="descending"] .sort::after { content: " ▼"; font-size: 0.65em; }
+.report-table th[aria-sort="ascending"], .report-table th[aria-sort="descending"] { color: var(--accent-deep); }
 .report-table td.conf-unsure { color: var(--unsure); }
 
 /* what is on iNaturalist: first, folded */

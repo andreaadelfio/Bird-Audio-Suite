@@ -84,6 +84,14 @@ create table if not exists birds.deleted_clips (
   deleted_at timestamptz not null default now()
 );
 
+-- values of the PC's config.py the site needs too (the "likely" threshold): the uploader writes
+-- them at start and whenever config.py changes, the site reads them when it opens
+create table if not exists birds.shared_settings (
+  key        text primary key,
+  value      jsonb not null,
+  updated_at timestamptz not null default now()
+);
+
 create index if not exists clips_observation_idx on birds.clips (observation_id);
 create index if not exists clips_recorded_idx on birds.clips (recorded_at desc);
 create index if not exists observations_status_day_idx on birds.observations (status, day desc);
@@ -398,7 +406,7 @@ do $$
 declare
   t text;
 begin
-  foreach t in array array['species', 'observations', 'clips', 'deleted_clips'] loop
+  foreach t in array array['species', 'observations', 'clips', 'deleted_clips', 'shared_settings'] loop
     execute format('alter table birds.%I enable row level security', t);
     execute format('drop policy if exists "accesso pubblico" on birds.%I', t);
     execute format(
