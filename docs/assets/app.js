@@ -319,8 +319,9 @@ function clipFacts(clip) {
 }
 
 // canUnlink: only when the observation has other clips (a lone clip is already on its own, and
-// can still be linked elsewhere)
-function clipHtml(clip, folded = false, canUnlink = true) {
+// can still be linked elsewhere); onInat: its observation is on iNaturalist (the bin then removes
+// only the files)
+function clipHtml(clip, { folded = false, canUnlink = true, onInat = false } = {}) {
   if (clip.media_deleted_at) {
     // a week after the iNaturalist upload the files leave Supabase (the PC's uploader removes them)
     return `
@@ -363,8 +364,11 @@ function clipHtml(clip, folded = false, canUnlink = true) {
           aria-label="Stacca la clip">${ICON_UNLINK}</button>` : ""}
         <button type="button" class="tool${wrong ? " on" : ""}" data-clip-review="wrong"
           title="${wrong ? "Rimetti la clip nell'osservazione" : "La clip non contiene la specie: va nel Cestino"}">${wrong ? "Ripristina" : "Scarta"}</button>
-        <button type="button" class="tool trash-button" data-delete-clip
-          title="Elimina subito e per sempre questa clip" aria-label="Elimina definitivamente questa clip">${ICON_TRASH}</button>
+        ${onInat && !wrong
+          ? `<button type="button" class="tool trash-button" data-delete-clip
+          title="Togli subito audio e spettrogramma da Supabase (sono su iNaturalist): la clip resta nei report" aria-label="Togli i file da Supabase">${ICON_TRASH}</button>`
+          : `<button type="button" class="tool trash-button" data-delete-clip
+          title="Elimina subito e per sempre questa clip" aria-label="Elimina definitivamente questa clip">${ICON_TRASH}</button>`}
         </span>
       </div>
       ${candidatesHtml(clip)}
@@ -389,9 +393,9 @@ function observationMeta(observation, facts, extra = "") {
     <span>${facts.clips.length} clip</span>${extra}</p>`;
 }
 
-function clipsHtml(clips, canUnlink) {
+function clipsHtml(clips, options = {}) {
   return `<div class="obs-clips">
-      <div class="clips">${clips.map((clip, index) => clipHtml(clip, index >= VISIBLE_CLIPS, canUnlink)).join("")}</div>
+      <div class="clips">${clips.map((clip, index) => clipHtml(clip, { ...options, folded: index >= VISIBLE_CLIPS })).join("")}</div>
       ${clips.length > VISIBLE_CLIPS
         ? `<button type="button" class="show-clips" data-show-clips>Mostra altre ${clips.length - VISIBLE_CLIPS} clip</button>`
         : ""}
@@ -444,7 +448,7 @@ function observationHtml(observation) {
         ${corrected ? speciesLinks(corrected) : ""}
       </div>
       <div class="actions">${observationActions(observation)}</div>
-      ${clipsHtml(facts.clips, facts.clips.length > 1)}
+      ${clipsHtml(facts.clips, { canUnlink: facts.clips.length > 1, onInat: observation.status === "uploaded" })}
     </article>`;
 }
 
@@ -508,7 +512,10 @@ content.addEventListener("click", async (event) => {
     figure.querySelector("audio").pause();
     const deleted = await deleteForGood([{ observationId: found.observationId, whole: false, clips: [found.clip] }],
       { ask: false });
-    if (deleted && state.view !== "trash") {
+    if (deleted && found.clip.media_deleted_at) {
+      // on iNaturalist: only its files went, the clip stays in its observation and in the reports
+      figure.outerHTML = clipHtml(found.clip, { folded: figure.classList.contains("folded") });
+    } else if (deleted && state.view !== "trash") {
       if (found.observation) found.observation.clips = found.observation.clips.filter((clip) => clip.id !== found.clip.id);
       figure.remove();
       if (!card.querySelector(".clip")) card.remove(); // it was its last clip: the observation is gone too
@@ -834,7 +841,8 @@ async function saveTrim(figure, start, end) {
   Object.assign(found.clip, values);
   const folded = figure.classList.contains("folded");
   figure.querySelector("audio").pause();
-  figure.outerHTML = clipHtml(found.clip, folded, (found.observation?.clips || []).length > 1);
+  figure.outerHTML = clipHtml(found.clip, { folded, canUnlink: (found.observation?.clips || []).length > 1,
+    onInat: found.observation?.status === "uploaded" });
   setStatus(start == null ? "Taglio tolto." : `Clip tagliata: ${values.trim_start_s}–${values.trim_end_s} s (il file resta intero).`);
 }
 
@@ -1258,7 +1266,7 @@ function trashCardHtml(observation, whole) {
         ${whole ? '<button type="button" class="primary" data-status="pending" title="Rimetti da rivedere">↺ Ripristina</button>' : ""}
         <button type="button" class="danger" data-delete title="Audio, spettrogrammi e righe spariscono da Supabase">Elimina per sempre</button>
       </div>
-      ${clipsHtml(facts.clips, false)}
+      ${clipsHtml(facts.clips, { canUnlink: false })}
     </article>`;
 }
 
@@ -1293,10 +1301,20 @@ function chunks(items, size) {
   return result;
 }
 
-// entries: [{ observationId, whole, clips }]; true once deleted. ask: false for the trash button
-// of a single clip, which deletes at once.
+// What counts in the reports stays there. A row goes only with what you judged wrong (the Cestino
+// holds only that, the bin of a clip says it): a clip of an observation on iNaturalist, and still
+// right, loses only its files (they are on iNaturalist), its row stays, marked media_deleted_at.
+// The database refuses to delete those rows anyway (the keep_*_history triggers).
+function keepsItsRow(observation, clip) {
+  return observation?.status === "uploaded" && clip.review !== "wrong";
+}
+
+// entries: [{ observationId, whole, clips }]; true once done. ask: false for the trash button
+// of a single clip, which acts at once.
 async function deleteForGood(entries, { ask = true } = {}) {
   const clips = entries.flatMap((entry) => entry.clips);
+  const archived = new Set(entries.flatMap((entry) => entry.clips
+    .filter((clip) => keepsItsRow(state.observations.get(entry.observationId), clip)).map((clip) => clip.id)));
   const wholeCount = entries.filter((entry) => entry.whole).length;
   const question = `Eliminare definitivamente ${clips.length} clip${wholeCount ? ` (${wholeCount} osservazioni intere)` : ""}?\n\n`
     + "Audio e spettrogrammi vengono cancellati da Supabase e non si possono recuperare dal sito. I WAV sul PC restano.";
@@ -1306,8 +1324,9 @@ async function deleteForGood(entries, { ask = true } = {}) {
   setStatus("Elimino…");
   try {
     const ids = clips.map((clip) => clip.id);
+    const removed = ids.filter((id) => !archived.has(id));
     // 1. first the list `sync` reads: if anything below fails, they are not uploaded again
-    for (const part of chunks(ids, 200)) {
+    for (const part of chunks(removed, 200)) {
       const { error } = await state.client.from("deleted_clips")
         .upsert(part.map((id) => ({ id })), { onConflict: "id", ignoreDuplicates: true });
       if (error) throw error;
@@ -1315,20 +1334,27 @@ async function deleteForGood(entries, { ask = true } = {}) {
     // 2. files in the bucket
     // the files of each clip, from its path (none when the site runs on local files: make web-dev)
     // files shared with a clip linked to another observation stay while that clip uses them
-    const { data: sharing, error: sharingError } = await state.client.from("clips").select("id,media_path")
+    const { data: sharing, error: sharingError } = await state.client.from("clips").select("id,media_path,media_deleted_at")
       .in("media_path", [...new Set(clips.map((clip) => clip.media_path))]);
     if (sharingError) throw sharingError;
-    const stillUsed = new Set(sharing.filter((row) => !ids.includes(row.id)).map((row) => row.media_path));
+    const stillUsed = new Set(sharing.filter((row) => !ids.includes(row.id) && !row.media_deleted_at).map((row) => row.media_path));
     const paths = config.mediaBaseUrl ? [] : clips.filter((clip) => !stillUsed.has(clip.media_path))
       .flatMap((clip) => [`${clip.media_path}.mp3`, `${clip.media_path}-spectrogram.jpg`]);
     for (const part of chunks(paths, 100)) {
       const { error } = await state.client.storage.from(BUCKET).remove(part);
       if (error) throw error;
     }
-    // 3. rows: clips, then whole observations and kept ones left without clips
-    for (const part of chunks(ids, 50)) {
+    // 3. rows: clips (those on iNaturalist only marked), then whole observations and kept ones
+    // left without clips
+    for (const part of chunks(removed, 50)) {
       const { error } = await state.client.from("clips").delete().in("id", part);
       if (error) throw error;
+    }
+    if (archived.size) {
+      const now = new Date().toISOString();
+      const { error } = await state.client.from("clips").update({ media_deleted_at: now }).in("id", [...archived]);
+      if (error) throw error;
+      clips.filter((clip) => archived.has(clip.id)).forEach((clip) => { clip.media_deleted_at = now; });
     }
     const observationIds = entries.filter((entry) => entry.whole).map((entry) => entry.observationId);
     const partialIds = entries.filter((entry) => !entry.whole).map((entry) => entry.observationId);
@@ -1339,10 +1365,12 @@ async function deleteForGood(entries, { ask = true } = {}) {
       observationIds.push(...partialIds.filter((id) => !stillWithClips.has(id)));
     }
     for (const part of chunks(observationIds, 100)) {
-      const { error } = await state.client.from("observations").delete().in("id", part);
+      // one on iNaturalist stays even with all its clips discarded (without clips it counts nowhere)
+      const { error } = await state.client.from("observations").delete().in("id", part).neq("status", "uploaded");
       if (error) throw error;
     }
-    setStatus(`Eliminate ${clips.length} clip.`);
+    setStatus([removed.length ? `Eliminate ${removed.length} clip.` : "",
+      archived.size ? `Audio tolto da Supabase per ${archived.size} clip su iNaturalist: restano nei report.` : ""].join(" ").trim());
     deleted = true;
   } catch (error) {
     setStatus(`Errore durante l'eliminazione: ${error.message}`, true);
@@ -1681,7 +1709,7 @@ async function renderReport(days = Number(localStorage.getItem("reportDays") || 
     fetchAll(() => state.client.from("daily_summary").select("*").gte("day", from).neq("status", "rejected")
       .order("observation_id")),
     fetchAll(() => state.client.from("clips").select("id, recorded_at, observations!inner(status,day)")
-      .gte("observations.day", from).neq("observations.status", "rejected").order("id")),
+      .gte("observations.day", from).neq("observations.status", "rejected").neq("review", "wrong").order("id")),
   ]);
 
   const bySpecies = new Map();

@@ -262,6 +262,38 @@ drop trigger if exists observations_correction on birds.observations;
 create trigger observations_correction before insert or update of corrected_scientific_name on birds.observations
   for each row execute function birds.correction_species();
 
+-- the history stays: what is on iNaturalist (an uploaded observation, and its clips you did not
+-- discard) cannot be deleted. Its files go after a week, its rows keep counting in the reports. To
+-- remove something you judged wrong, discard it first (status rejected, or review wrong on a clip):
+-- then the Cestino can delete it for good.
+create or replace function birds.keep_observation_history() returns trigger
+language plpgsql as $$
+begin
+  if old.status = 'uploaded' then
+    raise exception 'Osservazione su iNaturalist: resta nello storico (scartala prima, se e'' sbagliata)';
+  end if;
+  return old;
+end;
+$$;
+
+create or replace function birds.keep_clip_history() returns trigger
+language plpgsql as $$
+begin
+  if old.review <> 'wrong' and exists (
+       select 1 from birds.observations o where o.id = old.observation_id and o.status = 'uploaded') then
+    raise exception 'Clip su iNaturalist: resta nello storico (scartala prima, se e'' sbagliata)';
+  end if;
+  return old;
+end;
+$$;
+
+drop trigger if exists observations_keep_history on birds.observations;
+create trigger observations_keep_history before delete on birds.observations
+  for each row execute function birds.keep_observation_history();
+drop trigger if exists clips_keep_history on birds.clips;
+create trigger clips_keep_history before delete on birds.clips
+  for each row execute function birds.keep_clip_history();
+
 -- corrections made before this trigger: their species too, in the spelling already there
 insert into birds.species (scientific_name)
 select distinct on (lower(btrim(o.corrected_scientific_name))) btrim(o.corrected_scientific_name)
@@ -281,8 +313,9 @@ where corrected_scientific_name is not null and btrim(corrected_scientific_name)
 -- Every statistic is about the species you settled on: the correction (pencil) when there is one,
 -- otherwise BirdNET's. BirdNET's confidence counts only where it is about that species: not on a
 -- corrected observation (it scored another species). Clips placed by hand have confidence 0.
--- Rows are never deleted for statistics' sake: a week after the iNaturalist upload only the files
--- leave Storage, clips and observations stay.
+-- What you discarded does not count (rejected observations, clips marked wrong), even before the
+-- Cestino deletes it. What is on iNaturalist is never deleted (the keep_*_history triggers): a week after
+-- the upload only the files leave Storage, clips and observations stay.
 
 -- per species, over the clips you kept (rejected observations and wrong clips excluded);
 -- the daily average uses the whole monitoring period, so one busy day is not "common"
@@ -322,7 +355,8 @@ from birds.species s
 left join heard h using (scientific_name)
 group by s.scientific_name;
 
--- per observation (a visit): what the report and the live table show
+-- per observation (a visit): what the report and the live table show; only observations with at
+-- least one clip you kept
 create view birds.daily_summary with (security_invoker = on) as
 select
   o.id                             as observation_id,
@@ -345,7 +379,7 @@ from birds.observations o
 -- left joins: an observation is never left out of a report, even with a species row missing
 left join birds.species s on s.scientific_name = coalesce(o.corrected_scientific_name, o.scientific_name)
 left join birds.species_stats st on st.scientific_name = s.scientific_name
-left join birds.clips c on c.observation_id = o.id
+join birds.clips c on c.observation_id = o.id and c.review <> 'wrong'
 group by o.id, s.scientific_name, st.rarity, st.daily_average;
 
 create view birds.hourly_activity with (security_invoker = on) as
@@ -355,7 +389,7 @@ select
   count(*) as clips
 from birds.clips c
 join birds.observations o on o.id = c.observation_id
-where o.status <> 'rejected'
+where o.status <> 'rejected' and c.review <> 'wrong'
 group by 1, 2;
 
 -- ---------------------------------------------------------------- access (open)
