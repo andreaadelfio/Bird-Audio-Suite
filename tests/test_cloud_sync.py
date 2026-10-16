@@ -277,7 +277,7 @@ class LegacyConversionTests(unittest.TestCase):
 
 
 class PurgeTests(unittest.TestCase):
-    def test_files_of_observations_on_inaturalist_for_a_week_go_rows_stay(self) -> None:
+    def test_files_of_observations_on_inaturalist_go_rows_stay(self) -> None:
         class Rest:
             def __init__(self) -> None:
                 self.queries, self.updates = [], []
@@ -310,7 +310,8 @@ class PurgeTests(unittest.TestCase):
         table, params = rest.queries[0]
         self.assertEqual((table, params["observations.status"], params["media_deleted_at"]),
                          ("clips", "eq.uploaded", "is.null"))
-        self.assertEqual(params["observations.uploaded_at"], "lt.2026-10-11T12:00:00+00:00")
+        self.assertEqual(params["review"], "neq.wrong")  # discarded: their files stay for the Cestino
+        self.assertNotIn("observations.uploaded_at", params)  # no waiting: they are on iNaturalist
         self.assertEqual(storage.removed, ["20261004/allocco_x.mp3", "20261004/allocco_x-spectrogram.jpg"])
         self.assertEqual(rest.updates, [("clips", {"media_path": "eq.20261004/allocco_x"},
                                          {"media_deleted_at": "2026-10-18T12:00:00+00:00"})])

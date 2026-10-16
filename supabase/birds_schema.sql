@@ -46,7 +46,7 @@ create table if not exists birds.observations (
   reviewed_at               timestamptz,
   inat_observation_id       bigint,
   inat_uuid                 text,
-  uploaded_at               timestamptz,  -- on iNaturalist since: a week later its files leave Storage
+  uploaded_at               timestamptz,  -- on iNaturalist since (its files leave Storage at once)
   created_at                timestamptz not null default now(),
   updated_at                timestamptz not null default now()
 );
@@ -69,7 +69,7 @@ create table if not exists birds.clips (
   review         text not null default 'unreviewed'
                  check (review in ('unreviewed', 'correct', 'wrong')),
   inat_sound_id  bigint,           -- set once uploaded to iNaturalist, so uploads resume
-  media_deleted_at timestamptz,    -- files removed from Storage (a week after the iNaturalist upload)
+  media_deleted_at timestamptz,    -- files removed from Storage (right after the iNaturalist upload)
   candidates     jsonb,            -- BirdNET's three most likely species in the clip: [[scientific, english, confidence], ...]
   linked_from    text,             -- added on the site to another observation too: the clip it copies
                                    -- (same files: they go only when no clip uses them any more)
@@ -263,7 +263,7 @@ create trigger observations_correction before insert or update of corrected_scie
   for each row execute function birds.correction_species();
 
 -- the history stays: what is on iNaturalist (an uploaded observation, and its clips you did not
--- discard) cannot be deleted. Its files go after a week, its rows keep counting in the reports. To
+-- discard) cannot be deleted. Its files go right after the upload, its rows keep counting in the reports. To
 -- remove something you judged wrong, discard it first (status rejected, or review wrong on a clip):
 -- then the Cestino can delete it for good.
 create or replace function birds.keep_observation_history() returns trigger
@@ -314,8 +314,8 @@ where corrected_scientific_name is not null and btrim(corrected_scientific_name)
 -- otherwise BirdNET's. BirdNET's confidence counts only where it is about that species: not on a
 -- corrected observation (it scored another species). Clips placed by hand have confidence 0.
 -- What you discarded does not count (rejected observations, clips marked wrong), even before the
--- Cestino deletes it. What is on iNaturalist is never deleted (the keep_*_history triggers): a week after
--- the upload only the files leave Storage, clips and observations stay.
+-- Cestino deletes it. What is on iNaturalist is never deleted (the keep_*_history triggers): right
+-- after the upload only the files leave Storage, clips and observations stay.
 
 -- per species, over the clips you kept (rejected observations and wrong clips excluded);
 -- the daily average uses the whole monitoring period, so one busy day is not "common"

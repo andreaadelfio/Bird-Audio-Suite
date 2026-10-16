@@ -7,7 +7,8 @@ slow the listening down, not even through Python's GIL.
 
 It looks at the folder every few seconds, so a clip is on Supabase moments after it closes;
 what failed (offline) is tried again every minute. Once an hour it also removes from Storage the
-files of observations on iNaturalist for more than a week (Outbox.purge_uploaded_media). After each round it writes its state into
+files of observations on iNaturalist that the site could not remove after the upload
+(Outbox.purge_uploaded_media). After each round it writes its state into
 the runtime folder: the live table shows it, the health check warns when clips stay stuck.
 """
 
@@ -144,5 +145,5 @@ def run_uploader(
                 if named:
                     log(f"{datetime.now():%H:%M:%S} - nomi e link per {named} specie nuove (corrette sul sito)")
             except Exception as exc:  # offline: next hour
-                log(f"{datetime.now():%H:%M:%S} - pulizia dei file gia' su iNaturalist rimandata: {exc!r}")
+                log(f"{datetime.now():%H:%M:%S} - pulizia oraria rimandata: {exc!r}")
         sleep(poll_seconds)

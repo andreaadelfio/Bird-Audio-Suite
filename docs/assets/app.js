@@ -323,7 +323,7 @@ function clipFacts(clip) {
 // only the files)
 function clipHtml(clip, { folded = false, canUnlink = true, onInat = false } = {}) {
   if (clip.media_deleted_at) {
-    // a week after the iNaturalist upload the files leave Supabase (the PC's uploader removes them)
+    // on iNaturalist: its files left Supabase right after the upload (the row stays for the reports)
     return `
     <figure class="clip media-gone${folded ? " folded" : ""}" data-clip="${escapeHtml(clip.id)}">
       <p>${clipFacts(clip)}</p>
@@ -491,8 +491,8 @@ content.addEventListener("click", async (event) => {
     if (!observation) return;
     inatButton.disabled = true;
     try {
-      await uploadObservationToInat(observation, (step) => setStatus(`iNaturalist: ${step}…`));
-      setStatus("Caricata su iNaturalist.");
+      const released = await uploadObservationToInat(observation, (step) => setStatus(`iNaturalist: ${step}…`));
+      setStatus(`Caricata su iNaturalist: ${released ? UPLOADED_MESSAGE : UPLOADED_LATER}.`);
       // now "caricata": it leaves a list filtered on another status (e.g. the confirmed ones)
       if (leavesFilteredView("uploaded")) removeCard(card);
       else card.outerHTML = observationHtml(observation);
@@ -1309,6 +1309,23 @@ function keepsItsRow(observation, clip) {
   return observation?.status === "uploaded" && clip.review !== "wrong";
 }
 
+// The files of these clips leave the bucket, from their paths (none when the site runs on local
+// files: make web-dev). Files shared with a clip linked to another observation stay while that
+// clip uses them.
+async function removeFiles(clips) {
+  const ids = clips.map((clip) => clip.id);
+  const { data: sharing, error } = await state.client.from("clips").select("id,media_path,media_deleted_at")
+    .in("media_path", [...new Set(clips.map((clip) => clip.media_path))]);
+  if (error) throw error;
+  const stillUsed = new Set(sharing.filter((row) => !ids.includes(row.id) && !row.media_deleted_at).map((row) => row.media_path));
+  const paths = config.mediaBaseUrl ? [] : clips.filter((clip) => !stillUsed.has(clip.media_path))
+    .flatMap((clip) => [`${clip.media_path}.mp3`, `${clip.media_path}-spectrogram.jpg`]);
+  for (const part of chunks(paths, 100)) {
+    const { error: removeError } = await state.client.storage.from(BUCKET).remove(part);
+    if (removeError) throw removeError;
+  }
+}
+
 // entries: [{ observationId, whole, clips }]; true once done. ask: false for the trash button
 // of a single clip, which acts at once.
 async function deleteForGood(entries, { ask = true } = {}) {
@@ -1332,18 +1349,7 @@ async function deleteForGood(entries, { ask = true } = {}) {
       if (error) throw error;
     }
     // 2. files in the bucket
-    // the files of each clip, from its path (none when the site runs on local files: make web-dev)
-    // files shared with a clip linked to another observation stay while that clip uses them
-    const { data: sharing, error: sharingError } = await state.client.from("clips").select("id,media_path,media_deleted_at")
-      .in("media_path", [...new Set(clips.map((clip) => clip.media_path))]);
-    if (sharingError) throw sharingError;
-    const stillUsed = new Set(sharing.filter((row) => !ids.includes(row.id) && !row.media_deleted_at).map((row) => row.media_path));
-    const paths = config.mediaBaseUrl ? [] : clips.filter((clip) => !stillUsed.has(clip.media_path))
-      .flatMap((clip) => [`${clip.media_path}.mp3`, `${clip.media_path}-spectrogram.jpg`]);
-    for (const part of chunks(paths, 100)) {
-      const { error } = await state.client.storage.from(BUCKET).remove(part);
-      if (error) throw error;
-    }
+    await removeFiles(clips);
     // 3. rows: clips (those on iNaturalist only marked), then whole observations and kept ones
     // left without clips
     for (const part of chunks(removed, 50)) {
@@ -1607,13 +1613,34 @@ async function uploadObservationToInat(observation, onProgress = () => {}) {
   }
 
   const { error } = await state.client.from("observations")
-    // uploaded_at: a week later the PC's uploader removes the files from Supabase
     .update({ status: "uploaded", reviewed_at: new Date().toISOString(), uploaded_at: new Date().toISOString() })
     .eq("id", observation.id);
   if (error) throw error;
   observation.status = "uploaded";
-  return observation.inat_observation_id;
+  try {
+    await releaseFiles(observation);
+    return true;
+  } catch (releaseError) {
+    console.warn("File non tolti da Supabase dopo il caricamento:", releaseError);
+    return false; // the PC's uploader removes them within the hour
+  }
 }
+
+// On iNaturalist now: the files of its clips leave Supabase at once, also those of the clips beyond
+// the INAT_MAX_SOUNDS sent (the observation is there). The rows stay, marked media_deleted_at, and
+// keep counting in the reports. Discarded clips keep their files for the Cestino.
+async function releaseFiles(observation) {
+  const kept = (observation.clips || []).filter((clip) => clip.review !== "wrong" && !clip.media_deleted_at);
+  if (!kept.length) return;
+  await removeFiles(kept);
+  const now = new Date().toISOString();
+  const { error } = await state.client.from("clips").update({ media_deleted_at: now }).in("id", kept.map((clip) => clip.id));
+  if (error) throw error;
+  kept.forEach((clip) => { clip.media_deleted_at = now; });
+}
+
+const UPLOADED_MESSAGE = "audio e spettrogrammi tolti da Supabase, le righe restano nei report";
+const UPLOADED_LATER = "i file li toglie da Supabase il PC entro un'ora";
 
 $("#inat-toggle").addEventListener("click", () => {
   const panel = $("#inat-panel");
@@ -1658,11 +1685,11 @@ $("#inat-upload-all").addEventListener("click", async () => {
     const { data, error } = await state.client.from("observations").select(OBSERVATION_SELECT)
       .eq("status", "confirmed").order("day").limit(200);
     if (error) throw error;
-    let done = 0;
+    let done = 0, later = 0;
     for (const [index, observation] of data.entries()) {
       const label = `${observation.species?.italian_name || observation.scientific_name}, ${formatDay(observation.day)}`;
       try {
-        await uploadObservationToInat(observation, (step) => setStatus(`iNaturalist ${index + 1}/${data.length}: ${step}…`));
+        if (!(await uploadObservationToInat(observation, (step) => setStatus(`iNaturalist ${index + 1}/${data.length}: ${step}…`)))) later += 1;
         done += 1;
         log.insertAdjacentHTML("beforeend", `<li>✓ <a href="https://www.inaturalist.org/observations/${Number(observation.inat_observation_id)}"
           target="_blank" rel="noopener">${escapeHtml(label)}</a></li>`);
@@ -1671,7 +1698,7 @@ $("#inat-upload-all").addEventListener("click", async () => {
         if (/token/.test(uploadError.message)) break; // no point going on without a valid token
       }
     }
-    setStatus(`iNaturalist: caricate ${done} di ${data.length}.`, done < data.length);
+    setStatus(`iNaturalist: caricate ${done} di ${data.length}${done ? `; ${later ? UPLOADED_LATER : UPLOADED_MESSAGE}` : ""}.`, done < data.length);
   } catch (error) {
     setStatus(`iNaturalist: ${error.message}`, true);
   }
@@ -1705,12 +1732,18 @@ async function renderReport(days = Number(localStorage.getItem("reportDays") || 
   const speciesLink = (row) => `<button type="button" class="species-link" data-species="${escapeHtml(row.scientific_name)}"
     data-from="${from}" title="Vedi le osservazioni di questo periodo">${escapeHtml(row.italian_name || row.scientific_name)}</button>`;
   // the rows stay when the files leave Storage after iNaturalist: a year back is all there
-  const [rows, clips] = await Promise.all([
+  const [rows, clips, onInat] = await Promise.all([
     fetchAll(() => state.client.from("daily_summary").select("*").gte("day", from).neq("status", "rejected")
       .order("observation_id")),
     fetchAll(() => state.client.from("clips").select("id, recorded_at, observations!inner(status,day)")
       .gte("observations.day", from).neq("observations.status", "rejected").neq("review", "wrong").order("id")),
+    fetchAll(() => state.client.from("observations").select("id, inat_observation_id").eq("status", "uploaded")
+      .gte("day", from).order("id")),
   ]);
+  // what is on iNaturalist (its audio lives there now), the latest first
+  const inatIds = new Map(onInat.map((row) => [row.id, row.inat_observation_id]));
+  const uploaded = rows.filter((row) => row.status === "uploaded")
+    .sort((a, b) => String(b.first_heard).localeCompare(String(a.first_heard)));
 
   const bySpecies = new Map();
   for (const row of rows) {
@@ -1748,6 +1781,7 @@ async function renderReport(days = Number(localStorage.getItem("reportDays") || 
           <div class="tile"><b>${clips.length}</b><span>clip</span></div>
           <div class="tile"><b>${totalMinutes}</b><span>min di audio</span></div>
           <div class="tile"><b>${newSpecies.length}</b><span>specie nuove</span></div>
+          <div class="tile"><b>${uploaded.length}</b><span>su iNaturalist</span></div>
         </div>
         ${newSpecies.length ? `<p class="new-species">Prima volta: ${newSpecies.map(speciesLink).join(", ")}</p>` : ""}
         <h3>Attività per ora</h3>
@@ -1756,6 +1790,21 @@ async function renderReport(days = Number(localStorage.getItem("reportDays") || 
             <span class="bar" style="height:${Math.round((count / maxHour) * 100)}%"></span>
             <span class="label">${hour}</span>
           </div>`).join("")}</div>
+        <h3>Su iNaturalist</h3>
+        ${uploaded.length ? `<div class="table-scroll"><table class="report-table inat-table">
+          <thead><tr><th>Specie</th><th>Quando</th><th>Clip</th><th></th></tr></thead>
+          <tbody>${uploaded.map((row) => {
+            const inatId = Number(inatIds.get(row.observation_id));
+            const heard = row.first_heard ? new Date(row.first_heard) : null;
+            return `
+            <tr>
+              <td>${speciesLink(row)} <small><i>${escapeHtml(row.scientific_name)}</i></small></td>
+              <td>${heard ? `${shortDateFormat.format(heard)} ${hourFormat.format(heard)}` : ""}</td>
+              <td>${row.clips}</td>
+              <td>${inatId ? `<a class="inat-link" href="https://www.inaturalist.org/observations/${inatId}" target="_blank" rel="noopener">iNat ↗</a>` : ""}</td>
+            </tr>`;
+          }).join("")}</tbody>
+        </table></div>` : '<p class="empty">Nessuna osservazione caricata in questo periodo.</p>'}
       </section>
       <section>
         <h3>Specie</h3>

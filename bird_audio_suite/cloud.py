@@ -41,9 +41,6 @@ DEFAULT_CLOUD_CONFIG = Path.home() / ".config" / "bird-audio-suite" / "cloud.env
 DEFAULT_CACHE_DIR = Path.home() / ".cache" / "bird-audio-suite"
 STORAGE_BUCKET = "bird-audio"
 SCHEMA = "birds"
-# observations uploaded to iNaturalist keep their files on Supabase this long, then only the rows
-UPLOADED_MEDIA_DAYS = 7
-
 
 @dataclass
 class CloudConfig:
@@ -529,8 +526,9 @@ class Outbox:
         item.sidecar.unlink(missing_ok=True)
 
     def tidy(self) -> tuple[int, int, int]:
-        """The uploader's hourly housekeeping: files of clips on iNaturalist for a week, observations
-        left empty, and names for species added by a correction. Returns how many of each."""
+        """The uploader's hourly housekeeping: files of clips on iNaturalist the site could not
+        remove, observations left empty, and names for species added by a correction. Returns how
+        many of each."""
         purged = self.purge_uploaded_media()
         return purged, self.rest.delete_empty_observations(), self.name_new_species()
 
@@ -550,18 +548,18 @@ class Outbox:
             named += 1
         return named
 
-    def purge_uploaded_media(self, days: float = UPLOADED_MEDIA_DAYS, now: datetime | None = None,
-                             limit: int = 200) -> int:
-        """Files of observations on iNaturalist for more than `days`: deleted from Storage (they
-        live on iNaturalist now). The clip rows stay, marked media_deleted_at: reports, counts and
-        rarity are computed from them. Returns how many clips lost their files."""
+    def purge_uploaded_media(self, now: datetime | None = None, limit: int = 200) -> int:
+        """Files of observations on iNaturalist: deleted from Storage (they live on iNaturalist
+        now). The site removes them as soon as the upload succeeds; this catches what it could not
+        (offline halfway). The clip rows stay, marked media_deleted_at: reports, counts and rarity
+        are computed from them. Discarded clips keep their files for the Cestino. Returns how many
+        clips lost their files."""
         self._connect()
         now = now or datetime.now(timezone.utc)
-        cutoff = (now - timedelta(days=days)).isoformat()
         clips = self.rest.get("clips", {
-            "select": "id,media_path,observations!inner(status,uploaded_at)",
+            "select": "id,media_path,observations!inner(status)",
             "observations.status": "eq.uploaded",
-            "observations.uploaded_at": f"lt.{cutoff}",
+            "review": "neq.wrong",
             "media_deleted_at": "is.null",
             "limit": str(limit),
         })
@@ -569,7 +567,7 @@ class Outbox:
         purged = 0
         for clip in clips:
             # a clip linked on the site to another observation shares these files: they stay while
-            # any clip using them is not on iNaturalist for a week too
+            # any clip using them is not on iNaturalist too
             sharing = self.rest.get("clips", {"select": "id", "media_path": f"eq.{clip['media_path']}",
                                               "media_deleted_at": "is.null", "id": f"neq.{clip['id']}"})
             if any(row["id"] not in eligible for row in sharing):
