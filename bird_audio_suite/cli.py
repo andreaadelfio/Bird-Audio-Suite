@@ -1428,7 +1428,9 @@ def start_table_refresher(detections_dir: Path, species_names: SpeciesNames):
 
 def compensate_system_volume(frames, device_label: str, args: argparse.Namespace):
     """Recordings at the microphone's own level, whatever the system mic volume (inputgain.py).
-    Only for devices that go through the sound server, which is where that volume applies."""
+    Only for devices that go through the sound server, which is where that volume applies. It
+    comes after the PC's audio is subtracted: frames may be (mic, PC audio) pairs, and only the
+    mic is scaled."""
     if device_label.lower() not in SOUND_SERVER_DEVICES or not SourceVolumeCompensation.available():
         yield from frames
         return
@@ -1436,7 +1438,10 @@ def compensate_system_volume(frames, device_label: str, args: argparse.Namespace
     LIVE_METRICS.input_gain = compensation
     try:
         for frame in frames:
-            yield compensation.apply(frame)
+            if isinstance(frame, tuple):
+                yield (compensation.apply(frame[0]), *frame[1:])
+            else:
+                yield compensation.apply(frame)
     finally:
         compensation.stop()
 
@@ -1540,8 +1545,11 @@ def run_live_detection(
 
     stop_refresh = start_location_refresh(args, on_location_change, DEFAULT_LOCATION_REFRESH_SECONDS)
     print_daily_detection_summary(args.detections_dir, species_names)
-    frames = compensate_system_volume(frames, device_label, args)
+    # the PC's audio is subtracted from the mic as the sound card gives it: with the system mic
+    # volume compensated first (x5 at -14 dB) the PC reached the filter louder than its safety
+    # limits allow, and it stayed at ~7 dB of reduction
     frames = subtract_playback_from_frames(frames, sample_rate, args)
+    frames = compensate_system_volume(frames, device_label, args)
     try:
         run_sliding_window_loop(
             frames,

@@ -88,6 +88,31 @@ class EchoCancellerTests(unittest.TestCase):
         output_residual = float(np.sqrt(np.mean((delayed_output - aligned_bird) ** 2)))
         self.assertLess(output_residual, input_residual * 0.25)
 
+    def test_a_pc_louder_at_the_mic_than_its_reference_is_still_removed(self) -> None:
+        # the speakers can reach the mic louder than the digital reference: a guard that reset the
+        # filter at every frame coming out louder than the mic kept the PC only ~7 dB lower
+        from scipy.signal import butter, sosfilt
+
+        rate, seconds = 48_000, 20
+        rng = np.random.default_rng(1)
+        n = rate * seconds
+        voice = sosfilt(butter(6, [200, 4000], btype="band", fs=rate, output="sos"), rng.standard_normal(n))
+        syllables = (np.sin(2 * np.pi * 3 * np.arange(n) / rate) > -0.3).astype(float)
+        reference = (0.1 * voice * syllables).astype(np.float32)
+        room = (0.003 * rng.standard_normal(n)).astype(np.float32)
+        for gain in (1.5, 3.0):  # the mic hears the PC louder than its reference
+            pc = np.zeros(n)
+            pc[192:] = gain * reference[:-192]
+            pc[576:] += 0.3 * gain * reference[:-576]  # a reflection
+            mic = (pc + room).astype(np.float32)
+            canceller = EchoCanceller()
+            out = np.concatenate([canceller.process(mic[i:i + 1536], reference[i:i + 1536])
+                                  for i in range(0, n, 1536)])[canceller.latency:]
+            tail = slice(10 * rate, out.size)
+            removed = 10 * np.log10(np.mean(pc[tail] ** 2) / np.mean((out[tail] - room[tail]) ** 2))
+            self.assertGreater(removed, 20.0, f"x{gain}")
+            self.assertLess(float(np.mean(out[tail] ** 2)), float(np.mean(mic[tail] ** 2)))
+
     def test_lag_estimation_finds_reference_leading_microphone(self) -> None:
         rng = np.random.default_rng(12)
         reference = rng.normal(0, 0.05, 8_000).astype(np.float32)
@@ -112,6 +137,30 @@ class PlaybackSubtractionFrameTests(unittest.TestCase):
         np.testing.assert_array_equal(output[0], frames[0])
 
 
+    def test_the_system_mic_volume_is_compensated_after_the_subtraction_on_the_mic_only(self) -> None:
+        from bird_audio_suite.cli import compensate_system_volume
+
+        class Compensation:
+            def __init__(self, log=None) -> None:
+                pass
+
+            @staticmethod
+            def available() -> bool:
+                return True
+
+            def apply(self, frame):
+                return frame * 6.8  # the mic at -16.6 dB of system volume
+
+            def stop(self) -> None:
+                pass
+
+        subtracted = [(np.full(4, 0.1, np.float32), np.full(4, 0.5, np.float32))]  # (mic, PC audio)
+        with patch("bird_audio_suite.cli.SourceVolumeCompensation", Compensation):
+            (mic, pc), = list(compensate_system_volume(subtracted, "pulse", argparse.Namespace()))
+        np.testing.assert_allclose(mic, 0.68)
+        np.testing.assert_array_equal(pc, 0.5)
+
+
 class PassiveMonitorTests(unittest.TestCase):
     def test_monitor_capture_does_not_keep_the_output_awake(self) -> None:
         with patch("bird_audio_suite.echo.shutil.which", side_effect=lambda name: f"/usr/bin/{name}"):
@@ -130,6 +179,46 @@ class PassiveMonitorTests(unittest.TestCase):
             monitor._append(np.full(480, 0.5, np.float32))
         self.assertEqual(monitor.position()[0::2], (480, 2))
         np.testing.assert_array_equal(monitor.read(0, 480), np.full(480, 0.5, np.float32))
+
+    def test_after_a_pause_the_pc_is_lined_up_within_seconds(self) -> None:
+        # 15:56 of 16 October: the PC played again after an hour; the first measure used the
+        # silence before it (correlation 6, "headphones?") and the next came 10 s later
+        rate = 48_000
+        rng = np.random.default_rng(3)
+        silence, playing = 20 * rate, 8 * rate
+        reference = np.zeros(silence + playing, np.float32)
+        reference[silence:] = 0.1 * rng.standard_normal(playing)
+        delay = 2400  # 50 ms from the speakers to the mic
+        mic = (0.002 * rng.standard_normal(reference.size)).astype(np.float32)
+        mic[delay:] += 0.8 * reference[:-delay]
+
+        class Output:
+            def position(self):
+                return reference.size, 1.0, 1
+
+            def flowing(self):
+                return True
+
+            def read(self, start, length):
+                out = np.zeros(length, np.float32)
+                begin, end = max(start, 0), min(start + length, reference.size)
+                if end > begin:
+                    out[begin - start:end - start] = reference[begin:end]
+                return out
+
+            def stop(self):
+                pass
+
+        subtractor = PlaybackSubtractor(rate, monitor=Output())
+        subtractor.generation = 1
+        subtractor.offset = -delay + subtractor.margin + 4800  # the rough guess, 100 ms off
+        lined_up_at = None
+        for start in range(0, reference.size, 1536):
+            subtractor.process_with_reference(mic[start:start + 1536], arrived_at=0.0)
+            if lined_up_at is None and subtractor.heard_by_mic and subtractor.offset == -delay + subtractor.margin:
+                lined_up_at = (start - silence) / rate
+        self.assertIsNotNone(lined_up_at)
+        self.assertLess(lined_up_at, 3.0)  # 2 s of playback to measure, not the 10 s of before
 
     def test_silent_pc_does_not_slow_the_microphone_down(self) -> None:
         class SleepingOutput:
