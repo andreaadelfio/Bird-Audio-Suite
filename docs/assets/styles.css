@@ -543,6 +543,57 @@ button.denoise.strong { background: var(--accent-deep); border-color: var(--acce
 .tile span { color: var(--ink-soft); font-size: 0.8rem; }
 .new-species { margin: 0.5rem 0 0; color: var(--positive); }
 
+/* what is on iNaturalist: first, folded */
+.inat-uploads { margin-bottom: 0.7rem; }
+.inat-uploads > summary { cursor: pointer; list-style: none; color: var(--ink-soft); font-weight: 600; font-size: 0.9rem; }
+.inat-uploads > summary::-webkit-details-marker { display: none; }
+.inat-uploads > summary::before { content: "▸ "; }
+.inat-uploads[open] > summary::before { content: "▾ "; }
+.inat-uploads > summary b { color: var(--uploaded); }
+.inat-uploads > summary small { font-weight: 400; }
+.inat-uploads > .table-scroll, .inat-uploads > .empty { margin-top: 0.35rem; }
+
+/* species by month: the share of the month's listening days on which each one was heard */
+.season { margin-top: 0.9rem; }
+.season h3 { margin: 0 0 0.3rem; font-size: 0.9rem; color: var(--ink-soft); font-weight: 600; }
+.season h3 small { font-weight: 400; }
+.season-table { border-collapse: separate; border-spacing: 2px; font-variant-numeric: tabular-nums; }
+.season-table th, .season-table td { font-size: 0.72rem; text-align: center; }
+.season-table thead th { color: var(--ink-soft); font-weight: 600; vertical-align: bottom; }
+.season-table thead th small { display: block; font-weight: 400; opacity: 0.8; }
+.season-table thead th:first-child { text-align: left; }
+.season-table tbody th {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  padding-right: 0.4rem;
+  background: var(--bg);
+  text-align: left;
+  font-weight: 400;
+  white-space: nowrap;
+}
+.season-table td {
+  width: 1.9rem;
+  min-width: 1.9rem;
+  height: 1.4rem;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--accent) var(--share, 0%), var(--sunken));
+  color: var(--ink);
+}
+.season-table td.strong { color: var(--on-accent); }
+.season-table td.none { background: none; color: var(--ink-soft); }
+.season-table tbody th .species-link { white-space: nowrap; }
+
+/* a phone: the twelve months in sight, long names shortened (whole in the tooltip) */
+@media (max-width: 720px) {
+  .season-table { border-spacing: 1px; }
+  .season-table th, .season-table td { font-size: 0.6rem; }
+  .season-table td { width: 1.15rem; min-width: 1.15rem; height: 1.25rem; }
+  .season-table tbody th { padding-right: 0.25rem; }
+  .season-table tbody th .species-link { display: block; max-width: 6.2rem; overflow: hidden; text-overflow: ellipsis; font-size: 0.72rem; }
+  .season-table thead th:first-child small { display: none; }
+}
+
 /* species names in the report open their observations of the period */
 .species-link {
   min-height: 0;
