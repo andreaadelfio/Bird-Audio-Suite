@@ -1016,6 +1016,8 @@ def merge_daily_records(remote: list[dict], local: list[dict], names: SpeciesNam
     """One row per species: Supabase plus what is not there yet, latest time, highest confidence."""
     merged: dict[str, dict] = {}
     for row in remote:
+        if not row.get("last_heard"):
+            continue  # an observation without clips (an upload cut halfway): nothing heard to show
         merged[row["scientific_name"]] = {
             "time": datetime.fromisoformat(str(row["last_heard"]).replace("Z", "+00:00")).astimezone(),
             "confidence": float(row.get("max_confidence") or 0),
@@ -1109,7 +1111,10 @@ def record_live_detection_observation(
     observed_at = observed_at or datetime.now()
     species_names.ensure(scientific_name, english_name)
     LIVE_TODAY.add(scientific_name, english_name, confidence, observed_at.astimezone())
-    print_daily_detection_summary(detections_dir, species_names)
+    try:
+        print_daily_detection_summary(detections_dir, species_names)
+    except Exception as exc:  # the table is only a view: it must never cost a detection
+        print(f"{datetime.now():%H:%M:%S} - Tabella non aggiornata: {exc!r}")
     return observed_at
 
 

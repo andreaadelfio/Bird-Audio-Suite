@@ -63,6 +63,10 @@ class FakeRest:
                 species = next(sp for oid, (_, sp) in self.observations.items() if oid == row["observation_id"])
                 self.clip_times.append((row["observation_id"], species, datetime.fromisoformat(row["recorded_at"])))
 
+    def delete_if_empty(self, observation_id):
+        if not any(oid == observation_id for oid, _, _ in self.clip_times):
+            self.observations.pop(observation_id, None)
+
     def observation_for(self, scientific_name, recorded_at):
         near = [(abs(time - recorded_at), oid) for oid, species, time in self.clip_times
                 if species == scientific_name and abs(time - recorded_at) <= timedelta(minutes=10)]
@@ -209,6 +213,24 @@ class PushTests(unittest.TestCase):
 
         self.assertTrue(report.busy)
         self.assertEqual(report.sent, 0)
+
+
+class FailedClipTests(unittest.TestCase):
+    def test_an_observation_created_for_a_clip_that_did_not_make_it_does_not_stay_empty(self) -> None:
+        class TimingOut(FakeRest):
+            def upsert(self, table, rows, on_conflict):
+                if table == "clips":
+                    raise RuntimeError("Read timed out")
+                super().upsert(table, rows, on_conflict)
+
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            export(folder, datetime(2026, 10, 16, 8, 45, 37))
+            rest = TimingOut()
+            report = outbox(folder, rest).push()
+            waiting = len(outbox_items(folder))
+        self.assertEqual((report.sent, waiting, len(report.errors)), (0, 1, 1))  # the clip waits for the retry
+        self.assertEqual(rest.observations, {})  # and no empty observation is left behind
 
 
 class ObservationVisitTests(unittest.TestCase):

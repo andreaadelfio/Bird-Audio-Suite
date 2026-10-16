@@ -99,7 +99,10 @@ class LiveDetectionTracker:
                     start_offset = int(start_sec * self.sample_rate) - self.pre_roll_samples
                 start_offset = min(max(start_offset, 0), window_len)
                 heard_at = window_start_time + timedelta(seconds=float(start_sec))
-                self.record_observation(scientific_name, english_name, confidence, heard_at)
+                try:
+                    self.record_observation(scientific_name, english_name, confidence, heard_at)
+                except Exception as exc:  # bookkeeping only: the clip opens anyway
+                    print(f"{datetime.now():%H:%M:%S} - Detection annotata male ({scientific_name}): {exc!r}")
                 active = ActiveDetection(
                     english_name=english_name,
                     confidence=confidence,

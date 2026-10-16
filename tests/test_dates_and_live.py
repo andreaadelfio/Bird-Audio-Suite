@@ -152,6 +152,24 @@ class LiveTrackerTests(unittest.TestCase):
         # from the window start to the end of the second window (15s)
         self.assertAlmostEqual(clip_seconds, 15.0)
 
+    def test_a_failing_bookkeeping_never_costs_the_clip(self) -> None:
+        # the live table used to be printed inside record_observation: when it failed (an empty
+        # observation on Supabase) the clip of the new species was never opened
+        def broken(*args):
+            raise ValueError("Invalid isoformat string: 'None'")
+
+        window = 10 * SAMPLE_RATE
+        start = datetime(2026, 10, 16, 8, 47, 0)
+        with tempfile.TemporaryDirectory() as directory:
+            tracker = LiveDetectionTracker(sample_rate=SAMPLE_RATE, detections_dir=Path(directory),
+                                           species_names=FakeCatalog(), record_observation=broken, export_kwargs={})
+            exported: list[Path] = []
+            for index, grouped in enumerate([{"Columba livia": (2.0, 5.0, 0.72, "Rock Pigeon")}, {}, {}, {}]):
+                offset = index * window // 2
+                exported += tracker.handle_result(grouped, np.zeros(window, dtype=np.float32), offset,
+                                                  start + timedelta(seconds=offset / SAMPLE_RATE))
+            self.assertEqual(len(exported), 1)
+
     def test_short_isolated_detection_gets_pre_roll_and_minimum_length(self) -> None:
         window = 10 * SAMPLE_RATE
         step = window // 2
@@ -360,6 +378,14 @@ class DeviceSelectionTests(unittest.TestCase):
 
 
 class LiveSummaryTests(unittest.TestCase):
+    def test_an_observation_without_clips_does_not_break_the_table(self) -> None:
+        remote = [{"scientific_name": "Columba livia", "max_confidence": None, "last_heard": None},
+                  {"scientific_name": "Pica pica", "english_name": "Magpie", "italian_name": "Gazza",
+                   "german_name": "Elster", "max_confidence": 0.9, "last_heard": "2026-10-16T06:40:00+00:00",
+                   "rarity": "rare", "daily_average": 0.1}]
+        rows = cli.merge_daily_records(remote, [], None)
+        self.assertEqual([row["taxon_name"] for row in rows], ["Pica pica"])
+
     def test_a_species_leaves_the_live_memory_once_its_clip_is_written(self) -> None:
         from bird_audio_suite.cli import LiveToday
 

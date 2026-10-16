@@ -164,6 +164,26 @@ class SupabaseRest:
         )
         return int(self._check(response, "observations insert").json()[0]["id"])
 
+    def delete_if_empty(self, observation_id: int) -> None:
+        """An observation left without clips (its clip did not make it): it goes, unless reviewed."""
+        if self.get("clips", {"select": "id", "observation_id": f"eq.{observation_id}", "limit": "1"}):
+            return
+        response = self.session.delete(f"{self.base}/observations",
+                                       params={"id": f"eq.{observation_id}", "status": "eq.pending"},
+                                       timeout=self.timeout)
+        self._check(response, "observations delete")
+
+    def delete_empty_observations(self, older_than: timedelta = timedelta(hours=1)) -> int:
+        """Observations still without clips an hour after they were created: leftovers of uploads cut
+        halfway (a timeout after the observation, before its clip). The live table and the views
+        expect at least one clip."""
+        cutoff = (datetime.now(timezone.utc) - older_than).isoformat()
+        empty = self.get("observations", [("select", "id,clips!left(id)"), ("clips", "is.null"),
+                                          ("status", "eq.pending"), ("created_at", f"lt.{cutoff}")])
+        for row in empty:
+            self.delete_if_empty(int(row["id"]))
+        return len(empty)
+
 
 # ---------------------------------------------------------------- media
 
@@ -426,9 +446,6 @@ class Outbox:
                              on_conflict="scientific_name")
             species_sent.add(name)
 
-        # asked for each clip: the previous one, just sent, may be the one within ten minutes
-        observation_id = self.rest.observation_for(name, item.recorded_at)
-
         media_path = media_path_for(item.clip_id, item.recorded_at)
         with tempfile.TemporaryDirectory() as work:
             mp3 = self.encode(item.wav, Path(work) / "clip.mp3")
@@ -442,6 +459,19 @@ class Outbox:
         except Exception:  # never a reason to keep the clip back: the live's numbers then
             analysis = None
 
+        # asked right before the clip row (the previous clip, just sent, may be within ten minutes);
+        # if the clip row then fails, a new observation must not stay behind empty
+        observation_id = self.rest.observation_for(name, item.recorded_at)
+        try:
+            self._insert_clip(item, data, observation_id, media_path, analysis)
+        except Exception:
+            try:
+                self.rest.delete_if_empty(observation_id)
+            except Exception:
+                pass  # the hourly clean-up of the uploader removes it later
+            raise
+
+    def _insert_clip(self, item: OutboxItem, data: dict, observation_id: int, media_path: str, analysis) -> None:
         self.rest.upsert(
             "clips",
             [
@@ -468,6 +498,12 @@ class Outbox:
     def _remove(item: OutboxItem) -> None:
         item.wav.unlink(missing_ok=True)
         item.sidecar.unlink(missing_ok=True)
+
+    def tidy(self) -> tuple[int, int]:
+        """The uploader's hourly housekeeping: files of clips on iNaturalist for a week, and
+        observations left empty. Returns how many of each."""
+        purged = self.purge_uploaded_media()
+        return purged, self.rest.delete_empty_observations()
 
     def purge_uploaded_media(self, days: float = UPLOADED_MEDIA_DAYS, now: datetime | None = None,
                              limit: int = 200) -> int:
