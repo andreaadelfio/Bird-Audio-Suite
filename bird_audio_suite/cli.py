@@ -1018,9 +1018,17 @@ def merge_daily_records(remote: list[dict], local: list[dict], names: SpeciesNam
     for row in remote:
         if not row.get("last_heard"):
             continue  # an observation without clips (an upload cut halfway): nothing heard to show
+        heard = datetime.fromisoformat(str(row["last_heard"]).replace("Z", "+00:00")).astimezone()
+        confidence = float(row.get("max_confidence") or 0)
+        current = merged.get(row["scientific_name"])
+        if current is not None:
+            # several visits of the species in the day (or a corrected observation): one row
+            current["time"] = max(current["time"], heard)
+            current["confidence"] = max(current["confidence"], confidence)
+            continue
         merged[row["scientific_name"]] = {
-            "time": datetime.fromisoformat(str(row["last_heard"]).replace("Z", "+00:00")).astimezone(),
-            "confidence": float(row.get("max_confidence") or 0),
+            "time": heard,
+            "confidence": confidence,
             "english": row.get("english_name") or "",
             "italian": row.get("italian_name") or "",
             "german": row.get("german_name") or "",

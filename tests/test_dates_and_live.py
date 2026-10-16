@@ -5,7 +5,7 @@ import json
 import os
 import tempfile
 import unittest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -385,6 +385,17 @@ class LiveSummaryTests(unittest.TestCase):
                    "rarity": "rare", "daily_average": 0.1}]
         rows = cli.merge_daily_records(remote, [], None)
         self.assertEqual([row["taxon_name"] for row in rows], ["Pica pica"])
+
+    def test_several_visits_of_a_species_make_one_row_with_the_latest_and_the_best(self) -> None:
+        visit = {"scientific_name": "Pica pica", "english_name": "Magpie", "italian_name": "Gazza",
+                 "german_name": "Elster", "rarity": "rare", "daily_average": 0.1}
+        remote = [{**visit, "max_confidence": 0.91, "last_heard": "2026-10-16T06:40:00+00:00"},
+                  {**visit, "max_confidence": 0.65, "last_heard": "2026-10-16T09:10:00+00:00"},
+                  {**visit, "max_confidence": None, "last_heard": "2026-10-16T08:00:00+00:00"}]  # corrected
+        rows = cli.merge_daily_records(remote, [], None)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["conf"], "0.910")
+        self.assertEqual(rows[0]["time"], datetime(2026, 10, 16, 9, 10, tzinfo=timezone.utc).astimezone().strftime("%H:%M:%S"))
 
     def test_a_species_leaves_the_live_memory_once_its_clip_is_written(self) -> None:
         from bird_audio_suite.cli import LiveToday

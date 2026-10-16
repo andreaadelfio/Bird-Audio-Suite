@@ -136,11 +136,13 @@ def run_uploader(
         if clock() - last_purge >= purge_every_seconds:
             last_purge = clock()
             try:
-                purged, emptied = outbox.tidy()
+                purged, emptied, named = outbox.tidy()
                 if purged:
                     log(f"{datetime.now():%H:%M:%S} - tolti da Supabase i file di {purged} clip gia' su iNaturalist")
                 if emptied:
                     log(f"{datetime.now():%H:%M:%S} - eliminate {emptied} osservazioni rimaste senza clip")
+                if named:
+                    log(f"{datetime.now():%H:%M:%S} - nomi e link per {named} specie nuove (corrette sul sito)")
             except Exception as exc:  # offline: next hour
                 log(f"{datetime.now():%H:%M:%S} - pulizia dei file gia' su iNaturalist rimandata: {exc!r}")
         sleep(poll_seconds)

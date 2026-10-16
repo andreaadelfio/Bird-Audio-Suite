@@ -235,13 +235,62 @@ drop trigger if exists observations_touch on birds.observations;
 create trigger observations_touch before update on birds.observations
   for each row execute function birds.touch_updated_at();
 
+-- a corrected species is what the statistics count (views below): it gets its row in birds.species
+-- (names and links filled in within the hour by the PC's uploader), or takes the spelling of the
+-- species already there ("turdus merula " -> "Turdus merula")
+create or replace function birds.correction_species() returns trigger
+language plpgsql as $$
+declare
+  known text;
+begin
+  new.corrected_scientific_name := nullif(btrim(new.corrected_scientific_name), '');
+  if new.corrected_scientific_name is null then
+    return new;
+  end if;
+  select scientific_name into known from birds.species
+   where lower(scientific_name) = lower(new.corrected_scientific_name) limit 1;
+  if known is null then
+    insert into birds.species (scientific_name) values (new.corrected_scientific_name) on conflict do nothing;
+  else
+    new.corrected_scientific_name := known;
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists observations_correction on birds.observations;
+create trigger observations_correction before insert or update of corrected_scientific_name on birds.observations
+  for each row execute function birds.correction_species();
+
+-- corrections made before this trigger: their species too, in the spelling already there
+insert into birds.species (scientific_name)
+select distinct on (lower(btrim(o.corrected_scientific_name))) btrim(o.corrected_scientific_name)
+from birds.observations o
+where nullif(btrim(o.corrected_scientific_name), '') is not null
+  and not exists (select 1 from birds.species s where lower(s.scientific_name) = lower(btrim(o.corrected_scientific_name)))
+on conflict do nothing;
+update birds.observations o set corrected_scientific_name = s.scientific_name
+from birds.species s
+where lower(s.scientific_name) = lower(btrim(o.corrected_scientific_name))
+  and o.corrected_scientific_name is distinct from s.scientific_name;
+update birds.observations set corrected_scientific_name = null
+where corrected_scientific_name is not null and btrim(corrected_scientific_name) = '';
+
 -- ---------------------------------------------------------------- views (everything computed)
+
+-- Every statistic is about the species you settled on: the correction (pencil) when there is one,
+-- otherwise BirdNET's. BirdNET's confidence counts only where it is about that species: not on a
+-- corrected observation (it scored another species). Clips placed by hand have confidence 0.
+-- Rows are never deleted for statistics' sake: a week after the iNaturalist upload only the files
+-- leave Storage, clips and observations stay.
 
 -- per species, over the clips you kept (rejected observations and wrong clips excluded);
 -- the daily average uses the whole monitoring period, so one busy day is not "common"
 create view birds.species_stats with (security_invoker = on) as
 with heard as (
-  select o.scientific_name, o.day, c.confidence
+  select coalesce(o.corrected_scientific_name, o.scientific_name) as scientific_name, o.day,
+         case when coalesce(o.corrected_scientific_name, o.scientific_name) = o.scientific_name
+              then c.confidence end as confidence
   from birds.clips c
   join birds.observations o on o.id = c.observation_id
   where o.status <> 'rejected' and c.review <> 'wrong'
@@ -278,12 +327,14 @@ create view birds.daily_summary with (security_invoker = on) as
 select
   o.id                             as observation_id,
   o.day,
-  o.scientific_name,
+  coalesce(o.corrected_scientific_name, o.scientific_name) as scientific_name,
+  o.scientific_name                as birdnet_scientific_name,
   s.italian_name,
   s.english_name,
   s.german_name,
   o.status,
-  max(c.confidence)                as max_confidence,
+  max(case when coalesce(o.corrected_scientific_name, o.scientific_name) = o.scientific_name
+           then c.confidence end) as max_confidence,
   count(c.id)                      as clips,
   coalesce(sum(c.duration_s), 0)   as seconds,
   min(c.recorded_at)               as first_heard,
@@ -291,15 +342,16 @@ select
   st.rarity,
   st.daily_average
 from birds.observations o
-join birds.species s using (scientific_name)
-join birds.species_stats st using (scientific_name)
+-- left joins: an observation is never left out of a report, even with a species row missing
+left join birds.species s on s.scientific_name = coalesce(o.corrected_scientific_name, o.scientific_name)
+left join birds.species_stats st on st.scientific_name = s.scientific_name
 left join birds.clips c on c.observation_id = o.id
 group by o.id, s.scientific_name, st.rarity, st.daily_average;
 
 create view birds.hourly_activity with (security_invoker = on) as
 select
   extract(hour from c.recorded_at at time zone 'Europe/Rome')::int as hour,
-  o.scientific_name,
+  coalesce(o.corrected_scientific_name, o.scientific_name) as scientific_name,
   count(*) as clips
 from birds.clips c
 join birds.observations o on o.id = c.observation_id

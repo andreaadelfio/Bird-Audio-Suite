@@ -34,6 +34,7 @@ import requests
 
 from .audio import detections_lock, parse_timestamp_from_name
 from .config import OBSERVATION_GAP_MINUTES
+from .species import birdnet_english_name
 from .species_links import species_codes
 
 DEFAULT_CLOUD_CONFIG = Path.home() / ".config" / "bird-audio-suite" / "cloud.env"
@@ -527,11 +528,27 @@ class Outbox:
         item.wav.unlink(missing_ok=True)
         item.sidecar.unlink(missing_ok=True)
 
-    def tidy(self) -> tuple[int, int]:
-        """The uploader's hourly housekeeping: files of clips on iNaturalist for a week, and
-        observations left empty. Returns how many of each."""
+    def tidy(self) -> tuple[int, int, int]:
+        """The uploader's hourly housekeeping: files of clips on iNaturalist for a week, observations
+        left empty, and names for species added by a correction. Returns how many of each."""
         purged = self.purge_uploaded_media()
-        return purged, self.rest.delete_empty_observations()
+        return purged, self.rest.delete_empty_observations(), self.name_new_species()
+
+    def name_new_species(self, limit: int = 20) -> int:
+        """Species added by a correction on the site (the database trigger writes only the
+        scientific name): English name from BirdNET's labels (or Wikipedia), Italian and German from
+        Wikipedia, eBird and iNaturalist codes. Returns how many got their names."""
+        self._connect()
+        rows = self.rest.get("species", {"select": "scientific_name", "english_name": "eq.", "limit": str(limit)})
+        named = 0
+        for row in rows:
+            name = row["scientific_name"]
+            if not any(self.names.ensure(name, birdnet_english_name(name)).values()):
+                continue  # offline, or a name nobody knows: next hour
+            self.rest.upsert("species", [{**self.names.species_row(name), **self.link_codes(name)}],
+                             on_conflict="scientific_name")
+            named += 1
+        return named
 
     def purge_uploaded_media(self, days: float = UPLOADED_MEDIA_DAYS, now: datetime | None = None,
                              limit: int = 200) -> int:

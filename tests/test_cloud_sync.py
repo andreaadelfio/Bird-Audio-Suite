@@ -316,6 +316,40 @@ class PurgeTests(unittest.TestCase):
                                          {"media_deleted_at": "2026-10-18T12:00:00+00:00"})])
 
 
+class CorrectedSpeciesTests(unittest.TestCase):
+    def test_a_species_added_by_a_correction_gets_names_and_links(self) -> None:
+        class Rest:
+            upserts = []
+
+            def get(self, table, params):
+                assert (table, params["english_name"]) == ("species", "eq.")
+                return [{"scientific_name": "Turdus philomelos"}, {"scientific_name": "Nomen ignotum"}]
+
+            def upsert(self, table, rows, on_conflict):
+                self.upserts.append(rows[0])
+
+        class Names(FakeNames):
+            def ensure(self, scientific_name, english_name=""):
+                if scientific_name == "Nomen ignotum":
+                    return {"english_name": "", "italian_name": "", "german_name": ""}  # nobody knows it
+                return super().ensure(scientific_name, english_name)
+
+        rest = Rest()
+        config = CloudConfig(supabase_url="https://example.supabase.co", supabase_key="k")
+        box = Outbox(Path("."), Names(), config, rest=rest, storage=FakeStorage(),
+                     link_codes=lambda name: {"ebird_code": "sonthr1"})
+        self.assertEqual(box.name_new_species(), 1)
+        self.assertEqual(rest.upserts, [{"scientific_name": "Turdus philomelos", "english_name": "Song Thrush",
+                                         "italian_name": "Turdus philomelos", "german_name": "Turdus philomelos",
+                                         "ebird_code": "sonthr1"}])
+
+    def test_birdnet_knows_english_names_without_loading_the_model(self) -> None:
+        from bird_audio_suite.species import birdnet_english_name
+
+        self.assertEqual(birdnet_english_name("Turdus philomelos"), "Song Thrush")
+        self.assertEqual(birdnet_english_name("Nomen ignotum"), "")
+
+
 class StorageTests(unittest.TestCase):
     def test_uploads_to_the_public_bucket_with_upsert(self) -> None:
         posts = []

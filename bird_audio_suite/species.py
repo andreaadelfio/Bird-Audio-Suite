@@ -9,14 +9,35 @@ birds.species_stats view.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import re
+from functools import lru_cache
 from pathlib import Path
 
 import wikipediaapi
 
 DEFAULT_NAMES_CACHE = Path.home() / ".cache" / "bird-audio-suite" / "species_names.json"
 NAME_FIELDS = ("english_name", "italian_name", "german_name")
+BIRDNET_LABELS = "models/analyzer/BirdNET_GLOBAL_6K_V2.4_Labels.txt"
+
+
+@lru_cache(maxsize=1)
+def _birdnet_labels() -> dict[str, str]:
+    # found without importing birdnetlib (that would load TensorFlow Lite)
+    spec = importlib.util.find_spec("birdnetlib")
+    if spec is None or not spec.origin:
+        return {}
+    try:
+        lines = (Path(spec.origin).parent / BIRDNET_LABELS).read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return {}
+    return dict(line.split("_", 1) for line in lines if "_" in line)
+
+
+def birdnet_english_name(scientific_name: str) -> str:
+    """BirdNET's English name of a species ("" when BirdNET does not know it)."""
+    return _birdnet_labels().get(scientific_name.strip(), "")
 
 
 class SpeciesNames:
@@ -66,7 +87,7 @@ class SpeciesNames:
                 self.save_cache()
             return current
         found = {
-            "english_name": english_name or (current or {}).get("english_name", ""),
+            "english_name": english_name or (current or {}).get("english_name") or self.lookup("en", scientific_name) or "",
             "italian_name": (current or {}).get("italian_name") or self.lookup("it", scientific_name) or "",
             "german_name": (current or {}).get("german_name") or self.lookup("de", scientific_name) or "",
         }

@@ -22,9 +22,9 @@ class FakeOutbox:
         self.folder, self.pushes, self.offline, self.busy = folder, 0, False, False
         self.purges = 0
 
-    def tidy(self) -> tuple[int, int]:
+    def tidy(self) -> tuple[int, int, int]:
         self.purges += 1
-        return 0, 0
+        return 0, 0, 0
 
     def push(self):
         self.pushes += 1

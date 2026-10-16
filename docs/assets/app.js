@@ -174,7 +174,11 @@ async function fetchObservations() {
   if ($("#filter-from").value) query = query.gte("day", $("#filter-from").value);
   if ($("#filter-to").value) query = query.lte("day", $("#filter-to").value);
   const speciesText = $("#filter-species").value;
-  if (speciesText.trim()) query = query.in("scientific_name", await matchingSpecies(speciesText));
+  if (speciesText.trim()) {
+    // BirdNET's species or your correction (the one the report counts)
+    const names = (await matchingSpecies(speciesText)).map((name) => `"${name}"`).join(",");
+    query = query.or(`scientific_name.in.(${names}),corrected_scientific_name.in.(${names})`);
+  }
 
   const { data, error } = await query;
   if (error) throw error;
@@ -1092,7 +1096,9 @@ async function unlinkClip(figure) {
 // from then on, ready for iNaturalist. No new analysis: you know what is in it. In an observation of
 // another species BirdNET's numbers no longer apply (they were for the species it came from): the
 // clip is marked as placed by hand (clips.manual), without clip_conf or bands, and leaves
-// max_obs_conf alone; its candidates stay, they still say what BirdNET hears in it.
+// max_obs_conf alone; its candidates stay, they still say what BirdNET hears in it. The only clip of
+// an observation is never moved away (that observation would be left empty, and its species may
+// well be in the clip too): it is linked, and stays there as well.
 function showLinking() {
   const banner = $("#link-banner");
   banner.classList.toggle("hidden", !state.linking);
@@ -1102,7 +1108,13 @@ function showLinking() {
   $("#link-what").textContent = `Collega la clip delle ${timeFormat.format(new Date(clip.recorded_at))} `
     + `(${state.species.get(observation.scientific_name)?.italian_name || observation.scientific_name}): `
     + "tocca «Collega qui» sull'osservazione giusta.";
-  document.querySelectorAll("[data-link-mode]").forEach((button) => button.classList.toggle("on", button.dataset.linkMode === mode));
+  const alone = (observation.clips || []).length < 2;
+  document.querySelectorAll("[data-link-mode]").forEach((button) => button.classList.toggle("on", button.dataset.linkMode === (alone ? "copy" : mode)));
+  const move = document.querySelector('[data-link-mode="move"]');
+  move.disabled = alone;
+  move.title = alone
+    ? "È l'unica clip della sua osservazione: resta anche lì (la sua specie può esserci comunque; se non c'è, scartala lì)"
+    : "Lascia la sua osservazione";
   content.querySelectorAll(".observation").forEach((card) => {
     if (Number(card.dataset.id) !== observation.id && !card.classList.contains("trash")) {
       card.querySelector(".actions")?.insertAdjacentHTML("afterbegin",
@@ -1131,9 +1143,11 @@ function redrawObservation(observation) {
 }
 
 async function linkClipTo(targetId) {
-  const { clip, observation: source, mode } = state.linking;
+  const { clip, observation: source } = state.linking;
   const target = state.observations.get(targetId);
   if (!target) return;
+  const chosen = state.linking.mode;
+  const mode = (source.clips || []).length < 2 ? "copy" : chosen;
   const sameSpecies = target.scientific_name === source.scientific_name;
   const byHand = sameSpecies ? {} : { manual: true, confidence: 0, segments: [] };
   if (mode === "move") {
@@ -1142,14 +1156,7 @@ async function linkClipTo(targetId) {
     source.clips = source.clips.filter((item) => item.id !== clip.id);
     Object.assign(clip, { observation_id: targetId, ...byHand });
     target.clips = [...(target.clips || []), clip];
-    if (!source.clips.length) {
-      // its only clip went: the observation goes too
-      await state.client.from("observations").delete().eq("id", source.id);
-      state.observations.delete(source.id);
-      removeCard(content.querySelector(`.observation[data-id="${source.id}"]`));
-    } else {
-      redrawObservation(source);
-    }
+    redrawObservation(source);
   } else {
     const { created_at: _created, ...fields } = clip;
     const copy = { ...fields, ...byHand, id: `${clip.linked_from || clip.id}@${targetId}`, observation_id: targetId,
@@ -1161,7 +1168,8 @@ async function linkClipTo(targetId) {
   stopLinking();
   redrawObservation(target);
   refreshCounts();
-  setStatus(`Clip ${mode === "move" ? "spostata" : "collegata anche"} qui: fa parte di questa osservazione e si carica con lei su iNaturalist.`);
+  setStatus(`Clip ${mode === "move" ? "spostata" : "collegata anche"} qui: fa parte di questa osservazione e si carica con lei su iNaturalist.`
+    + (mode !== chosen ? " Era l'unica della sua osservazione, quindi resta anche lì." : ""));
 }
 
 $("#link-cancel").addEventListener("click", stopLinking);
@@ -1523,7 +1531,8 @@ async function uploadObservationToInat(observation, onProgress = () => {}) {
       species_guess: name,
       observed_on_string: localDateTime(facts.firstHeard),
       place_guess: facts.place,
-      description: facts.byHandOnly ? "" : `BirdNET confidence ${facts.maxConfidence.toFixed(3)}`,
+      // BirdNET's score is about the species it heard: none for a corrected one
+      description: facts.byHandOnly || name !== observation.scientific_name ? "" : `BirdNET confidence ${facts.maxConfidence.toFixed(3)}`,
       tag_list: "audio,birdnet",
     };
     if (facts.latitude != null && facts.longitude != null) {
@@ -1645,6 +1654,17 @@ $("#inat-upload-all").addEventListener("click", async () => {
 
 // ---------------------------------------------------------------- report
 
+// every row of a query: Supabase returns at most 1000 at a time, and a year of clips is many more
+async function fetchAll(makeQuery, pageSize = 1000) {
+  const rows = [];
+  for (let from = 0; ; from += pageSize) {
+    const { data, error } = await makeQuery().range(from, from + pageSize - 1);
+    if (error) throw error;
+    rows.push(...data);
+    if (data.length < pageSize) return rows;
+  }
+}
+
 function isoDaysAgo(days) {
   const date = new Date();
   date.setDate(date.getDate() - days);
@@ -1656,12 +1676,13 @@ async function renderReport(days = Number(localStorage.getItem("reportDays") || 
   // a species name opens its observations of exactly this period
   const speciesLink = (row) => `<button type="button" class="species-link" data-species="${escapeHtml(row.scientific_name)}"
     data-from="${from}" title="Vedi le osservazioni di questo periodo">${escapeHtml(row.italian_name || row.scientific_name)}</button>`;
-  const [{ data: rows, error }, { data: clips, error: clipsError }] = await Promise.all([
-    state.client.from("daily_summary").select("*").gte("day", from).neq("status", "rejected"),
-    state.client.from("clips").select("recorded_at, observations!inner(status,day)")
-      .gte("observations.day", from).neq("observations.status", "rejected"),
+  // the rows stay when the files leave Storage after iNaturalist: a year back is all there
+  const [rows, clips] = await Promise.all([
+    fetchAll(() => state.client.from("daily_summary").select("*").gte("day", from).neq("status", "rejected")
+      .order("observation_id")),
+    fetchAll(() => state.client.from("clips").select("id, recorded_at, observations!inner(status,day)")
+      .gte("observations.day", from).neq("observations.status", "rejected").order("id")),
   ]);
-  if (error || clipsError) throw error || clipsError;
 
   const bySpecies = new Map();
   for (const row of rows) {
@@ -1715,7 +1736,7 @@ async function renderReport(days = Number(localStorage.getItem("reportDays") || 
           <tbody>${speciesRows.map((row) => `
             <tr>
               <td>${speciesLink(row)} <small><i>${escapeHtml(row.scientific_name)}</i></small></td>
-              <td>${row.days}</td><td>${row.clips}</td><td>${row.best.toFixed(3)}</td>
+              <td>${row.days}</td><td>${row.clips}</td><td>${row.best ? row.best.toFixed(3) : "—"}</td>
               <td>${row.last_heard ? shortDateFormat.format(new Date(row.last_heard)) : ""}</td>
             </tr>`).join("")}</tbody>
         </table></div>` : '<p class="empty">Nessuna specie in questo periodo.</p>'}
