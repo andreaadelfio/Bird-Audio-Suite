@@ -651,3 +651,24 @@ button.denoise.strong { background: var(--accent-deep); border-color: var(--acce
   .tiles { grid-template-columns: repeat(3, 1fr); }
   .trash-head .danger { width: 100%; }
 }
+
+/* linking a clip to another observation: the bar stays in sight while you scroll */
+.link-banner {
+  position: sticky;
+  top: 3.6rem;
+  z-index: 9;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--gap) 0.8rem;
+  margin-bottom: 0.6rem;
+  padding: 0.5rem 0.8rem;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--accent) 14%, var(--surface));
+}
+.link-banner #link-what { flex: 1 1 280px; }
+.link-here { animation: toast-in 0.18s ease-out; }
+@media (max-width: 720px) {
+  .link-banner { top: 6.6rem; }
+}

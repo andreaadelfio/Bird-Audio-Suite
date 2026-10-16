@@ -5,6 +5,7 @@ import json
 import tempfile
 import types
 import unittest
+from unittest.mock import patch
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -284,7 +285,12 @@ class PurgeTests(unittest.TestCase):
 
             def get(self, table, params):
                 self.queries.append((table, params))
-                return [{"id": "Allocco_20261004_193743_0.992.wav", "media_path": "20261004/allocco_x"}]
+                if "id" in params:  # other clips sharing the files
+                    return self.sharing.get(params["media_path"], [])
+                return [{"id": "Allocco_20261004_193743_0.992.wav", "media_path": "20261004/allocco_x"},
+                        {"id": "Allocco_20261004_194001_0.900.wav", "media_path": "20261004/allocco_y"}]
+
+            sharing = {"eq.20261004/allocco_y": [{"id": "Allocco_20261004_194001_0.900.wav@412"}]}
 
             def update(self, table, filters, values):
                 self.updates.append((table, filters, values))
@@ -300,14 +306,51 @@ class PurgeTests(unittest.TestCase):
         now = datetime(2026, 10, 18, 12, 0, tzinfo=timezone.utc)
         purged = Outbox(Path("."), FakeNames(), config, rest=rest, storage=storage).purge_uploaded_media(now=now)
 
+        # allocco_y is shared with a clip linked to an observation not on iNaturalist: its files stay
         self.assertEqual(purged, 1)
         table, params = rest.queries[0]
         self.assertEqual((table, params["observations.status"], params["media_deleted_at"]),
                          ("clips", "eq.uploaded", "is.null"))
         self.assertEqual(params["observations.uploaded_at"], "lt.2026-10-11T12:00:00+00:00")
         self.assertEqual(storage.removed, ["20261004/allocco_x.mp3", "20261004/allocco_x-spectrogram.jpg"])
-        self.assertEqual(rest.updates, [("clips", {"id": "eq.Allocco_20261004_193743_0.992.wav"},
+        self.assertEqual(rest.updates, [("clips", {"media_path": "eq.20261004/allocco_x"},
                                          {"media_deleted_at": "2026-10-18T12:00:00+00:00"})])
+
+
+class LinkedClipAnalysisTests(unittest.TestCase):
+    def test_clips_linked_on_the_site_are_analysed_for_their_new_species(self) -> None:
+        import requests
+
+        from bird_audio_suite import cloud
+
+        class Rest:
+            updates: list = []
+
+            def get(self, table, params):
+                assert params["segments"] == "is.null"
+                return [{"id": "a@412", "observations": {"scientific_name": "Grus grus"}},
+                        {"id": "offline", "observations": {"scientific_name": "Grus grus"}},
+                        {"id": "broken", "observations": {"scientific_name": "Grus grus"}}]
+
+            def update(self, table, filters, values):
+                self.updates.append((filters["id"], values))
+
+        def analyse(storage, clip, model=None):
+            if clip["id"] == "offline":
+                raise requests.ConnectionError("no network")
+            if clip["id"] == "broken":
+                raise ValueError("not an MP3")
+            return {"confidence": 0.81, "segments": [[0.0, 3.0, 0.81]], "candidates": [["Grus grus", "Common Crane", 0.81]]}
+
+        rest = Rest()
+        config = CloudConfig(supabase_url="https://example.supabase.co", supabase_key="k")
+        with patch.object(cloud, "analyse_stored_clip", analyse):
+            done = Outbox(Path("."), FakeNames(), config, rest=rest, storage=object()).analyse_stored()
+        self.assertEqual(done, 2)
+        self.assertEqual(rest.updates[0], ("eq.a@412", {"confidence": 0.81, "segments": [[0.0, 3.0, 0.81]],
+                                                         "candidates": [["Grus grus", "Common Crane", 0.81]]}))
+        # offline: left for the next round; unreadable: marked, not retried every minute
+        self.assertEqual(rest.updates[1], ("eq.broken", {"segments": []}))
 
 
 class StorageTests(unittest.TestCase):

@@ -138,10 +138,13 @@ def load_snapshot(server) -> str:
                 break
         if rows:
             columns = list(rows[0])
-            values = ",".join(
-                "(" + ",".join("null" if row[c] is None else "'" + str(row[c]).replace("'", "''") + "'" for c in columns) + ")"
-                for row in rows
-            )
+            def literal(value) -> str:
+                if value is None:
+                    return "null"
+                text = json.dumps(value) if isinstance(value, (dict, list)) else str(value)  # jsonb as JSON
+                return "'" + text.replace("'", "''") + "'"
+
+            values = ",".join("(" + ",".join(literal(row[c]) for c in columns) + ")" for row in rows)
             override = "overriding system value " if table == "observations" else ""
             statements.append(f"insert into birds.{table} ({','.join(columns)}) {override}values {values};")
         print(f"  {table}: {len(rows)}")

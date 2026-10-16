@@ -1839,11 +1839,8 @@ def run_backfill_segments(args: argparse.Namespace) -> int:
     """analysis.py on the clips already on Supabase: their MP3 analysed again, confidence, bands and
     candidates replaced (the live's own score stays in live_confidence). Without --all only the
     clips never analysed; --retry-empty also those where the species was not found."""
-    import requests
-    import soundfile
-
-    from .analysis import analyse_samples, detector
-    from .cloud import CloudConfig, SupabaseRest, SupabaseStorage
+    from .analysis import detector
+    from .cloud import CloudConfig, SupabaseRest, SupabaseStorage, analyse_stored_clip
 
     config = CloudConfig.load()
     rest, storage = SupabaseRest(config), SupabaseStorage(config)
@@ -1863,20 +1860,7 @@ def run_backfill_segments(args: argparse.Namespace) -> int:
     done = empty = 0
     for index, clip in enumerate(clips, start=1):
         try:
-            response = requests.get(storage.public_url(f"{clip['media_path']}.mp3"), timeout=60)
-            response.raise_for_status()
-            with tempfile.NamedTemporaryFile(suffix=".mp3") as handle:
-                handle.write(response.content)
-                handle.flush()
-                samples, sample_rate = soundfile.read(handle.name, dtype="float32")
-            if samples.ndim > 1:
-                samples = samples.mean(axis=1)
-            analysis = analyse_samples(
-                samples, sample_rate, clip["observations"]["scientific_name"],
-                latitude=clip["latitude"] if clip["latitude"] is not None else DEFAULT_LATITUDE,
-                longitude=clip["longitude"] if clip["longitude"] is not None else DEFAULT_LONGITUDE,
-                when=datetime.fromisoformat(clip["recorded_at"]), model=model,
-            )
+            analysis = analyse_stored_clip(storage, clip, model)
             rest.update("clips", {"id": f"eq.{clip['id']}"}, analysis)
             done += 1
             empty += 0 if analysis["segments"] else 1

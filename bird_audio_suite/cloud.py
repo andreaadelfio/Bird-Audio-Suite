@@ -232,6 +232,11 @@ class SupabaseStorage:
         except requests.RequestException:
             return False
 
+    def read_bytes(self, object_path: str) -> bytes:
+        response = requests.get(self.public_url(object_path), timeout=60)
+        response.raise_for_status()
+        return response.content
+
     def remove(self, object_paths: list[str]) -> None:
         """Delete files (missing ones are not an error)."""
         if not object_paths:
@@ -255,6 +260,9 @@ class LocalMediaStorage:
 
     def exists(self, object_path: str) -> bool:
         return (self.folder / object_path).is_file()
+
+    def read_bytes(self, object_path: str) -> bytes:
+        return (self.folder / object_path).read_bytes()
 
     def remove(self, object_paths: list[str]) -> None:
         for object_path in object_paths:
@@ -316,6 +324,26 @@ def clip_analysis(item) -> dict:
         latitude=data.get("latitude") if data.get("latitude") is not None else 45.8,
         longitude=data.get("longitude") if data.get("longitude") is not None else 13.5,
         when=item.recorded_at,
+    )
+
+
+def analyse_stored_clip(storage, clip: dict, model=None) -> dict:
+    """analysis.py on a clip already on Supabase (its MP3), for the species of its observation."""
+    import soundfile
+
+    from .analysis import analyse_samples
+
+    with tempfile.NamedTemporaryFile(suffix=".mp3") as handle:
+        handle.write(storage.read_bytes(f"{clip['media_path']}.mp3"))
+        handle.flush()
+        samples, rate = soundfile.read(handle.name, dtype="float32")
+    if samples.ndim > 1:
+        samples = samples.mean(axis=1)
+    return analyse_samples(
+        samples, rate, clip["observations"]["scientific_name"],
+        latitude=clip["latitude"] if clip.get("latitude") is not None else 45.8,
+        longitude=clip["longitude"] if clip.get("longitude") is not None else 13.5,
+        when=datetime.fromisoformat(clip["recorded_at"]), model=model,
     )
 
 
@@ -520,10 +548,39 @@ class Outbox:
             "media_deleted_at": "is.null",
             "limit": str(limit),
         })
+        eligible = {clip["id"] for clip in clips}
+        purged = 0
         for clip in clips:
+            # a clip linked on the site to another observation shares these files: they stay while
+            # any clip using them is not on iNaturalist for a week too
+            sharing = self.rest.get("clips", {"select": "id", "media_path": f"eq.{clip['media_path']}",
+                                              "media_deleted_at": "is.null", "id": f"neq.{clip['id']}"})
+            if any(row["id"] not in eligible for row in sharing):
+                continue
             self.storage.remove([f"{clip['media_path']}.mp3", f"{clip['media_path']}-spectrogram.jpg"])
-            self.rest.update("clips", {"id": f"eq.{clip['id']}"}, {"media_deleted_at": now.isoformat()})
-        return len(clips)
+            self.rest.update("clips", {"media_path": f"eq.{clip['media_path']}"}, {"media_deleted_at": now.isoformat()})
+            purged += 1
+        return purged
+
+    def analyse_stored(self, limit: int = 5, model=None) -> int:
+        """Clips on Supabase still waiting for the analysis of their saved audio (segments null):
+        those linked on the site to another observation, or moved there, analysed for its species."""
+        self._connect()
+        clips = self.rest.get("clips", {
+            "select": "id,media_path,recorded_at,latitude,longitude,observations(scientific_name)",
+            "segments": "is.null", "media_deleted_at": "is.null", "order": "created_at", "limit": str(limit),
+        })
+        done = 0
+        for clip in clips:
+            try:
+                analysis = analyse_stored_clip(self.storage, clip, model)
+            except requests.RequestException:
+                continue  # offline: the next round tries again
+            except Exception:
+                analysis = {"segments": []}  # unreadable audio: do not try it again every minute
+            self.rest.update("clips", {"id": f"eq.{clip['id']}"}, analysis)
+            done += 1
+        return done
 
 
 # ---------------------------------------------------------------- previous version

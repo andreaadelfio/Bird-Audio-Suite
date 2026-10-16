@@ -205,6 +205,7 @@ const SPECIES_LINK_ICONS = {
     <text x="16" y="21" text-anchor="middle" font-family="system-ui, sans-serif" font-size="12" font-weight="700" fill="#fff">eB</text></svg>`,
 };
 const ICON_NOTE = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg>';
+const ICON_LINK = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.9 12c0-1.71 1.39-3.1 3.1-3.1h4V7H7a5 5 0 0 0 0 10h4v-1.9H7c-1.71 0-3.1-1.39-3.1-3.1zM8 13h8v-2H8v2zm9-6h-4v1.9h4c1.71 0 3.1 1.39 3.1 3.1s-1.39 3.1-3.1 3.1h-4V17h4a5 5 0 0 0 0-10z"/></svg>';
 const ICON_UNLINK = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17 7h-4v1.9h4a3.1 3.1 0 0 1 0 6.2h-4V17h4a5 5 0 0 0 0-10zM2 4.27 4.73 7A5 5 0 0 0 7 17h4v-1.9H7a3.1 3.1 0 0 1-2.53-4.88L6.56 12.3 8 13h1.27L11 14.73V13h.73l4.25 4.25 1.27-1.25L3.27 3 2 4.27zM7 8.9h1.73l-1.9-1.9L7 7v1.9z"/></svg>';
 
 // "Pica pica  W iN  status" over "Gazza · Eurasian Magpie"
@@ -296,7 +297,11 @@ function findClip(clipId) {
 function clipFacts(clip) {
   const live = clip.live_confidence != null && Math.abs(clip.live_confidence - clip.confidence) >= 0.005
     ? ` title="BirdNET sulla clip salvata; il live aveva dato ${Number(clip.live_confidence).toFixed(3)}"` : "";
-  return `${timeFormat.format(new Date(clip.recorded_at))} · clip_conf <b class="conf-${confidenceClass(clip.confidence)}"${live}>${Number(clip.confidence).toFixed(3)}</b>
+  const linked = clip.linked_from ? ' · <span title="La stessa registrazione è anche in un\'altra osservazione">collegata</span>' : "";
+  if (clip.segments == null) {
+    return `${timeFormat.format(new Date(clip.recorded_at))} · clip_conf in analisi… · ${Math.round(clip.duration_s || 0)} s${linked}`;
+  }
+  return `${timeFormat.format(new Date(clip.recorded_at))}${linked} · clip_conf <b class="conf-${confidenceClass(clip.confidence)}"${live}>${Number(clip.confidence).toFixed(3)}</b>
     · ${Math.round(clip.duration_s || 0)} s`;
 }
 
@@ -337,6 +342,8 @@ function clipHtml(clip, folded = false) {
         <button type="button" class="tool denoise" data-player="denoise" aria-label="Riduci il rumore"
           title="Riduci il rumore: stima il fondo fuori dalle bande e lo sottrae. Tocca ancora per più forte, poi per l'originale">${ICON_DENOISE}</button>
         <span class="clip-tools">
+        <button type="button" class="tool" data-player="link" title="Collega la clip anche a un'altra osservazione (o spostala): poi «Collega qui» su quella giusta"
+          aria-label="Collega a un'altra osservazione">${ICON_LINK}</button>
         <button type="button" class="tool" data-player="unlink" title="Non è lo stesso uccello (o la stessa specie): stacca la clip in un'osservazione a sé"
           aria-label="Stacca la clip">${ICON_UNLINK}</button>
         <button type="button" class="tool${wrong ? " on" : ""}" data-clip-review="wrong"
@@ -379,6 +386,9 @@ function clipsHtml(clips) {
 function observationActions(observation) {
   const status = observation.status;
   const buttons = [];
+  if (state.linking && state.linking.observation.id !== observation.id) {
+    buttons.push('<button type="button" class="primary link-here" data-link-here>Collega qui</button>');
+  }
   if (status === "confirmed") {
     buttons.push('<button type="button" class="inat" data-inat-upload title="Carica su iNaturalist (serve il token, pannello iNat)">↑ iNaturalist</button>');
   }
@@ -494,6 +504,15 @@ content.addEventListener("click", async (event) => {
   if (deleteButton) {
     const entry = state.trash.get(id);
     if (entry) await deleteForGood([{ observationId: id, ...entry }]);
+    return;
+  }
+
+  if (event.target.closest("[data-link-here]")) {
+    try {
+      await linkClipTo(id);
+    } catch (error) {
+      setStatus(`Collegamento non riuscito: ${error.message}`, true);
+    }
     return;
   }
 
@@ -845,6 +864,9 @@ content.addEventListener("click", async (event) => {
       case "unlink":
         await unlinkClip(figure);
         break;
+      case "link":
+        startLinking(figure);
+        break;
     }
   } catch (error) {
     setStatus(`Errore: ${error.message}`, true);
@@ -1050,6 +1072,89 @@ async function unlinkClip(figure) {
   setStatus("Clip staccata: ora è un'osservazione a sé, da rivedere (correggi la specie con la matita se serve).");
 }
 
+// ---------------------------------------------------------------- link a clip to another observation
+
+// "Collega" on a clip, then "Collega qui" on another observation: the clip appears there too
+// ("anche qui": a second clip row with the same files) or moves there ("sposta"). Either way the
+// uploader analyses it again, within a minute, for the species of its new observation (its
+// segments are left empty until then: "in analisi").
+function showLinking() {
+  const banner = $("#link-banner");
+  banner.classList.toggle("hidden", !state.linking);
+  document.querySelectorAll("[data-link-here]").forEach((button) => button.remove());
+  if (!state.linking) return;
+  const { clip, observation, mode } = state.linking;
+  $("#link-what").textContent = `Collega la clip delle ${timeFormat.format(new Date(clip.recorded_at))} `
+    + `(${state.species.get(observation.scientific_name)?.italian_name || observation.scientific_name}): `
+    + "tocca «Collega qui» sull'osservazione giusta.";
+  document.querySelectorAll("[data-link-mode]").forEach((button) => button.classList.toggle("on", button.dataset.linkMode === mode));
+  content.querySelectorAll(".observation").forEach((card) => {
+    if (Number(card.dataset.id) !== observation.id && !card.classList.contains("trash")) {
+      card.querySelector(".actions")?.insertAdjacentHTML("afterbegin",
+        '<button type="button" class="primary link-here" data-link-here>Collega qui</button>');
+    }
+  });
+}
+
+function startLinking(figure) {
+  const found = findClip(figure.dataset.clip);
+  if (!found?.observation) return;
+  state.linking = { clip: found.clip, observation: found.observation, mode: state.linking?.mode || "copy" };
+  showLinking();
+}
+
+function stopLinking() {
+  state.linking = null;
+  showLinking();
+}
+
+function redrawObservation(observation) {
+  const card = content.querySelector(`.observation[data-id="${observation.id}"]`);
+  if (!card) return;
+  card.querySelectorAll("audio").forEach((audio) => audio.pause());
+  card.outerHTML = observationHtml(observation);
+}
+
+async function linkClipTo(targetId) {
+  const { clip, observation: source, mode } = state.linking;
+  const target = state.observations.get(targetId);
+  if (!target) return;
+  const waiting = { segments: null, candidates: null, confidence: 0 }; // until the uploader analyses it
+  if (mode === "move") {
+    const { error } = await state.client.from("clips").update({ observation_id: targetId, ...waiting }).eq("id", clip.id);
+    if (error) throw error;
+    source.clips = source.clips.filter((item) => item.id !== clip.id);
+    Object.assign(clip, { observation_id: targetId, ...waiting });
+    target.clips = [...(target.clips || []), clip];
+    if (!source.clips.length) {
+      // its only clip went: the observation goes too
+      await state.client.from("observations").delete().eq("id", source.id);
+      state.observations.delete(source.id);
+      removeCard(content.querySelector(`.observation[data-id="${source.id}"]`));
+    } else {
+      redrawObservation(source);
+    }
+  } else {
+    const { created_at: _created, ...fields } = clip;
+    const copy = { ...fields, ...waiting, id: `${clip.linked_from || clip.id}@${targetId}`, observation_id: targetId,
+      review: "unreviewed", inat_sound_id: null, linked_from: clip.linked_from || clip.id };
+    const { error } = await state.client.from("clips").insert(copy);
+    if (error) throw new Error(error.code === "23505" ? "la clip è già in quell'osservazione" : error.message);
+    target.clips = [...(target.clips || []), copy];
+  }
+  stopLinking();
+  redrawObservation(target);
+  refreshCounts();
+  setStatus(`Clip ${mode === "move" ? "spostata" : "collegata anche"} qui: BirdNET la rianalizza per questa specie entro un minuto.`);
+}
+
+$("#link-cancel").addEventListener("click", stopLinking);
+document.querySelectorAll("[data-link-mode]").forEach((button) => button.addEventListener("click", () => {
+  if (!state.linking) return;
+  state.linking.mode = button.dataset.linkMode;
+  showLinking();
+}));
+
 // keyboard on a computer: space plays/pauses the last clip used, arrows move by 2 s
 document.addEventListener("keydown", (event) => {
   if (event.target.closest("input, textarea, select, button") || event.metaKey || event.ctrlKey || event.altKey) return;
@@ -1185,7 +1290,13 @@ async function deleteForGood(entries, { ask = true } = {}) {
     }
     // 2. files in the bucket
     // the files of each clip, from its path (none when the site runs on local files: make web-dev)
-    const paths = config.mediaBaseUrl ? [] : clips.flatMap((clip) => [`${clip.media_path}.mp3`, `${clip.media_path}-spectrogram.jpg`]);
+    // files shared with a clip linked to another observation stay while that clip uses them
+    const { data: sharing, error: sharingError } = await state.client.from("clips").select("id,media_path")
+      .in("media_path", [...new Set(clips.map((clip) => clip.media_path))]);
+    if (sharingError) throw sharingError;
+    const stillUsed = new Set(sharing.filter((row) => !ids.includes(row.id)).map((row) => row.media_path));
+    const paths = config.mediaBaseUrl ? [] : clips.filter((clip) => !stillUsed.has(clip.media_path))
+      .flatMap((clip) => [`${clip.media_path}.mp3`, `${clip.media_path}-spectrogram.jpg`]);
     for (const part of chunks(paths, 100)) {
       const { error } = await state.client.storage.from(BUCKET).remove(part);
       if (error) throw error;

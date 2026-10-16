@@ -26,6 +26,10 @@ class FakeOutbox:
         self.purges += 1
         return 0, 0
 
+    def analyse_stored(self) -> int:
+        self.analyses = getattr(self, "analyses", 0) + 1
+        return 0
+
     def push(self):
         self.pushes += 1
         if self.busy:
@@ -94,6 +98,7 @@ class UploaderLoopTests(unittest.TestCase):
 
         self.assertEqual(outbox.pushes, 3)  # at 0, 60 and 120 s
         self.assertEqual(outbox.purges, 1)  # once an hour
+        self.assertEqual(outbox.analyses, 3)  # clips linked on the site: every minute
         self.assertEqual((status["pending"], status["last_error"]), (1, "offline"))
 
     def test_a_busy_folder_is_looked_at_again_after_a_pause(self) -> None:
