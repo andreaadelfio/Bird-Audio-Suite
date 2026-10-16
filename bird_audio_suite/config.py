@@ -15,10 +15,10 @@ DEFAULT_LOCATION_LOOKUP_TIMEOUT_SECONDS = 2.0
 DEFAULT_LOCATION_REFRESH_SECONDS = 15 * 60
 
 DEFAULT_BATCH_MIN_CONFIDENCE = 0.7
-DEFAULT_LIVE_MIN_CONFIDENCE = 0.7
+DEFAULT_LIVE_MIN_CONFIDENCE = 0.8
 # from here an identification is "likely", below (down to the threshold) "unsure": the site and
 # the live table colour them
-LIKELY_CONFIDENCE = 0.8
+LIKELY_CONFIDENCE = 0.9
 # clips of a species closer than this belong to the same observation (the same bird, still there);
 # a longer silence starts a new one
 OBSERVATION_GAP_MINUTES = 10
