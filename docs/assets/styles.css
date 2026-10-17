@@ -309,11 +309,14 @@ label { color: var(--ink-soft); font-size: 0.85rem; }
 .example-button.working { animation: working 0.8s ease-in-out infinite alternate; }
 
 /* BirdNET's most likely species in a clip */
-.candidates { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem; padding: 0 0.3rem 0.3rem; font-size: 0.75rem; color: var(--ink-soft); }
+.candidates { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.6rem; padding: 0 0.3rem 0.3rem; font-size: 0.75rem; color: var(--ink-soft); }
+.candidates .opinion { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 0.25rem; } /* a label stays with its species */
 .candidate { min-height: 1.5rem; padding: 0 0.4rem; border-radius: 999px; font-size: 0.75rem; }
 .candidate b { font-weight: 600; }
 .candidate.conf-likely b { color: var(--likely); }
 .candidate.conf-unsure b { color: var(--unsure); }
+/* Perch's species: read only, like BirdNET's chips but not buttons */
+.candidate.perch { display: inline-flex; align-items: center; gap: 0.25em; border: 1px solid var(--line); background: var(--surface); color: var(--ink); }
 
 /* the species BirdNET should have said: opened from the actions, saved when you leave the field */
 .fix { grid-area: fix; display: flex; align-items: center; gap: 0.35rem; font-size: 0.85rem; color: var(--ink-soft); }

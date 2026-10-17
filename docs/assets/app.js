@@ -1046,15 +1046,22 @@ document.addEventListener("click", (event) => {
 content.addEventListener("play", stopExample, true); // a clip starts: the example stops
 
 // BirdNET's three most likely species in the clip; a tap opens the correction with that name
+// BirdNET's likely species (tap one to correct the observation) and, beside them, what Perch
+// hears in the same clip (perch.py): a double check, only to read
 function candidatesHtml(clip) {
   const candidates = Array.isArray(clip.candidates) ? clip.candidates : [];
-  if (!candidates.length) return "";
-  return `<div class="candidates" title="Le specie più probabili per BirdNET in questa clip: tocca per correggere l'osservazione">
-      <span>BirdNET:</span>${candidates.map(([name, english, confidence]) => {
+  const perch = Array.isArray(clip.perch) ? clip.perch : [];
+  if (!candidates.length && !perch.length) return "";
+  return `<div class="candidates">
+      ${candidates.length ? `<span class="opinion"><span title="Le specie più probabili per BirdNET in questa clip: tocca per correggere l'osservazione">BirdNET:</span>
+      ${candidates.map(([name, english, confidence]) => {
         const label = state.species.get(name)?.italian_name || english || name;
         return `<button type="button" class="candidate conf-${confidenceClass(confidence)}" data-candidate="${escapeHtml(name)}"
           title="${escapeHtml(name)}">${escapeHtml(label)} <b>${Number(confidence).toFixed(2)}</b></button>`;
-      }).join("")}
+      }).join("")}</span>` : ""}
+      ${perch.length ? `<span class="opinion"><span title="Perch (Google DeepMind) sulla stessa clip, tra le specie osservate qui intorno: un secondo parere">Perch:</span>
+      ${perch.map(([name, probability]) => `<span class="candidate perch" title="${escapeHtml(name)}">${escapeHtml(state.species.get(name)?.italian_name || name)}
+        <b>${Number(probability).toFixed(2)}</b></span>`).join("")}</span>` : ""}
     </div>`;
 }
 

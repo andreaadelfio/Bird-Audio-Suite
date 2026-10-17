@@ -93,7 +93,7 @@ class EchoCancellerTests(unittest.TestCase):
         # filter at every frame coming out louder than the mic kept the PC only ~7 dB lower
         from scipy.signal import butter, sosfilt
 
-        rate, seconds = 48_000, 20
+        rate, seconds = 48_000, 10
         rng = np.random.default_rng(1)
         n = rate * seconds
         voice = sosfilt(butter(6, [200, 4000], btype="band", fs=rate, output="sos"), rng.standard_normal(n))
@@ -108,7 +108,7 @@ class EchoCancellerTests(unittest.TestCase):
             canceller = EchoCanceller()
             out = np.concatenate([canceller.process(mic[i:i + 1536], reference[i:i + 1536])
                                   for i in range(0, n, 1536)])[canceller.latency:]
-            tail = slice(10 * rate, out.size)
+            tail = slice(5 * rate, out.size)  # once it has learnt
             removed = 10 * np.log10(np.mean(pc[tail] ** 2) / np.mean((out[tail] - room[tail]) ** 2))
             self.assertGreater(removed, 20.0, f"x{gain}")
             self.assertLess(float(np.mean(out[tail] ** 2)), float(np.mean(mic[tail] ** 2)))

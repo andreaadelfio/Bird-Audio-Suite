@@ -361,6 +361,14 @@ def build_parser() -> argparse.ArgumentParser:
     backfill_parser.add_argument("--all", action="store_true",
                                  help="Every clip with its files, again (after a change of the band threshold).")
 
+    perch_parser = subparsers.add_parser(
+        "backfill-perch",
+        help="Perch's double check (perch.py) for the clips on Supabase still without it.",
+    )
+    perch_parser.add_argument("--limit", type=int, help="At most N clips.")
+    perch_parser.add_argument("--all", action="store_true",
+                              help="Every clip with its files, again (after a change of the model or of the list).")
+
     return parser
 
 
@@ -1908,6 +1916,41 @@ def run_backfill_segments(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_backfill_perch(args: argparse.Namespace) -> int:
+    """Perch on the clips already on Supabase (their MP3): its species among those observed
+    around each clip, into clips.perch. Without --all only the clips still without it."""
+    from .cloud import CloudConfig, SupabaseRest, SupabaseStorage, stored_samples
+    from .perch import model, nearby_species
+
+    config = CloudConfig.load()
+    rest, storage = SupabaseRest(config), SupabaseStorage(config)
+    clips = rest.get("clips", {
+        "select": "id,media_path,latitude,longitude", "media_deleted_at": "is.null", "latitude": "not.is.null",
+        **({} if args.all else {"perch": "is.null"}), "order": "recorded_at", "limit": str(args.limit or 100000)})
+    print(f"Clip da controllare con Perch: {len(clips)}")
+    perch = model()
+    if perch is None:
+        print("Perch non disponibile: serve onnxruntime e il modello (scaricato al primo uso).")
+        return 1
+    done = 0
+    started = time.monotonic()
+    for index, clip in enumerate(clips, start=1):
+        try:
+            allowed = nearby_species(clip["latitude"], clip["longitude"])
+            if not allowed:
+                print(f"  {clip['id']}: nessuna lista di specie per quel posto (offline?)")
+                continue
+            samples, rate = stored_samples(storage, clip)
+            rest.update("clips", {"id": f"eq.{clip['id']}"}, {"perch": perch.opinion(samples, rate, allowed)})
+            done += 1
+        except Exception as exc:
+            print(f"  {clip['id']}: {exc}")
+        if index % 25 == 0:
+            print(f"  {index}/{len(clips)} ({(time.monotonic() - started) / index:.1f} s per clip)")
+    print(f"Fatto: {done} clip con il parere di Perch.")
+    return 0
+
+
 def run_refresh_species(args: argparse.Namespace) -> int:
     """eBird code and iNaturalist taxon of each species still without them (links on the site)."""
     from .cloud import CloudConfig, SupabaseRest
@@ -1952,6 +1995,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_refresh_species(args)
     if args.command == "backfill-segments":
         return run_backfill_segments(args)
+    if args.command == "backfill-perch":
+        return run_backfill_perch(args)
 
     parser.error("Unknown command.")
     return 2

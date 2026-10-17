@@ -75,6 +75,8 @@ create table if not exists birds.clips (
                                    -- (same files: they go only when no clip uses them any more)
   manual         boolean not null default false, -- put in its observation by hand on the site (linked
                                    -- or moved): no BirdNET score for this species, confidence 0
+  perch          jsonb,            -- Perch's double check (perch.py): [[scientific, probability], ...]
+                                   -- among the species observed around the clip; null: not yet
   created_at     timestamptz not null default now()
 );
 
@@ -118,6 +120,7 @@ alter table birds.clips add column if not exists candidates jsonb;
 alter table birds.clips add column if not exists live_confidence real;
 alter table birds.clips add column if not exists linked_from text;
 alter table birds.clips add column if not exists manual boolean not null default false;
+alter table birds.clips add column if not exists perch jsonb;
 create index if not exists clips_media_path_idx on birds.clips (media_path);
 -- the live's score, kept before the analysis of the saved clips replaces confidence
 update birds.clips set live_confidence = confidence where live_confidence is null;

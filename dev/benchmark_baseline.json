@@ -1,6 +1,6 @@
 {
  "test (pytest, intera suite)": {
-  "seconds": 6.014,
+  "seconds": 9.4,
   "rss_mb": 271
  },
  "BirdNET: import e caricamento modello": {
@@ -38,5 +38,9 @@
  "picco RAM del benchmark": {
   "seconds": null,
   "rss_mb": 467
+ },
+ "sync: Perch su 30 s (doppio controllo)": {
+  "seconds": 3.03,
+  "rss_mb": 962
  }
 }

@@ -18,6 +18,8 @@ requests>=2.31.0
 # ML inference: LiteRT runs the BirdNET .tflite model without TensorFlow (~550 MB less RAM).
 # birdnetlib still works with tensorflow installed instead, if you prefer.
 ai-edge-litert>=2.0
+# Perch, the double check on the saved clips (perch.py); without it clips simply get none
+onnxruntime>=1.18
 
 # Optional plotting for `denoise --plot`
 matplotlib>=3.7.0

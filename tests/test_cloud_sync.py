@@ -115,6 +115,7 @@ def outbox(folder, rest, storage=None) -> Outbox:
                   render=fake_render, encode=fake_encode,
                   analyse=lambda item: {"confidence": round(item.data["confidence"] - 0.1, 3), "segments": [[0.0, 1.0, 0.8]],
                                         "candidates": [["Turdus merula", "Eurasian Blackbird", 0.91], ["Turdus philomelos", "Song Thrush", 0.2]]},
+                  double_check=lambda item: [["Turdus merula", 0.88]],
                   link_codes=lambda name: {"ebird_code": "eurbla"})
 
 
@@ -163,8 +164,9 @@ class PushTests(unittest.TestCase):
         self.assertEqual(
             sorted(first),
             ["candidates", "confidence", "duration_s", "id", "latitude", "live_confidence", "longitude", "media_path",
-             "observation_id", "place_name", "recorded_at", "segments"],
+             "observation_id", "perch", "place_name", "recorded_at", "segments"],
         )
+        self.assertEqual(first["perch"], [["Turdus merula", 0.88]])  # Perch's double check
         self.assertEqual(sorted(storage.objects), [
             "20261009/merlo_20261009_065500_0-910-spectrogram.jpg", "20261009/merlo_20261009_065500_0-910.mp3",
             "20261009/merlo_20261009_181000_0-970-spectrogram.jpg", "20261009/merlo_20261009_181000_0-970.mp3",
@@ -401,6 +403,40 @@ class InatSpeciesTests(unittest.TestCase):
         self.assertEqual(rest.updates, [("eq.356", "Vulpes vulpes"), ("eq.377", "Turdus"), ("eq.302", None)])
         self.assertEqual(rest.upserts, [{"scientific_name": "Vulpes vulpes", "inat_taxon_id": 42069},
                                         {"scientific_name": "Turdus", "inat_taxon_id": 12705}])
+
+
+class PerchDoubleCheckTests(unittest.TestCase):
+    def test_a_clip_is_sent_even_when_perch_cannot_say(self) -> None:
+        def broken(item):
+            raise RuntimeError("no model")
+
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            export(folder, datetime(2026, 10, 9, 6, 55))
+            rest = FakeRest()
+            box = outbox(folder, rest)
+            box.double_check = broken
+            report = box.push()
+        clip_rows = [row for table, rows in rest.upserts if table == "clips" for row in rows]
+        self.assertEqual((report.sent, clip_rows[0]["perch"]), (1, None))  # null: backfill-perch adds it later
+
+
+class PerchColumnMissingTests(unittest.TestCase):
+    def test_clips_still_go_while_supabase_has_no_perch_column_yet(self) -> None:
+        class Rest(FakeRest):
+            def upsert(self, table, rows, on_conflict):
+                if table == "clips" and "perch" in rows[0]:
+                    raise RuntimeError("Supabase clips upsert (400): Could not find the 'perch' column of 'clips'")
+                super().upsert(table, rows, on_conflict)
+
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            export(folder, datetime(2026, 10, 9, 6, 55))
+            rest = Rest()
+            report = outbox(folder, rest).push()
+        clip_rows = [row for table, rows in rest.upserts if table == "clips" for row in rows]
+        self.assertEqual((report.sent, report.errors), (1, []))
+        self.assertNotIn("perch", clip_rows[0])
 
 
 class StorageTests(unittest.TestCase):

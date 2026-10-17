@@ -162,6 +162,15 @@ def measure() -> list[dict]:
     _, peak = memory_mb()
     steps.append({"step": "picco RAM del benchmark", "seconds": None, "rss_mb": round(peak), "note": ""})
     print(f"  {'picco RAM del benchmark':<48} {'':>9}   RAM {peak:5.0f} MB")
+
+    # Perch, the uploader's double check (perch.py), after the peak above: it brings its own ~0.9 GB,
+    # only while the uploader uses it. Measured only when its model is already in the cache.
+    from bird_audio_suite import perch
+
+    if (perch.CACHE_DIR / perch.MODEL_FILE).exists() and perch.model() is not None:
+        seconds = timed(lambda: perch.model().scores(clip, SAMPLE_RATE))
+        step("sync: Perch su 30 s (doppio controllo)", seconds, f"{100 * seconds / 30:.1f}% del tempo reale")
+        perch.release()
     return steps
 
 

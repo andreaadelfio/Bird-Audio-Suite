@@ -327,11 +327,24 @@ def clip_analysis(item) -> dict:
     )
 
 
-def analyse_stored_clip(storage, clip: dict, model=None) -> dict:
-    """analysis.py on a clip already on Supabase (its MP3), for the species of its observation."""
+def clip_double_check(item) -> list | None:
+    """Perch on the clip about to be sent (perch.py): the species it hears around here, or None."""
     import soundfile
 
-    from .analysis import analyse_samples
+    from .perch import perch_opinion
+
+    samples, rate = soundfile.read(str(item.wav), dtype="float32")
+    if samples.ndim > 1:
+        samples = samples.mean(axis=1)
+    data = item.data
+    if data.get("latitude") is None or data.get("longitude") is None:
+        return None  # no place, no list of the species around it
+    return perch_opinion(samples, rate, data["latitude"], data["longitude"])
+
+
+def stored_samples(storage, clip: dict):
+    """A clip already on Supabase, decoded from its MP3: (mono samples, rate)."""
+    import soundfile
 
     with tempfile.NamedTemporaryFile(suffix=".mp3") as handle:
         handle.write(storage.read_bytes(f"{clip['media_path']}.mp3"))
@@ -339,6 +352,14 @@ def analyse_stored_clip(storage, clip: dict, model=None) -> dict:
         samples, rate = soundfile.read(handle.name, dtype="float32")
     if samples.ndim > 1:
         samples = samples.mean(axis=1)
+    return samples, rate
+
+
+def analyse_stored_clip(storage, clip: dict, model=None) -> dict:
+    """analysis.py on a clip already on Supabase (its MP3), for the species of its observation."""
+    from .analysis import analyse_samples
+
+    samples, rate = stored_samples(storage, clip)
     return analyse_samples(
         samples, rate, clip["observations"]["scientific_name"],
         latitude=clip["latitude"] if clip.get("latitude") is not None else 45.8,
@@ -408,6 +429,7 @@ class Outbox:
         render=render_spectrogram,
         encode=encode_mp3,
         analyse=None,
+        double_check=None,
         link_codes=species_codes,
     ) -> None:
         self.folder = Path(folder)
@@ -419,6 +441,7 @@ class Outbox:
         self.encode = encode
         self.analyse = analyse or clip_analysis  # confidence, bands and candidates from the saved audio
         self.link_codes = link_codes
+        self.double_check = double_check or clip_double_check  # Perch, beside BirdNET (perch.py)
 
     def _connect(self) -> None:
         if self.rest is None:
@@ -462,6 +485,7 @@ class Outbox:
                     report.sent_ids.append(item.clip_id)
                 except Exception as exc:  # it stays in the folder: the next attempt retries it
                     report.errors.append(f"{item.clip_id}: {exc}")
+            release_perch()  # ~0.9 GB: not kept by the always-on service between rounds
         return report
 
     def _send(self, item: OutboxItem, species_sent: set[str]) -> None:
@@ -486,12 +510,16 @@ class Outbox:
             analysis = self.analyse(item)
         except Exception:  # never a reason to keep the clip back: the live's numbers then
             analysis = None
+        try:
+            perch_heard = self.double_check(item)
+        except Exception:  # the same: backfill-perch adds it later
+            perch_heard = None
 
         # asked right before the clip row (the previous clip, just sent, may be within ten minutes);
         # if the clip row then fails, a new observation must not stay behind empty
         observation_id = self.rest.observation_for(name, item.recorded_at)
         try:
-            self._insert_clip(item, data, observation_id, media_path, analysis)
+            self._insert_clip(item, data, observation_id, media_path, analysis, perch_heard)
         except Exception:
             try:
                 self.rest.delete_if_empty(observation_id)
@@ -499,28 +527,37 @@ class Outbox:
                 pass  # the hourly clean-up of the uploader removes it later
             raise
 
-    def _insert_clip(self, item: OutboxItem, data: dict, observation_id: int, media_path: str, analysis) -> None:
-        self.rest.upsert(
-            "clips",
-            [
-                {
-                    "id": item.clip_id,
-                    "observation_id": observation_id,
-                    "recorded_at": data["recorded_at"],
-                    "confidence": analysis["confidence"] if analysis else data["confidence"],
-                    "live_confidence": data["confidence"],  # what the live scored while listening
-                    "duration_s": data.get("duration_s") or round(audio_duration(item.wav), 2),
-                    "place_name": data.get("place_name") or "",
-                    "latitude": data.get("latitude"),
-                    "longitude": data.get("longitude"),
-                    "media_path": media_path,
-                    # where BirdNET hears it, seconds from the clip start; its three likely species
-                    "segments": analysis["segments"] if analysis else data.get("segments"),
-                    "candidates": analysis["candidates"] if analysis else None,
-                }
-            ],
-            on_conflict="id",
-        )
+    def _insert_clip(self, item: OutboxItem, data: dict, observation_id: int, media_path: str, analysis,
+                     perch_heard=None) -> None:
+        row = self._clip_row(item, data, observation_id, media_path, analysis, perch_heard)
+        try:
+            self.rest.upsert("clips", [row], on_conflict="id")
+        except RuntimeError as exc:
+            if "'perch'" not in str(exc):
+                raise
+            # the schema on Supabase without clips.perch yet (birds_schema.sql not re-run): the clip
+            # goes without Perch's opinion, backfill-perch adds it once the column is there
+            row.pop("perch")
+            self.rest.upsert("clips", [row], on_conflict="id")
+
+    def _clip_row(self, item: OutboxItem, data: dict, observation_id: int, media_path: str, analysis,
+                  perch_heard) -> dict:
+        return {
+            "id": item.clip_id,
+            "observation_id": observation_id,
+            "recorded_at": data["recorded_at"],
+            "confidence": analysis["confidence"] if analysis else data["confidence"],
+            "live_confidence": data["confidence"],  # what the live scored while listening
+            "duration_s": data.get("duration_s") or round(audio_duration(item.wav), 2),
+            "place_name": data.get("place_name") or "",
+            "latitude": data.get("latitude"),
+            "longitude": data.get("longitude"),
+            "media_path": media_path,
+            # where BirdNET hears it, seconds from the clip start; its three likely species
+            "segments": analysis["segments"] if analysis else data.get("segments"),
+            "candidates": analysis["candidates"] if analysis else None,
+            "perch": perch_heard,  # Perch's species, a double check (null: not yet)
+        }
 
     @staticmethod
     def _remove(item: OutboxItem) -> None:
@@ -542,7 +579,37 @@ class Outbox:
         purged = self.purge_uploaded_media()
         emptied = self.rest.delete_empty_observations()
         followed = self.follow_inat_species()
-        return purged, emptied, followed, self.name_new_species()
+        named = self.name_new_species()
+        self.fill_perch()
+        return purged, emptied, followed, named
+
+    def fill_perch(self, limit: int = 20, model=None) -> int:
+        """Perch's opinion for clips on Supabase still without it (sent while it could not run, or
+        before it existed). Returns how many got it."""
+        from .perch import nearby_species
+        from .perch import model as perch_model
+
+        self._connect()
+        try:
+            clips = self.rest.get("clips", {
+                "select": "id,media_path,latitude,longitude", "perch": "is.null", "media_deleted_at": "is.null",
+                "latitude": "not.is.null", "order": "recorded_at.desc", "limit": str(limit)})
+        except RuntimeError:
+            return 0  # no clips.perch on Supabase yet (birds_schema.sql not re-run): nothing to fill
+        perch = model or (perch_model() if clips else None)
+        filled = 0
+        try:
+            for clip in clips:
+                allowed = nearby_species(clip["latitude"], clip["longitude"])
+                if perch is None or not allowed:
+                    break  # it cannot run here (yet): the next hour
+                samples, rate = stored_samples(self.storage, clip)
+                self.rest.update("clips", {"id": f"eq.{clip['id']}"}, {"perch": perch.opinion(samples, rate, allowed)})
+                filled += 1
+        finally:
+            if model is None:
+                release_perch()
+        return filled
 
     def follow_inat_species(self, session=requests) -> int:
         """Uploaded observations take the taxon iNaturalist shows for them (identifiers can correct
@@ -641,6 +708,12 @@ def inat_shown_taxon(observation: dict) -> tuple[int, str] | None:
     if float(taxon.get("rank_level") or SPECIES_RANK_LEVEL) < SPECIES_RANK_LEVEL and taxon.get("min_species_taxon_id"):
         return int(taxon["min_species_taxon_id"]), " ".join(taxon["name"].split()[:2])
     return int(taxon["id"]), taxon["name"]
+
+
+def release_perch() -> None:
+    from .perch import release
+
+    release()
 
 
 # ---------------------------------------------------------------- previous version
