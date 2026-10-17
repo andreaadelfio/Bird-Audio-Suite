@@ -603,7 +603,10 @@ class Outbox:
                 allowed = nearby_species(clip["latitude"], clip["longitude"])
                 if perch is None or not allowed:
                     break  # it cannot run here (yet): the next hour
-                samples, rate = stored_samples(self.storage, clip)
+                try:
+                    samples, rate = stored_samples(self.storage, clip)
+                except Exception:
+                    continue  # its MP3 cannot be read: the others go on
                 self.rest.update("clips", {"id": f"eq.{clip['id']}"}, {"perch": perch.opinion(samples, rate, allowed)})
                 filled += 1
         finally:

@@ -75,8 +75,8 @@ create table if not exists birds.clips (
                                    -- (same files: they go only when no clip uses them any more)
   manual         boolean not null default false, -- put in its observation by hand on the site (linked
                                    -- or moved): no BirdNET score for this species, confidence 0
-  perch          jsonb,            -- Perch's double check (perch.py): [[scientific, probability], ...]
-                                   -- among the species observed around the clip; null: not yet
+  perch          jsonb,            -- Perch's double check (perch.py): [[scientific, share], ...], the share
+                                   -- among the species observed around the clip (not BirdNET's 0-1); null: not yet
   created_at     timestamptz not null default now()
 );
 

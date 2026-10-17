@@ -1059,9 +1059,9 @@ function candidatesHtml(clip) {
         return `<button type="button" class="candidate conf-${confidenceClass(confidence)}" data-candidate="${escapeHtml(name)}"
           title="${escapeHtml(name)}">${escapeHtml(label)} <b>${Number(confidence).toFixed(2)}</b></button>`;
       }).join("")}</span>` : ""}
-      ${perch.length ? `<span class="opinion"><span title="Perch (Google DeepMind) sulla stessa clip, tra le specie osservate qui intorno: un secondo parere">Perch:</span>
-      ${perch.map(([name, probability]) => `<span class="candidate perch" title="${escapeHtml(name)}">${escapeHtml(state.species.get(name)?.italian_name || name)}
-        <b>${Number(probability).toFixed(2)}</b></span>`).join("")}</span>` : ""}
+      ${perch.length ? `<span class="opinion"><span title="Perch (Google DeepMind) sulla stessa clip: quanto pesa ogni specie tra quelle osservate qui intorno. Un secondo parere, su un'altra scala rispetto a BirdNET">Perch:</span>
+      ${perch.map(([name, share]) => `<span class="candidate perch" title="${escapeHtml(name)}">${escapeHtml(state.species.get(name)?.italian_name || name)}
+        <b>${Math.round(Number(share) * 100)}%</b></span>`).join("")}</span>` : ""}
     </div>`;
 }
 

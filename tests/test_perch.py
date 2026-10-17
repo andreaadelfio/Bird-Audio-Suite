@@ -13,10 +13,11 @@ from bird_audio_suite import perch
 
 
 class FakeSession:
-    """Perch's ONNX session: a block with a loud start says "bird A", a quiet one "bird B"."""
+    """Perch's ONNX session: a block with a loud start says "bird A", a quiet one "bird B"; an
+    American owl (class 3) gets `owl` as its logit."""
 
-    def __init__(self, classes: int) -> None:
-        self.classes, self.blocks = classes, []
+    def __init__(self, classes: int, owl: float = 3.0) -> None:
+        self.classes, self.blocks, self.owl = classes, [], owl
 
     def run(self, names, feeds):
         block = feeds["inputs"]
@@ -24,13 +25,13 @@ class FakeSession:
         self.blocks.append(block)
         logits = np.full((1, self.classes), -5.0, np.float32)
         logits[0, 0 if np.abs(block[0, :1000]).max() > 0.5 else 1] = 5.0
-        logits[0, 3] = 3.0  # an American owl, sure enough
+        logits[0, 3] = self.owl
         return [logits]
 
 
-def model_with(labels: list[str], directory: Path) -> tuple[perch.Perch, FakeSession]:
+def model_with(labels: list[str], directory: Path, owl: float = 3.0) -> tuple[perch.Perch, FakeSession]:
     (directory / perch.LABELS_FILE).write_text("\n".join(["inat2024_fsd50k", *labels]), encoding="utf-8")
-    session = FakeSession(len(labels))
+    session = FakeSession(len(labels), owl)
     return perch.Perch(cache_dir=directory, session=session), session
 
 
@@ -40,20 +41,31 @@ class PerchTests(unittest.TestCase):
             model, session = model_with(["Bird a", "Bird b", "Speech", "Strix varia"], Path(directory))
             audio = np.zeros(12 * 48_000, np.float32)  # 12 s at 48 kHz, as the live writes them
             audio[: 48_000 // 10] = 0.9  # loud only at the start: the first block
-            scores = model.scores(audio, 48_000)
-        # 12 s -> blocks at 0, 2.5, 5 s and one ending with the clip (7 s)
-        self.assertEqual(len(session.blocks), 4)
-        self.assertGreater(scores[0], 0.8)  # heard in the first block only: the best counts
-        self.assertGreater(scores[1], 0.8)
-        self.assertAlmostEqual(float(scores.sum()), float(scores.max()) * 2 + float(scores[3]) + float(scores[2]), places=4)
+            blocks = list(model.blocks(audio, 48_000))
+            opinion = model.opinion(audio, 48_000, allowed={"Bird a", "Bird b"})
+        # 12 s -> blocks at 0, 2.5, 5 s and one ending with the clip (7 s), each summing to 1
+        self.assertEqual(len(session.blocks), 8)  # the blocks above, then again for the opinion
+        self.assertEqual(len(blocks), 4)
+        for probabilities in blocks:
+            self.assertAlmostEqual(float(probabilities.sum()), 1.0, places=6)
+        # each heard well in one block: the best block counts, as a share of the species of here
+        self.assertEqual([name for name, _ in opinion], ["Bird a", "Bird b"])
+        self.assertGreater(min(share for _, share in opinion), 0.99)
 
     def test_only_the_species_around_the_clip_and_only_what_it_really_hears(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             model, _ = model_with(["Bird a", "Bird b", "Speech", "Strix varia"], Path(directory))
             opinion = model.opinion(np.zeros(5 * 32_000, np.float32), 32_000, allowed={"Bird b", "Bird a"})
-        # Strix varia is not observed around here; Bird a is below MIN_PROBABILITY; Speech is no species
+        # Strix varia is not observed around here; Bird a is below MIN_SHARE; Speech is no species
         self.assertEqual([name for name, _ in opinion], ["Bird b"])
-        self.assertGreater(opinion[0][1], 0.8)
+        self.assertGreater(opinion[0][1], 0.99)  # its share among the species of here, not of all
+
+    def test_a_block_mostly_about_something_from_elsewhere_says_nothing(self) -> None:
+        # the American owl takes ~95% of Perch's total: the species of here get under 30%
+        with tempfile.TemporaryDirectory() as directory:
+            model, _ = model_with(["Bird a", "Bird b", "Speech", "Strix varia"], Path(directory), owl=8.0)
+            opinion = model.opinion(np.zeros(5 * 32_000, np.float32), 32_000, allowed={"Bird a", "Bird b"})
+        self.assertEqual(opinion, [])
 
     def test_the_species_around_are_asked_once_and_kept_for_three_months(self) -> None:
         pages = [{"total_results": 600, "results": [{"taxon": {"name": "Vulpes vulpes"}}, {"taxon": {"name": "Strix aluco"}}]},

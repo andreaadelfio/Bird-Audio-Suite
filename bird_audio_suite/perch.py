@@ -12,6 +12,14 @@ kept to those observed on iNaturalist within 50 km of the clip (research grade; 
 amphibians, grasshoppers and crickets, cicadas), asked once per place and refreshed every three
 months. Its names are iNaturalist's (Coloeus monedula), the same as the list's.
 
+Its numbers are not BirdNET's. BirdNET scores each species on its own, 0 to 1; Perch shares a
+total of 1 among its ~14,800 classes in each 5 s block, so look-alikes from elsewhere (the
+American magpie beside ours) and a second bird take their part. What is kept is each species'
+share among the species of this place, in the block where it is highest: a percentage on the
+site. Blocks where the species of this place get less than 30% of Perch's total are left out: in
+70 clips, there its first choice was the clip's species only 13-16% of the times (noise, or
+something from elsewhere), from 50% up 85-99%.
+
 The model (ONNX, 413 MB, Apache 2.0, converted from Google's release on Kaggle) is downloaded the
 first time into ~/.cache/bird-audio-suite/perch, from a fixed revision, and checked against its
 SHA-256. ONNX Runtime runs it one 5 s block at a time, every 2.5 s (~0.7 s per 10 s of audio,
@@ -46,7 +54,8 @@ BLOCK = 5 * RATE
 HOP = BLOCK // 2
 THREADS = 2  # the uploader runs beside the live: it must not take the CPU away from it
 TOP = 3
-MIN_PROBABILITY = 0.1  # below this Perch is not saying anything
+MIN_LOCAL_SHARE = 0.3  # a block counts when the species of this place get at least this much
+MIN_SHARE = 0.1  # of that, a species below this is not shown
 
 INAT_SPECIES_COUNTS = "https://api.inaturalist.org/v1/observations/species_counts"
 NEARBY_KM = 50
@@ -106,8 +115,8 @@ class Perch:
                                                    providers=["CPUExecutionProvider"])
         self.session = session
 
-    def scores(self, samples: np.ndarray, rate: int) -> np.ndarray:
-        """Per class, the best probability over 5 s blocks every 2.5 s (the end of the clip too)."""
+    def blocks(self, samples: np.ndarray, rate: int):
+        """Perch's probabilities (summing to 1) for each 5 s block, every 2.5 s, the end of the clip too."""
         audio = np.asarray(samples, np.float32).reshape(-1)
         if rate != RATE:
             from scipy.signal import resample_poly
@@ -117,23 +126,26 @@ class Perch:
         starts = list(range(0, max(audio.size - BLOCK, 0) + 1, HOP))
         if audio.size > BLOCK and (audio.size - BLOCK) % HOP:
             starts.append(audio.size - BLOCK)
-        best = np.zeros(len(self.labels), np.float32)
         for start in starts:  # one block at a time: a batch of a long clip took 5 GB
             block = np.zeros((1, BLOCK), np.float32)
             piece = audio[start:start + BLOCK]
             block[0, :piece.size] = piece
             logits = np.asarray(self.session.run(["label"], {"inputs": block})[0][0], np.float64)
             probabilities = np.exp(logits - logits.max())
-            probabilities /= probabilities.sum()
-            np.maximum(best, probabilities.astype(np.float32), out=best)
-        return best
+            yield probabilities / probabilities.sum()
 
     def opinion(self, samples: np.ndarray, rate: int, allowed: set[str]) -> list[list]:
-        """The (up to three) species of `allowed` Perch hears, [[scientific, probability], ...]."""
-        best = self.scores(samples, rate)
-        ranked = [(self.labels[i], float(best[i])) for i in np.argsort(best)[::-1]
-                  if best[i] >= MIN_PROBABILITY]
-        return [[name, round(probability, 3)] for name, probability in ranked if name in allowed][:TOP]
+        """The (up to three) species of `allowed` Perch hears, [[scientific, share], ...]: its share
+        among the species of this place, in the block where it is highest."""
+        local = np.fromiter((name in allowed for name in self.labels), bool, len(self.labels))
+        best = np.zeros(len(self.labels))
+        for probabilities in self.blocks(samples, rate):
+            total = float(probabilities[local].sum())
+            if total < MIN_LOCAL_SHARE:
+                continue  # mostly something not from here, or nothing at all
+            np.maximum(best, np.where(local, probabilities, 0.0) / total, out=best)
+        ranked = [i for i in np.argsort(best)[::-1][:TOP] if best[i] >= MIN_SHARE]
+        return [[self.labels[i], round(float(best[i]), 3)] for i in ranked]
 
 
 _model: Perch | None = None

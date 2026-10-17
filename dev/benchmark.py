@@ -168,7 +168,8 @@ def measure() -> list[dict]:
     from bird_audio_suite import perch
 
     if (perch.CACHE_DIR / perch.MODEL_FILE).exists() and perch.model() is not None:
-        seconds = timed(lambda: perch.model().scores(clip, SAMPLE_RATE))
+        everything = set(perch.model().labels)
+        seconds = timed(lambda: perch.model().opinion(clip, SAMPLE_RATE, everything))
         step("sync: Perch su 30 s (doppio controllo)", seconds, f"{100 * seconds / 30:.1f}% del tempo reale")
         perch.release()
     return steps
