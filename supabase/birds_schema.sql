@@ -274,25 +274,42 @@ create trigger observations_correction before insert or update of corrected_scie
   for each row execute function birds.correction_species();
 
 -- the history stays: what is on iNaturalist (an uploaded observation, and its clips you did not
--- discard) cannot be deleted. Its files go right after the upload, its rows keep counting in the reports. To
--- remove something you judged wrong, discard it first (status rejected, or review wrong on a clip):
--- then the Cestino can delete it for good.
+-- discard) cannot be deleted. Its files go right after the upload, its rows keep counting in the
+-- reports, and its species follows iNaturalist's. Something you judged wrong before the upload is
+-- discarded first (status rejected, or review wrong on a clip): then the Cestino deletes it.
 create or replace function birds.keep_observation_history() returns trigger
 language plpgsql as $$
 begin
   if old.status = 'uploaded' then
-    raise exception 'Osservazione su iNaturalist: resta nello storico (scartala prima, se e'' sbagliata)';
+    raise exception 'Osservazione su iNaturalist: resta nello storico';
   end if;
   return old;
 end;
 $$;
+
+-- "uploaded" is final: the observation is on iNaturalist, its species follows iNaturalist's (the
+-- uploader copies it every hour), its files are gone; taken back to review it could never be
+-- uploaded again from the site
+create or replace function birds.keep_uploaded() returns trigger
+language plpgsql as $$
+begin
+  if old.status = 'uploaded' and new.status <> 'uploaded' then
+    raise exception 'Osservazione su iNaturalist: lo stato "caricata" e'' definitivo';
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists observations_keep_uploaded on birds.observations;
+create trigger observations_keep_uploaded before update of status on birds.observations
+  for each row execute function birds.keep_uploaded();
 
 create or replace function birds.keep_clip_history() returns trigger
 language plpgsql as $$
 begin
   if old.review <> 'wrong' and exists (
        select 1 from birds.observations o where o.id = old.observation_id and o.status = 'uploaded') then
-    raise exception 'Clip su iNaturalist: resta nello storico (scartala prima, se e'' sbagliata)';
+    raise exception 'Clip su iNaturalist: resta nello storico';
   end if;
   return old;
 end;

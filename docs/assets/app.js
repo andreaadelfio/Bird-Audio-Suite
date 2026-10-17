@@ -430,7 +430,8 @@ function observationActions(observation) {
   buttons.push('<span class="spacer"></span>');
   if (status !== "uploaded") buttons.push(`<button type="button" class="round ghost" data-fix-toggle title="Correggi la specie se BirdNET ha sbagliato"
     aria-label="Correggi la specie">${ICON_EDIT}</button>`);
-  if (status !== "pending") {
+  // on iNaturalist is final: its species follows iNaturalist, its files are gone
+  if (status !== "pending" && status !== "uploaded") {
     buttons.push(`<button type="button" class="round ghost" data-status="pending" title="Rimetti da rivedere"
       aria-label="Rimetti da rivedere">${ICON_UNDO}</button>`);
   }
@@ -1128,8 +1129,8 @@ async function unlinkClip(figure) {
 
 // "Seleziona" puts a round box on every observation and clip of the list, and a bar at the bottom
 // with the actions of the single ones: confirm, back to review, discard, iNaturalist, delete. The
-// same rules as one at a time: discarding a clip marks it wrong (it goes to the Cestino), deleting
-// something on iNaturalist removes only its files. A clip of an observation picked as a whole goes
+// same rules as one at a time: discarding a clip marks it wrong (it goes to the Cestino), what is on
+// iNaturalist is final and every action skips it. A clip of an observation picked as a whole goes
 // with it. Each action clears what it was done on.
 function selectBox(kind, id, label) {
   const on = (kind === "observation" ? state.selection.observations : state.selection.clips).has(id);
@@ -1201,12 +1202,13 @@ function updateBulkBar() {
     clips.length ? `${clips.length} clip` : "",
   ].filter(Boolean);
   $("#bulk-count").textContent = parts.join(" · ") || "Tocca i cerchi";
+  const open = observations.filter((o) => o.status !== "uploaded"); // on iNaturalist: final
   const able = {
-    pending: observations.some((o) => o.status !== "pending") || clips.some(({ clip }) => clip.review === "wrong"),
-    rejected: observations.some((o) => !["rejected", "uploaded"].includes(o.status)) || clips.some(({ clip }) => clip.review !== "wrong"),
-    confirmed: observations.some((o) => !["confirmed", "uploaded"].includes(o.status)),
-    inat: observations.some((o) => o.status === "confirmed"),
-    delete: observations.length + clips.length > 0,
+    pending: open.some((o) => o.status !== "pending") || clips.some(({ clip }) => clip.review === "wrong"),
+    rejected: open.some((o) => o.status !== "rejected") || clips.some(({ clip }) => clip.review !== "wrong"),
+    confirmed: open.some((o) => o.status !== "confirmed"),
+    inat: open.some((o) => o.status === "confirmed"),
+    delete: open.length + clips.length > 0,
   };
   Object.entries(able).forEach(([action, on]) => { bar.querySelector(`[data-bulk="${action}"]`).disabled = !on; });
   const cards = [...content.querySelectorAll(".observation")];
@@ -1221,8 +1223,7 @@ function cardOf(observation) {
 // a status for the observations, and for the clips picked alone what it means for a clip:
 // discarded (wrong) or back in their observation (unreviewed)
 async function bulkStatus(status) {
-  const observations = pickedObservations().filter((o) => o.status !== status
-    && !(o.status === "uploaded" && (status === "rejected" || status === "confirmed")));
+  const observations = pickedObservations().filter((o) => o.status !== status && o.status !== "uploaded");
   const clipReview = { rejected: "wrong", pending: "unreviewed" }[status];
   const clips = clipReview ? pickedClips().filter(({ clip }) => clip.review !== clipReview) : [];
   if (observations.length) {
@@ -1257,7 +1258,7 @@ async function bulkStatus(status) {
 }
 
 async function bulkDelete() {
-  const observations = pickedObservations();
+  const observations = pickedObservations().filter((o) => o.status !== "uploaded"); // final, in the history
   const byObservation = new Map();
   for (const { clip, observation } of pickedClips()) {
     if (!byObservation.has(observation.id)) byObservation.set(observation.id, { observationId: observation.id, whole: false, clips: [] });
@@ -1267,12 +1268,8 @@ async function bulkDelete() {
   if (!(await deleteForGood(entries))) return; // it asked first, and says how it went
   for (const observation of observations) {
     state.selection.observations.delete(observation.id);
-    if (observation.status === "uploaded") {
-      redrawObservation(observation); // on iNaturalist: only its files went
-    } else {
-      state.observations.delete(observation.id);
-      removeCard(cardOf(observation));
-    }
+    state.observations.delete(observation.id);
+    removeCard(cardOf(observation));
   }
   for (const entry of byObservation.values()) {
     const observation = state.observations.get(entry.observationId);
