@@ -736,6 +736,9 @@ button.denoise.strong { background: var(--accent-deep); border-color: var(--acce
   .trash-head .danger { width: 100%; }
 }
 
+/* a list narrowed to a species or dates: how many of those are on iNaturalist */
+.on-inat-note { margin: 0 0 0.5rem; color: var(--ink-soft); font-size: 0.9rem; }
+
 /* "Seleziona": a round box on every observation and clip, a bar at the bottom */
 .select-box { display: none; }
 body.selecting .select-box {

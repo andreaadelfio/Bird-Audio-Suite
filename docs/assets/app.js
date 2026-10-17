@@ -172,17 +172,8 @@ function observationSelect() {
   return $("#filter-confidence").value ? `${OBSERVATION_SELECT}, strong:clips(id)` : OBSERVATION_SELECT;
 }
 
-async function fetchObservations() {
-  let query = state.client
-    .from("observations")
-    .select(observationSelect())
-    .order("day", { ascending: false })
-    .order("id", { ascending: false })
-    .range(state.offset, state.offset + PAGE_SIZE - 1);
-
-  const status = $("#filter-status").value;
-  if (status) query = query.eq("status", status);
-  query = withConfidenceFilter(query);
+// species and dates of the list (a species in the report sets them)
+async function withListFilters(query) {
   if ($("#filter-from").value) query = query.gte("day", $("#filter-from").value);
   if ($("#filter-to").value) query = query.lte("day", $("#filter-to").value);
   const speciesText = $("#filter-species").value;
@@ -191,10 +182,38 @@ async function fetchObservations() {
     const names = (await matchingSpecies(speciesText)).map((name) => `"${name}"`).join(",");
     query = query.or(`scientific_name.in.(${names}),corrected_scientific_name.in.(${names})`);
   }
+  return query;
+}
+
+// The list holds what is left to manage: what is on iNaturalist is done, and lives in the report
+// (its "Su iNaturalist" list) and in the database for the statistics.
+async function fetchObservations() {
+  let query = state.client
+    .from("observations")
+    .select(observationSelect())
+    .neq("status", "uploaded")
+    .order("day", { ascending: false })
+    .order("id", { ascending: false })
+    .range(state.offset, state.offset + PAGE_SIZE - 1);
+
+  const status = $("#filter-status").value;
+  if (status) query = query.eq("status", status);
+  query = await withListFilters(withConfidenceFilter(query));
 
   const { data, error } = await query;
   if (error) throw error;
   return data;
+}
+
+// a list narrowed to a species or dates (opened from the report): how many of those are on
+// iNaturalist, so its count matches the report's; 0 otherwise
+async function uploadedAlongside() {
+  const narrowed = $("#filter-species").value.trim() || $("#filter-from").value || $("#filter-to").value;
+  if (!narrowed || $("#filter-status").value) return 0;
+  const query = await withListFilters(state.client.from("observations")
+    .select("id", { count: "exact", head: true }).eq("status", "uploaded"));
+  const { count, error } = await query;
+  return error ? 0 : count || 0;
 }
 
 // changes: { status, corrected }; a missing field is left as it is, "" clears the correction
@@ -616,7 +635,7 @@ content.addEventListener("change", async (event) => {
 // are filtering on, or the Cestino (rejected only)
 function leavesFilteredView(newStatus) {
   const statusFilter = $("#filter-status").value;
-  return (state.view === "observations" && Boolean(statusFilter) && newStatus !== statusFilter)
+  return (state.view === "observations" && (newStatus === "uploaded" || (Boolean(statusFilter) && newStatus !== statusFilter)))
     || (state.view === "trash" && newStatus !== "rejected");
 }
 
@@ -1454,7 +1473,7 @@ document.addEventListener("keydown", (event) => {
 
 async function renderObservations(append = false) {
   if (!append) state.offset = 0;
-  const rows = await fetchObservations();
+  const [rows, onInat] = await Promise.all([fetchObservations(), append ? 0 : uploadedAlongside()]);
   if (!append) {
     // replaced only now that the new list is here: no blank page while it loads
     content.querySelectorAll("audio").forEach((audio) => audio.pause());
@@ -1466,9 +1485,22 @@ async function renderObservations(append = false) {
   state.offset += rows.length;
   $("#more").classList.toggle("hidden", rows.length < PAGE_SIZE);
   if (!content.children.length) {
-    content.innerHTML = '<p class="empty">Nessuna osservazione con questi filtri.</p>';
+    content.innerHTML = `<p class="empty">Nessuna osservazione ${onInat ? "da gestire" : ""} con questi filtri.</p>`;
+  }
+  if (onInat) {
+    content.insertAdjacentHTML("afterbegin", `<p class="on-inat-note">+${onInat} ${onInat === 1 ? "osservazione" : "osservazioni"}
+      su iNaturalist: <button type="button" class="species-link" data-open-inat>nel Report</button></p>`);
   }
 }
+
+// "nel Report": the report, with its iNaturalist list open
+content.addEventListener("click", (event) => {
+  if (!event.target.closest("[data-open-inat]")) return;
+  state.openInatList = true;
+  state.view = "report";
+  window.scrollTo({ top: 0 });
+  render();
+});
 
 // the next page loads by itself when the end of the list comes into view
 let loadingMore = false;
@@ -2108,6 +2140,8 @@ async function renderReport(days = Number(localStorage.getItem("reportDays") || 
     fetchAll(() => state.client.from("daily_summary").select("observation_id, day, scientific_name, italian_name")
       .eq("status", "uploaded").order("observation_id")),
   ]);
+  const openInat = state.openInatList;
+  state.openInatList = false;
   // what is on iNaturalist (its audio lives there now), the latest first
   const inatIds = new Map(onInat.map((row) => [row.id, row.inat_observation_id]));
   const uploaded = rows.filter((row) => row.status === "uploaded")
@@ -2150,7 +2184,7 @@ async function renderReport(days = Number(localStorage.getItem("reportDays") || 
         ${[7, 30, 90, 365].map((n) => `<button type="button" data-days="${n}" class="${n === days ? "on" : ""}">${n === 365 ? "1 anno" : `${n} giorni`}</button>`).join("")}
       </div>
     </div>
-    <details class="inat-uploads">
+    <details class="inat-uploads"${openInat ? " open" : ""}>
       <summary>Su iNaturalist <b>${uploaded.length}</b> <small>caricate in questo periodo</small></summary>
       ${uploaded.length ? `<div class="table-scroll"><table class="report-table inat-table">
         <thead><tr><th>Specie</th><th>Quando</th><th></th></tr></thead>
