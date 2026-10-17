@@ -104,7 +104,7 @@ python bird_audio_cli.py denoise --input ./recording.wav --noise-ref ./noise.wav
 
 ## Sito di revisione
 
-`docs/`, pubblicato con GitHub Pages da `main` (cartella `/docs`), installabile come app.
+`docs/`, pubblicato con GitHub Pages da `main` (cartella `/docs`), installabile come app. Le icone (uccello sul ramo con il suo spettrogramma, ottobre 2026) vengono dai master a 2048 px in `art/icon`: `python dev/make_icons.py` rifa' `icon-192/512` (angoli arrotondati), `icon-maskable-512` (il disegno nella zona sicura, Android lo ritaglia a modo suo), `apple-touch-icon` (180, opaca) e `favicon-64` (ritaglio piu' stretto, perche' a 16-32 px le linee sottili si perdono). La stessa icona compare nelle notifiche del controllo di salute.
 
 Layout compatto: su computer ogni osservazione e' una riga (a sinistra specie, fatti e azioni, a destra le clip, che riempiono la riga), sul telefono una colonna. Barra in alto sempre visibile; la pagina non si svuota mentre carica e la lista continua da sola scorrendo.
 

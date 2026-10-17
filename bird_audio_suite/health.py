@@ -137,10 +137,15 @@ def read_json(path: Path) -> dict | None:
         return None
 
 
+# the app's icon (docs/assets, made by dev/make_icons.py); the system microphone without it
+NOTIFY_ICON = Path(__file__).resolve().parent.parent / "docs" / "assets" / "icon-192.png"
+
+
 def notify(title: str, message: str, urgency: str = "normal") -> None:
+    icon = str(NOTIFY_ICON) if NOTIFY_ICON.exists() else "audio-input-microphone"
     try:
         subprocess.run(
-            ["notify-send", "--app-name=Bird Audio Suite", f"--urgency={urgency}", "--icon=audio-input-microphone", title, message],
+            ["notify-send", "--app-name=Bird Audio Suite", f"--urgency={urgency}", f"--icon={icon}", title, message],
             timeout=10,
             check=False,
         )
