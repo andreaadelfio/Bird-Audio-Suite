@@ -15,7 +15,7 @@
     <link rel="manifest" href="./manifest.webmanifest">
     <link rel="icon" type="image/svg+xml" href="./assets/icon.svg">
     <link rel="apple-touch-icon" href="./assets/icon-192.png">
-    <link rel="stylesheet" href="./assets/styles.css?v=43">
+    <link rel="stylesheet" href="./assets/styles.css?v=44">
   </head>
   <body>
     <div class="page-shell">
@@ -96,6 +96,8 @@
             title="Nessuna clip con confidenza alta">unsure</button>
         </div>
         <input id="filter-confidence" type="hidden" value="">
+        <button id="select-toggle" type="button" class="pill select-toggle" aria-pressed="false"
+          title="Seleziona piu' osservazioni o clip per un'azione in blocco">Seleziona</button>
         <details id="more-filters" class="more-filters">
           <summary>Specie e date <span id="filters-active" class="dot hidden"></span></summary>
           <div class="filter-fields">
@@ -118,6 +120,8 @@
       </div>
 
       <main id="content" aria-live="polite"></main>
+      <!-- "Seleziona": actions on what is picked, within reach of a thumb -->
+      <div id="bulk-bar" class="bulk-bar hidden" role="toolbar" aria-label="Azioni sulle selezionate"></div>
       <button id="more" class="more hidden" type="button">Carica altre</button>
       <p id="status-line" class="status-line" role="status"></p>
     </div>
@@ -125,7 +129,7 @@
     <datalist id="species-list"></datalist>
 
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.1/dist/umd/supabase.min.js"></script>
-    <script src="./assets/config.js?v=43"></script>
-    <script type="module" src="./assets/app.js?v=43"></script>
+    <script src="./assets/config.js?v=44"></script>
+    <script type="module" src="./assets/app.js?v=44"></script>
   </body>
 </html>

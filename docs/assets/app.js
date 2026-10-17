@@ -54,6 +54,8 @@ const state = {
   species: new Map(),
   trash: new Map(), // observation id -> { whole, clips } shown in the Cestino
   observations: new Map(), // id -> observation currently shown, for the iNaturalist upload
+  // "Seleziona": observations (ids) and clips (ids) picked for an action in bulk
+  selection: { on: false, observations: new Set(), clips: new Set() },
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -225,12 +227,13 @@ const ICON_LINK = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.9 12c
 const ICON_UNLINK = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17 7h-4v1.9h4a3.1 3.1 0 0 1 0 6.2h-4V17h4a5 5 0 0 0 0-10zM2 4.27 4.73 7A5 5 0 0 0 7 17h4v-1.9H7a3.1 3.1 0 0 1-2.53-4.88L6.56 12.3 8 13h1.27L11 14.73V13h.73l4.25 4.25 1.27-1.25L3.27 3 2 4.27zM7 8.9h1.73l-1.9-1.9L7 7v1.9z"/></svg>';
 
 // "Pica pica  W iN  status" over "Gazza · Eurasian Magpie"
-function speciesHeaderHtml(observation, label, kind = observation.status) {
+function speciesHeaderHtml(observation, label, kind = observation.status, selectable = false) {
   const species = observation.species || {};
   const names = [species.italian_name, species.english_name].filter(Boolean).map(escapeHtml).join(" · ");
   return `
       <header class="obs-head">
         <div class="title-row">
+          ${selectable ? selectBox("observation", observation.id, "Seleziona l'osservazione") : ""}
           <h2><i>${escapeHtml(observation.scientific_name)}</i></h2>
           ${speciesLinks(observation.scientific_name)}
           <span class="badge badge-${kind}">${escapeHtml(label)}</span>
@@ -338,7 +341,7 @@ function clipHtml(clip, { folded = false, canUnlink = true, onInat = false } = {
   const trimmed = isTrimmed(clip);
   const wrong = clip.review === "wrong";
   return `
-    <figure class="clip review-${clip.review}${folded ? " folded" : ""}" data-clip="${escapeHtml(clip.id)}" data-duration="${duration}">
+    <figure class="clip review-${clip.review}${folded ? " folded" : ""}${state.selection.clips.has(clip.id) ? " selected" : ""}" data-clip="${escapeHtml(clip.id)}" data-duration="${duration}">
       <div class="spectrogram-box" title="Tocca una banda (verde: likely, ambra: unsure) per sentire dove BirdNET riconosce la specie, altrove per ascoltare da lì; trascina per selezionare">
         <img class="spectrogram" src="${escapeHtml(urls.spectrogram)}" alt="Spettrogramma" loading="lazy" draggable="false">
         ${segments.map(([start, end, confidence]) => `<span class="band band-${confidenceClass(confidence)}" style="left:${percentOf(start, duration)};width:${percentOf(end - start, duration)};--strength:${confidence}"></span>`).join("")}
@@ -347,6 +350,7 @@ function clipHtml(clip, { folded = false, canUnlink = true, onInat = false } = {
         <span class="selection hidden"></span>
         <span class="playhead"></span>
         <span class="clip-info">${clipFacts(clip)}</span>
+        ${selectBox("clip", clip.id, "Seleziona la clip")}
         ${trimmed ? `<button type="button" class="trim-chip" data-player="untrim"
           title="Tagliata (il file resta intero): tocca per togliere il taglio">✂ ${Number(clip.trim_start_s).toFixed(1)}–${Number(clip.trim_end_s).toFixed(1)} ✕</button>` : ""}
         <span class="player-time">0:00 / ${formatSeconds(duration)}</span>
@@ -447,8 +451,8 @@ function observationHtml(observation) {
   // on iNaturalist the taxon is iNaturalist's: the PC's uploader copies it here every hour
   const onInat = observation.status === "uploaded";
   return `
-    <article class="observation status-${observation.status} ${confidenceClass(facts.maxConfidence)}${facts.clips.some((clip) => !clip.media_deleted_at) ? "" : " no-clips"}" data-id="${observation.id}">
-      ${speciesHeaderHtml(observation, STATUS_LABELS[observation.status] || observation.status)}
+    <article class="observation status-${observation.status} ${confidenceClass(facts.maxConfidence)}${facts.clips.some((clip) => !clip.media_deleted_at) ? "" : " no-clips"}${state.selection.observations.has(observation.id) ? " selected" : ""}" data-id="${observation.id}">
+      ${speciesHeaderHtml(observation, STATUS_LABELS[observation.status] || observation.status, observation.status, true)}
       ${observationMeta(observation, facts)}
       <div class="fix${corrected ? "" : " hidden"}">
         <span>${onInat ? "Su iNaturalist" : "Specie corretta"}</span>
@@ -465,6 +469,13 @@ content.addEventListener("click", async (event) => {
   const card = event.target.closest(".observation");
   if (!card) return;
   const id = Number(card.dataset.id);
+
+  const pick = event.target.closest("[data-select-observation], [data-select-clip]");
+  if (pick) {
+    if (pick.dataset.selectObservation) toggleSelected(state.selection.observations, Number(pick.dataset.selectObservation), pick, ".observation");
+    else toggleSelected(state.selection.clips, pick.dataset.selectClip, pick, ".clip");
+    return;
+  }
 
   const showClips = event.target.closest("[data-show-clips]");
   if (showClips) {
@@ -1113,6 +1124,229 @@ async function unlinkClip(figure) {
   setStatus("Clip staccata: ora è un'osservazione a sé, da rivedere (correggi la specie con la matita se serve).");
 }
 
+// ---------------------------------------------------------------- selection, actions in bulk
+
+// "Seleziona" puts a round box on every observation and clip of the list, and a bar at the bottom
+// with the actions of the single ones: confirm, back to review, discard, iNaturalist, delete. The
+// same rules as one at a time: discarding a clip marks it wrong (it goes to the Cestino), deleting
+// something on iNaturalist removes only its files. A clip of an observation picked as a whole goes
+// with it. Each action clears what it was done on.
+function selectBox(kind, id, label) {
+  const on = (kind === "observation" ? state.selection.observations : state.selection.clips).has(id);
+  return `<button type="button" class="select-box" data-select-${kind}="${escapeHtml(String(id))}" aria-pressed="${on}"
+    aria-label="${label}" title="${label}">${ICON_CHECK}</button>`;
+}
+
+function toggleSelected(set, id, box, holder) {
+  const on = !set.has(id);
+  if (on) set.add(id);
+  else set.delete(id);
+  box.setAttribute("aria-pressed", String(on));
+  box.closest(holder)?.classList.toggle("selected", on);
+  updateBulkBar();
+}
+
+function clearPicked() {
+  state.selection.observations.clear();
+  state.selection.clips.clear();
+  content.querySelectorAll(".selected").forEach((element) => element.classList.remove("selected"));
+  content.querySelectorAll('.select-box[aria-pressed="true"]').forEach((box) => box.setAttribute("aria-pressed", "false"));
+  updateBulkBar();
+}
+
+function setSelecting(on) {
+  state.selection.on = on;
+  document.body.classList.toggle("selecting", on);
+  $("#select-toggle").classList.toggle("on", on);
+  $("#select-toggle").setAttribute("aria-pressed", String(on));
+  clearPicked();
+}
+
+function pickedObservations() {
+  return [...state.selection.observations].map((id) => state.observations.get(id)).filter(Boolean);
+}
+
+// clips picked on their own (not inside an observation picked as a whole)
+function pickedClips() {
+  return [...state.selection.clips].map(findClip)
+    .filter((found) => found?.observation && !state.selection.observations.has(found.observation.id));
+}
+
+const STATUS_PLURALS = { pending: "da rivedere", confirmed: "confermate", rejected: "scartate", uploaded: "caricate" };
+
+const BULK_ACTIONS = [
+  ["pending", "round ghost", ICON_UNDO, "Rimetti da rivedere (le clip scartate tornano nell'osservazione)"],
+  ["rejected", "round reject", ICON_CROSS, "Scarta: le osservazioni vanno nel Cestino, le clip anche"],
+  ["confirmed", "round confirm", ICON_CHECK, "Conferma le osservazioni"],
+  ["inat", "inat", "↑ iNat", "Carica su iNaturalist le osservazioni confermate"],
+  ["delete", "round danger", ICON_TRASH, "Elimina per sempre (chiede conferma)"],
+];
+
+$("#bulk-bar").innerHTML = `
+  <span id="bulk-count" class="bulk-count"></span>
+  <button type="button" data-bulk="all">Tutte</button>
+  <span class="spacer"></span>
+  <span class="bulk-actions">${BULK_ACTIONS.map(([action, kind, icon, title]) => `<button type="button" class="${kind}"
+    data-bulk="${action}" title="${title}" aria-label="${title}">${icon}</button>`).join("")}</span>
+  <button type="button" class="bulk-done" data-bulk="done">Fine</button>`;
+
+function updateBulkBar() {
+  const bar = $("#bulk-bar");
+  bar.classList.toggle("hidden", !state.selection.on);
+  if (!state.selection.on) return;
+  const observations = pickedObservations();
+  const clips = pickedClips();
+  const parts = [
+    observations.length ? `${observations.length} ${observations.length === 1 ? "osservazione" : "osservazioni"}` : "",
+    clips.length ? `${clips.length} clip` : "",
+  ].filter(Boolean);
+  $("#bulk-count").textContent = parts.join(" · ") || "Tocca i cerchi";
+  const able = {
+    pending: observations.some((o) => o.status !== "pending") || clips.some(({ clip }) => clip.review === "wrong"),
+    rejected: observations.some((o) => !["rejected", "uploaded"].includes(o.status)) || clips.some(({ clip }) => clip.review !== "wrong"),
+    confirmed: observations.some((o) => !["confirmed", "uploaded"].includes(o.status)),
+    inat: observations.some((o) => o.status === "confirmed"),
+    delete: observations.length + clips.length > 0,
+  };
+  Object.entries(able).forEach(([action, on]) => { bar.querySelector(`[data-bulk="${action}"]`).disabled = !on; });
+  const cards = [...content.querySelectorAll(".observation")];
+  bar.querySelector('[data-bulk="all"]').textContent =
+    cards.length && cards.every((card) => state.selection.observations.has(Number(card.dataset.id))) ? "Nessuna" : "Tutte";
+}
+
+function cardOf(observation) {
+  return content.querySelector(`.observation[data-id="${observation.id}"]`);
+}
+
+// a status for the observations, and for the clips picked alone what it means for a clip:
+// discarded (wrong) or back in their observation (unreviewed)
+async function bulkStatus(status) {
+  const observations = pickedObservations().filter((o) => o.status !== status
+    && !(o.status === "uploaded" && (status === "rejected" || status === "confirmed")));
+  const clipReview = { rejected: "wrong", pending: "unreviewed" }[status];
+  const clips = clipReview ? pickedClips().filter(({ clip }) => clip.review !== clipReview) : [];
+  if (observations.length) {
+    const { error } = await state.client.from("observations")
+      .update({ status, reviewed_at: new Date().toISOString() }).in("id", observations.map((o) => o.id));
+    if (error) throw error;
+  }
+  if (clips.length) {
+    const { error } = await state.client.from("clips").update({ review: clipReview }).in("id", clips.map(({ clip }) => clip.id));
+    if (error) throw error;
+  }
+  const redraw = new Set();
+  for (const observation of observations) {
+    observation.status = status;
+    state.selection.observations.delete(observation.id);
+    if (leavesFilteredView(status)) removeCard(cardOf(observation));
+    else redraw.add(observation);
+  }
+  for (const { clip, observation } of clips) {
+    clip.review = clipReview;
+    state.selection.clips.delete(clip.id);
+    redraw.add(observation);
+  }
+  redraw.forEach((observation) => { if (cardOf(observation)) redrawObservation(observation); });
+  setStatus([
+    observations.length ? (observations.length === 1 ? `1 osservazione ${STATUS_LABELS[status]}`
+      : `${observations.length} osservazioni ${STATUS_PLURALS[status]}`) : "",
+    clips.length ? `${clips.length} clip ${clipReview === "wrong" ? "scartate" : "rimesse nell'osservazione"}` : "",
+  ].filter(Boolean).join(", ") + ".");
+  refreshCounts();
+  updateBulkBar();
+}
+
+async function bulkDelete() {
+  const observations = pickedObservations();
+  const byObservation = new Map();
+  for (const { clip, observation } of pickedClips()) {
+    if (!byObservation.has(observation.id)) byObservation.set(observation.id, { observationId: observation.id, whole: false, clips: [] });
+    byObservation.get(observation.id).clips.push(clip);
+  }
+  const entries = [...observations.map((o) => ({ observationId: o.id, whole: true, clips: o.clips || [] })), ...byObservation.values()];
+  if (!(await deleteForGood(entries))) return; // it asked first, and says how it went
+  for (const observation of observations) {
+    state.selection.observations.delete(observation.id);
+    if (observation.status === "uploaded") {
+      redrawObservation(observation); // on iNaturalist: only its files went
+    } else {
+      state.observations.delete(observation.id);
+      removeCard(cardOf(observation));
+    }
+  }
+  for (const entry of byObservation.values()) {
+    const observation = state.observations.get(entry.observationId);
+    entry.clips.forEach((clip) => state.selection.clips.delete(clip.id));
+    if (!observation) continue;
+    // the rows deleted go; those on iNaturalist stay, without their files
+    observation.clips = observation.clips.filter((clip) => !entry.clips.includes(clip) || clip.media_deleted_at);
+    if (!observation.clips.length) {
+      state.observations.delete(observation.id);
+      removeCard(cardOf(observation));
+    } else {
+      redrawObservation(observation);
+    }
+  }
+  updateBulkBar();
+}
+
+async function bulkInat() {
+  const observations = pickedObservations().filter((o) => o.status === "confirmed");
+  let done = 0;
+  for (const [index, observation] of observations.entries()) {
+    try {
+      await uploadObservationToInat(observation, (step) => setStatus(`iNaturalist ${index + 1}/${observations.length}: ${step}…`));
+      done += 1;
+      state.selection.observations.delete(observation.id);
+      if (leavesFilteredView("uploaded")) removeCard(cardOf(observation));
+      else redrawObservation(observation);
+    } catch (error) {
+      setStatus(`iNaturalist: ${error.message}`, true);
+      if (/token|collega/i.test(error.message)) break; // no point going on without a valid token
+    }
+  }
+  if (done) setStatus(`iNaturalist: caricate ${done} di ${observations.length}.`, done < observations.length);
+  refreshCounts();
+  updateBulkBar();
+}
+
+$("#select-toggle").addEventListener("click", () => setSelecting(!state.selection.on));
+
+$("#bulk-bar").addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-bulk]");
+  if (!button || button.disabled) return;
+  const action = button.dataset.bulk;
+  if (action === "done") {
+    setSelecting(false);
+    return;
+  }
+  if (action === "all") {
+    const cards = [...content.querySelectorAll(".observation")];
+    const everything = cards.every((card) => state.selection.observations.has(Number(card.dataset.id)));
+    cards.forEach((card) => {
+      const id = Number(card.dataset.id);
+      if (everything) state.selection.observations.delete(id);
+      else state.selection.observations.add(id);
+      card.classList.toggle("selected", !everything);
+      card.querySelector("[data-select-observation]")?.setAttribute("aria-pressed", String(!everything));
+    });
+    updateBulkBar();
+    return;
+  }
+  const buttons = [...$("#bulk-bar").querySelectorAll("button")];
+  buttons.forEach((each) => { each.disabled = true; });
+  try {
+    if (action === "delete") await bulkDelete();
+    else if (action === "inat") await bulkInat();
+    else await bulkStatus(action);
+  } catch (error) {
+    setStatus(`Errore: ${error.message}`, true);
+  } finally {
+    buttons.forEach((each) => { each.disabled = false; });
+    updateBulkBar();
+  }
+});
+
 // ---------------------------------------------------------------- link a clip to another observation
 
 // "Collega" on a clip, then "Collega qui" on another observation: the clip appears there too
@@ -1205,6 +1439,10 @@ document.querySelectorAll("[data-link-mode]").forEach((button) => button.addEven
 
 // keyboard on a computer: space plays/pauses the last clip used, arrows move by 2 s
 document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && state.selection.on) {
+    setSelecting(false);
+    return;
+  }
   if (event.target.closest("input, textarea, select, button") || event.metaKey || event.ctrlKey || event.altKey) return;
   const figure = state.currentFigure?.isConnected ? state.currentFigure : content.querySelector(".clip:not(.folded)");
   if (!figure) return;
@@ -1349,8 +1587,10 @@ async function deleteForGood(entries, { ask = true } = {}) {
   const archived = new Set(entries.flatMap((entry) => entry.clips
     .filter((clip) => keepsItsRow(state.observations.get(entry.observationId), clip)).map((clip) => clip.id)));
   const wholeCount = entries.filter((entry) => entry.whole).length;
-  const question = `Eliminare definitivamente ${clips.length} clip${wholeCount ? ` (${wholeCount} osservazioni intere)` : ""}?\n\n`
-    + "Audio e spettrogrammi vengono cancellati da Supabase e non si possono recuperare dal sito. I WAV sul PC restano.";
+  const gone = clips.length - archived.size;
+  const question = `Eliminare definitivamente ${gone} clip${wholeCount ? ` (${wholeCount} ${wholeCount === 1 ? "osservazione intera" : "osservazioni intere"})` : ""}?\n\n`
+    + "Audio e spettrogrammi vengono cancellati da Supabase e non si possono recuperare dal sito. I WAV sul PC restano."
+    + (archived.size ? `\n\nDi ${archived.size} clip gia' su iNaturalist si tolgono solo i file: restano nei report.` : "");
   if (!clips.length || (ask && !window.confirm(question))) return false;
   let deleted = false;
 
@@ -1990,6 +2230,9 @@ function showSpeciesObservations(scientificName, fromDay) {
 let renderToken = 0;
 async function render() {
   const token = ++renderToken;
+  // another list: what was picked is not there any more (and only Osservazioni has the selection)
+  if (state.view === "observations") clearPicked();
+  else setSelecting(false);
   document.querySelectorAll(".tab").forEach((tab) => tab.classList.toggle("active", tab.dataset.view === state.view));
   $("#filters").classList.toggle("hidden", state.view !== "observations");
   showFilterState();

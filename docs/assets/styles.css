@@ -736,6 +736,56 @@ button.denoise.strong { background: var(--accent-deep); border-color: var(--acce
   .trash-head .danger { width: 100%; }
 }
 
+/* "Seleziona": a round box on every observation and clip, a bar at the bottom */
+.select-box { display: none; }
+body.selecting .select-box {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 1.7rem;
+  min-height: 1.7rem;
+  height: 1.7rem;
+  padding: 0;
+  border: 2px solid var(--ink-soft);
+  border-radius: 50%;
+  background: var(--surface);
+  color: transparent;
+}
+body.selecting .select-box svg { width: 1.1rem; height: 1.1rem; fill: currentColor; }
+body.selecting .select-box[aria-pressed="true"] { border-color: var(--accent); background: var(--accent); color: var(--on-accent); }
+.spectrogram-box .select-box { position: absolute; top: 4px; right: 4px; z-index: 2; }
+.observation.selected { outline: 2px solid var(--accent); outline-offset: -1px; }
+.clip.selected { outline: 2px solid var(--accent); outline-offset: -2px; }
+.select-toggle.on { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+body.selecting #content { padding-bottom: 4.5rem; } /* the last card is not hidden by the bar */
+.bulk-bar {
+  position: fixed;
+  left: 50%;
+  bottom: max(0.6rem, env(safe-area-inset-bottom));
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  width: min(48rem, calc(100% - 1rem));
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--accent) 12%, var(--surface));
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.18);
+  transform: translateX(-50%);
+}
+.bulk-bar .bulk-count { font-weight: 600; font-size: 0.9rem; white-space: nowrap; }
+.bulk-bar .spacer { flex: 1; }
+.bulk-bar button:disabled { opacity: 0.35; }
+.bulk-actions { display: flex; align-items: center; gap: 0.4rem; }
+/* a phone: count, all and done on top, the actions below them */
+@media (max-width: 720px) {
+  .bulk-bar { flex-wrap: wrap; }
+  .bulk-bar .spacer { display: none; }
+  .bulk-bar .bulk-done { margin-left: auto; }
+  .bulk-actions { order: 3; width: 100%; justify-content: space-between; }
+}
+
 /* linking a clip to another observation: the bar stays in sight while you scroll */
 .link-banner {
   position: sticky;
