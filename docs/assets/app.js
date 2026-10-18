@@ -352,6 +352,13 @@ function clipFacts(clip) {
     · ${seconds}`;
 }
 
+// the X of a clip, as the one of an observation; once discarded the same button puts it back (↺)
+function clipReviewLook(wrong) {
+  return wrong
+    ? { icon: ICON_UNDO, label: "Rimetti la clip nell'osservazione" }
+    : { icon: ICON_CROSS, label: "Scarta: la clip non contiene la specie, va nel Cestino" };
+}
+
 // canUnlink: only when the observation has other clips (a lone clip is already on its own, and
 // can still be linked elsewhere); onInat: its observation is on iNaturalist (the bin then removes
 // only the files)
@@ -391,7 +398,7 @@ function clipHtml(clip, { folded = false, canUnlink = true, onInat = false } = {
         ${canUnlink ? `<button type="button" class="tool" data-player="unlink" title="Non è lo stesso uccello (o la stessa specie): stacca la clip in un'osservazione a sé"
           aria-label="Stacca la clip">${ICON_UNLINK}</button>` : ""}
         <button type="button" class="tool${wrong ? " on" : ""}" data-clip-review="wrong"
-          title="${wrong ? "Rimetti la clip nell'osservazione" : "La clip non contiene la specie: va nel Cestino"}">${wrong ? "Ripristina" : "Scarta"}</button>
+          title="${clipReviewLook(wrong).label}" aria-label="${clipReviewLook(wrong).label}">${clipReviewLook(wrong).icon}</button>
         ${onInat && !wrong
           ? `<button type="button" class="tool trash-button" data-delete-clip
           title="Togli subito audio e spettrogramma da Supabase (sono su iNaturalist): la clip resta nei report" aria-label="Togli i file da Supabase">${ICON_TRASH}</button>`
@@ -519,8 +526,10 @@ content.addEventListener("click", async (event) => {
       figure.classList.toggle("review-wrong", value === "wrong");
       figure.classList.toggle("review-unreviewed", value !== "wrong");
       clipButton.classList.toggle("on", value === "wrong");
-      clipButton.textContent = value === "wrong" ? "Ripristina" : "Scarta";
-      clipButton.title = value === "wrong" ? "Rimetti la clip nell'osservazione" : "La clip non contiene la specie: va nel Cestino";
+      const look = clipReviewLook(value === "wrong");
+      clipButton.innerHTML = look.icon;
+      clipButton.title = look.label;
+      clipButton.setAttribute("aria-label", look.label);
       const found = findClip(figure.dataset.clip);
       if (found) found.clip.review = value;
       if (state.view === "trash" && value !== "wrong") figure.remove();

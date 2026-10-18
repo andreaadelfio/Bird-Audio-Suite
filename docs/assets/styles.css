@@ -85,8 +85,21 @@ button.ghost:hover { background: var(--sunken); }
 /* small square-ish buttons inside the clip player */
 button.tool { min-height: 1.75rem; padding: 0 0.45rem; font-size: 0.8rem; border-radius: 6px; }
 button.tool.on, button.pill.on { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
-/* the speed: a menu that looks like the buttons next to it */
-select.tool { min-height: 1.75rem; padding: 0 0.2rem; font-size: 0.8rem; border-radius: 6px; background: var(--surface); cursor: pointer; }
+/* the speed: a menu that looks like the buttons next to it, no arrow and a fixed width (the
+   player stays on one row, and does not move when the speed changes) */
+select.tool {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 2.9rem;
+  min-height: 1.75rem;
+  padding: 0;
+  font-size: 0.8rem;
+  text-align: center;
+  text-align-last: center;
+  border-radius: 6px;
+  background: var(--surface);
+  cursor: pointer;
+}
 select.tool.on { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 select.tool option { background: var(--surface); color: var(--ink); }
 
@@ -485,6 +498,7 @@ button.denoise.strong { background: var(--accent-deep); border-color: var(--acce
 }
 
 /* "Scarta" marks the clip wrong (it goes to the Cestino); the bin deletes it for good */
+.player [data-clip-review] { color: var(--negative); }
 .player [data-clip-review].on { background: var(--negative); border-color: var(--negative); color: var(--on-accent); }
 .trash-button { width: 1.75rem; padding: 0; display: grid; place-items: center; color: var(--negative); }
 .trash-button:hover { background: color-mix(in srgb, var(--negative) 14%, transparent); border-color: var(--negative); }
@@ -720,10 +734,10 @@ button.denoise.strong { background: var(--accent-deep); border-color: var(--acce
 
   .clips { grid-template-columns: minmax(0, 1fr); }
   .spectrogram-box { height: 104px; }
-  .player { gap: 0.3rem; }
+  .player { gap: 0.25rem; }
   .play-button { width: 2.3rem; min-height: 2.3rem; }
   button.tool { min-height: 2.3rem; padding: 0 0.6rem; font-size: 0.85rem; }
-  select.tool { min-height: 2.3rem; padding: 0 0.3rem; font-size: 16px; } /* 16px: iOS zooms into smaller fields */
+  select.tool { width: 2.7rem; min-height: 2.3rem; font-size: 16px; } /* 16px: iOS zooms into smaller fields */
   .trash-button { width: 2.3rem; }
   .trim-chip { line-height: 1.9; }
   .species-links a, .example-button { width: 1.75rem; min-height: 1.75rem; height: 1.75rem; }
