@@ -1,1 +1,1 @@
-- assicurarsi che se il pc stesso riproduce audio, non viene registrato
+- [x] assicurarsi che se il pc stesso riproduce audio, non viene registrato (fatto: `bird_audio_suite/echo.py`, `PlaybackSubtractor`, attivo di default; vedi README, "Ascolto live")
