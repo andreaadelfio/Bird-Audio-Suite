@@ -85,6 +85,10 @@ button.ghost:hover { background: var(--sunken); }
 /* small square-ish buttons inside the clip player */
 button.tool { min-height: 1.75rem; padding: 0 0.45rem; font-size: 0.8rem; border-radius: 6px; }
 button.tool.on, button.pill.on { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+/* the speed: a menu that looks like the buttons next to it */
+select.tool { min-height: 1.75rem; padding: 0 0.2rem; font-size: 0.8rem; border-radius: 6px; background: var(--surface); cursor: pointer; }
+select.tool.on { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+select.tool option { background: var(--surface); color: var(--ink); }
 
 input, select {
   min-height: var(--control);
@@ -719,6 +723,7 @@ button.denoise.strong { background: var(--accent-deep); border-color: var(--acce
   .player { gap: 0.3rem; }
   .play-button { width: 2.3rem; min-height: 2.3rem; }
   button.tool { min-height: 2.3rem; padding: 0 0.6rem; font-size: 0.85rem; }
+  select.tool { min-height: 2.3rem; padding: 0 0.3rem; font-size: 16px; } /* 16px: iOS zooms into smaller fields */
   .trash-button { width: 2.3rem; }
   .trim-chip { line-height: 1.9; }
   .species-links a, .example-button { width: 1.75rem; min-height: 1.75rem; height: 1.75rem; }

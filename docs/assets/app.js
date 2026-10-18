@@ -299,6 +299,8 @@ const ICON_DENOISE = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7.5 
 const ICON_LOOP = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/></svg>';
 const SKIP_SECONDS = 2;
 const BAND_PADDING_SECONDS = 0.5;
+// slower to hear the details, faster to go through a long clip
+const PLAYBACK_RATES = [[0.5, "½×"], [1, "1×"], [1.25, "1.25×"], [1.5, "1.5×"], [2, "2×"]];
 
 function formatSeconds(seconds) {
   const value = Math.max(0, Number(seconds) || 0);
@@ -378,7 +380,8 @@ function clipHtml(clip, { folded = false, canUnlink = true, onInat = false } = {
       <div class="player">
         <button type="button" class="play-button" data-player="toggle" aria-label="Riproduci">${ICON_PLAY}</button>
         <button type="button" class="tool" data-player="back" title="Indietro di ${SKIP_SECONDS} secondi">−${SKIP_SECONDS}s</button>
-        <button type="button" class="tool" data-player="speed" title="Velocità: metà per sentire i dettagli">1×</button>
+        <select class="tool" data-speed title="Velocità: più lenta per sentire i dettagli, più veloce per scorrere la clip"
+          aria-label="Velocità di riproduzione">${PLAYBACK_RATES.map(([rate, label]) => `<option value="${rate}"${rate === 1 ? " selected" : ""}>${label}</option>`).join("")}</select>
         <button type="button" class="tool" data-player="loop" title="Ripeti in continuazione" aria-label="Ripeti">${ICON_LOOP}</button>
         <button type="button" class="tool denoise" data-player="denoise" aria-label="Riduci il rumore"
           title="Riduci il rumore: stima il fondo fuori dalle bande e lo sottrae. Tocca ancora per più forte, poi per l'originale">${ICON_DENOISE}</button>
@@ -891,6 +894,17 @@ content.addEventListener("pointerup", (event) => {
 
 content.addEventListener("pointercancel", () => { drag = null; });
 
+// the default rate too: a new source in the same player (noise reduction) would reset it to 1×
+content.addEventListener("change", (event) => {
+  const speed = event.target.closest("[data-speed]");
+  if (!speed) return;
+  const audio = speed.closest(".clip").querySelector("audio");
+  const rate = Number(speed.value);
+  audio.defaultPlaybackRate = rate;
+  audio.playbackRate = rate;
+  speed.classList.toggle("on", rate !== 1);
+});
+
 async function saveTrim(figure, start, end) {
   const found = findClip(figure.dataset.clip);
   if (!found) return;
@@ -919,11 +933,6 @@ content.addEventListener("click", async (event) => {
         break;
       case "back":
         skip(figure, -SKIP_SECONDS);
-        break;
-      case "speed":
-        audio.playbackRate = audio.playbackRate === 1 ? 0.5 : 1;
-        control.textContent = audio.playbackRate === 1 ? "1×" : "½×";
-        control.classList.toggle("on", audio.playbackRate !== 1);
         break;
       case "loop":
         player.loop = !player.loop;
