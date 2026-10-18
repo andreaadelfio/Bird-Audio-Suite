@@ -445,8 +445,11 @@ function observationActions(observation) {
     buttons.push(`<a class="inat-link" href="https://www.inaturalist.org/observations/${Number(observation.inat_observation_id)}"
       target="_blank" rel="noopener">Vedi su iNat ↗</a>`);
   }
-  // the round ones on the right, within reach of a right thumb; the tick last
+  // the round ones on the right, within reach of a right thumb; the tick last, the bin first (the
+  // farthest from it)
   buttons.push('<span class="spacer"></span>');
+  if (status !== "uploaded") buttons.push(`<button type="button" class="round ghost delete" data-delete-observation
+    title="Elimina per sempre l'osservazione con tutte le sue clip (chiede conferma)" aria-label="Elimina definitivamente l'osservazione">${ICON_TRASH}</button>`);
   if (status !== "uploaded") buttons.push(`<button type="button" class="round ghost" data-fix-toggle title="Correggi la specie se BirdNET ha sbagliato"
     aria-label="Correggi la specie">${ICON_EDIT}</button>`);
   // on iNaturalist is final: its species follows iNaturalist, its files are gone
@@ -560,6 +563,22 @@ content.addEventListener("click", async (event) => {
       figure.remove();
       if (!card.querySelector(".clip")) card.remove(); // it was its last clip: the observation is gone too
     }
+    return;
+  }
+
+  // the whole observation, as "Elimina per sempre" of the selection: it asks first, since it takes
+  // every clip with it
+  if (event.target.closest("[data-delete-observation]")) {
+    const observation = state.observations.get(id);
+    if (!observation || observation.status === "uploaded") return; // final, in the history
+    if (state.linking?.observation.id === id) stopLinking();
+    card.querySelectorAll("audio").forEach((audio) => audio.pause());
+    if (!(await deleteForGood([{ observationId: id, whole: true, clips: observation.clips || [] }]))) return;
+    state.selection.observations.delete(id);
+    (observation.clips || []).forEach((clip) => state.selection.clips.delete(clip.id));
+    state.observations.delete(id);
+    removeCard(card);
+    updateBulkBar();
     return;
   }
 
