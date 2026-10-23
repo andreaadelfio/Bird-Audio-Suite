@@ -2168,21 +2168,17 @@ async function renderReport(days = Number(localStorage.getItem("reportDays") || 
   const speciesLink = (row) => `<button type="button" class="species-link" data-species="${escapeHtml(row.scientific_name)}"
     data-from="${from}" title="Vedi le osservazioni di questo periodo">${escapeHtml(row.italian_name || row.scientific_name)}</button>`;
   // the rows stay when the files leave Storage after iNaturalist: a year back is all there
-  const [rows, onInat, inatHistory] = await Promise.all([
+  const [rows, inatHistory] = await Promise.all([
     fetchAll(() => state.client.from("daily_summary").select("*").gte("day", from).neq("status", "rejected")
       .order("observation_id")),
-    fetchAll(() => state.client.from("observations").select("id, inat_observation_id").eq("status", "uploaded")
-      .gte("day", from).order("id")),
     // the seasons need every month, whatever period is chosen
     fetchAll(() => state.client.from("daily_summary").select("observation_id, day, scientific_name, italian_name")
       .eq("status", "uploaded").order("observation_id")),
   ]);
   const openInat = state.openInatList;
   state.openInatList = false;
-  // what is on iNaturalist (its audio lives there now), the latest first
-  const inatIds = new Map(onInat.map((row) => [row.id, row.inat_observation_id]));
-  const uploaded = rows.filter((row) => row.status === "uploaded")
-    .sort((a, b) => String(b.first_heard).localeCompare(String(a.first_heard)));
+  // what is on iNaturalist (its audio lives there now): counted here, shown by the iNaturalist widget
+  const uploaded = rows.filter((row) => row.status === "uploaded");
 
   const bySpecies = new Map();
   const hours = Array.from({ length: 24 }, () => 0);
@@ -2223,20 +2219,7 @@ async function renderReport(days = Number(localStorage.getItem("reportDays") || 
     </div>
     <details class="inat-uploads"${openInat ? " open" : ""}>
       <summary>Su iNaturalist <b>${uploaded.length}</b> <small>caricate in questo periodo</small></summary>
-      ${uploaded.length ? `<div class="table-scroll"><table class="report-table inat-table">
-        <thead><tr><th>Specie</th><th>Quando</th><th></th></tr></thead>
-        <tbody>${uploaded.map((row) => {
-          const inatId = Number(inatIds.get(row.observation_id));
-          const heard = row.first_heard ? new Date(row.first_heard) : null;
-          return `
-          <tr>
-            <td>${speciesLink(row)}${speciesNote(row, row.birdnet_scientific_name && row.birdnet_scientific_name !== row.scientific_name
-              ? `BirdNET: ${escapeHtml(state.species.get(row.birdnet_scientific_name)?.italian_name || row.birdnet_scientific_name)}` : "")}</td>
-            <td>${heard ? `${shortDateFormat.format(heard)} ${hourFormat.format(heard)}` : ""}</td>
-            <td>${inatId ? `<a class="inat-link" href="https://www.inaturalist.org/observations/${inatId}" target="_blank" rel="noopener">iNat ↗</a>` : ""}</td>
-          </tr>`;
-        }).join("")}</tbody>
-      </table></div>` : '<p class="empty">Nessuna osservazione caricata in questo periodo.</p>'}
+      ${inatWidgetHtml(from)}
       <h3>Specie per mese <small>identificazioni caricate al giorno, da sempre</small></h3>
       ${seasonHtml(inatHistory)}
     </details>
@@ -2262,6 +2245,26 @@ async function renderReport(days = Number(localStorage.getItem("reportDays") || 
         </table></div>` : '<p class="empty">Nessuna specie in questo periodo.</p>'}
       </section>
     </div>`;
+  startInatWidget();
+}
+
+// The observations on iNaturalist, with the widget of andreaadelfio.github.io (inat-widget, loaded
+// in index.html): birds with a sound, from the start of the period, the latest first. It asks
+// iNaturalist only when the box is opened (lazy, the default)
+function inatWidgetHtml(from) {
+  const user = config.inatUser || storageGet(INAT_LOGIN_KEY);
+  if (!user) return '<p class="empty">Collega iNaturalist (iNat in alto) per vedere le osservazioni.</p>';
+  const dark = matchMedia("(prefers-color-scheme: dark)").matches;
+  return `<div class="inat-widget" data-inat-widget data-inat-source="${escapeHtml(user)}" data-inat-source-type="user"
+    data-inat-taxon="3" data-inat-sounds="true" data-inat-date-from="${from}" data-inat-order-by="observed_on"
+    data-inat-order="desc" data-inat-limit="30" data-inat-tile-size="s" data-inat-show-stats="true"
+    data-inat-theme="${dark ? "transparent-dark" : "transparent-light"}"></div>`;
+}
+
+// the report is drawn after the page loaded: the widget starts on its new box here
+function startInatWidget() {
+  const box = content.querySelector("[data-inat-widget]");
+  if (box && window.InatWidget) new window.InatWidget(box);
 }
 
 content.addEventListener("click", (event) => {

@@ -5,5 +5,7 @@ window.APP_CONFIG = {
   // Project Settings -> API Keys -> "Publishable key" (sb_publishable_...): safe in a public
   // site because the `birds` schema gives `anon` no access; you must log in.
   supabaseKey: "sb_publishable_92agUxG_-8nUUuX7H2bzJQ_xiXFPGuW",
-  schema: "birds"
+  schema: "birds",
+  // the iNaturalist user whose observations the Report shows (inat-widget)
+  inatUser: "andreaadelfio"
 };
