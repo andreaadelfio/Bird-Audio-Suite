@@ -2249,15 +2249,17 @@ async function renderReport(days = Number(localStorage.getItem("reportDays") || 
 }
 
 // The observations on iNaturalist, with the widget of andreaadelfio.github.io (inat-widget, loaded
-// in index.html): birds with a sound, from the start of the period, the latest first. It asks
+// in index.html): every observation from the start of the period, the latest first; two rows
+// of six, the widget's "+" shows more. It asks
 // iNaturalist only when the box is opened (lazy, the default)
 function inatWidgetHtml(from) {
   const user = config.inatUser || storageGet(INAT_LOGIN_KEY);
   if (!user) return '<p class="empty">Collega iNaturalist (iNat in alto) per vedere le osservazioni.</p>';
   const dark = matchMedia("(prefers-color-scheme: dark)").matches;
   return `<div class="inat-widget" data-inat-widget data-inat-source="${escapeHtml(user)}" data-inat-source-type="user"
-    data-inat-taxon="3" data-inat-sounds="true" data-inat-date-from="${from}" data-inat-order-by="observed_on"
-    data-inat-order="desc" data-inat-limit="30" data-inat-tile-size="s" data-inat-show-stats="true"
+    data-inat-date-from="${from}" data-inat-order-by="observed_on"
+    data-inat-order="desc" data-inat-limit="30" data-inat-tile-size="xs" data-inat-cols-mode="fixed"
+    data-inat-cols="6" data-inat-rows-mode="fixed" data-inat-rows="2" data-inat-show-stats="true"
     data-inat-theme="${dark ? "transparent-dark" : "transparent-light"}"></div>`;
 }
 
