@@ -602,7 +602,10 @@ button.denoise.strong { background: var(--accent-deep); border-color: var(--acce
 .inat-uploads[open] > summary::before { content: "▾ "; }
 .inat-uploads > summary b { color: var(--uploaded); }
 .inat-uploads > summary small { font-weight: 400; }
-.inat-uploads > .inat-widget, .inat-uploads > .empty { margin-top: 0.35rem; }
+.inat-uploads > [data-inat-widget], .inat-uploads > .empty { margin-top: 0.35rem; }
+/* six small tiles a row: on a wide screen the widget would stretch them to 200 px (the widget
+   replaces the box's classes, its data attribute stays) */
+.inat-uploads > [data-inat-widget] { max-width: 45rem; }
 .inat-uploads > h3 { margin: 0.8rem 0 0.3rem; font-size: 0.9rem; color: var(--ink-soft); font-weight: 600; }
 .inat-uploads > h3 small { font-weight: 400; }
 
