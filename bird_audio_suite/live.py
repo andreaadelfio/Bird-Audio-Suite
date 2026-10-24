@@ -187,6 +187,8 @@ class LiveDetectionTracker:
 
 
 Frame = np.ndarray | tuple[np.ndarray, np.ndarray | None]
+# live: windows waiting for BirdNET (besides the one it is on) before new ones are skipped
+MAX_QUEUED_WINDOWS = 2
 DetectWindow = Callable[..., tuple[dict[str, tuple[float, float, float, str]], np.ndarray]]
 
 
@@ -202,6 +204,8 @@ def run_sliding_window_loop(
     now: Callable[[], datetime] = datetime.now,
     shutdown_timeout: float = 30.0,
     on_timing: Callable[[float, float, float], None] | None = None,
+    on_skip: Callable[[], None] | None = None,
+    max_queued: int | None = None,
 ) -> None:
     """Feed 50%-overlapping windows of ``frames`` to a background detector.
 
@@ -214,6 +218,12 @@ def run_sliding_window_loop(
     ``on_timing(analysis_seconds, budget_seconds, lag_seconds)`` after each window: how long the
     detection took, the time available for it (a new window comes every half slice) and how
     far behind the microphone the analysis has finished.
+
+    When BirdNET is slower than the microphone (a busy or throttled PC) and ``max_queued`` windows
+    are already waiting, the new window is skipped (``on_skip()``) instead of queued: the backlog,
+    the memory and the delay would otherwise grow without end. Windows overlap by half, so a
+    skipped window between two analysed ones leaves no audio unheard. The live passes
+    MAX_QUEUED_WINDOWS; None waits for every window (a recording read faster than real time).
     """
     slice_frames = max(1, int(slice_frames))
     slide_step_frames = max(1, slice_frames // 2)
@@ -293,8 +303,12 @@ def run_sliding_window_loop(
             window_start_sample = total_samples - window.size
             # The last frame has just been captured: date the window from its end.
             window_start_time = now() - timedelta(seconds=window.size / float(sample_rate))
-            task_queue.put((window, playback_window, window_start_sample, window_start_time))
             frames_since_last_window = 0
+            if max_queued is not None and task_queue.qsize() >= max_queued:
+                if on_skip:
+                    on_skip()
+                continue
+            task_queue.put((window, playback_window, window_start_sample, window_start_time))
     finally:
         task_queue.put(None)
         worker_thread.join(timeout=shutdown_timeout)

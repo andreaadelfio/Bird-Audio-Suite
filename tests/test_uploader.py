@@ -21,28 +21,33 @@ class FakeOutbox:
     def __init__(self, folder: Path) -> None:
         self.folder, self.pushes, self.offline, self.busy = folder, 0, False, False
         self.purges = self.published = 0
+        self.tidy_fails = False
+        self.during_push = lambda: None  # e.g. time passing while a long backlog goes
 
     def publish_settings(self) -> None:
         if self.offline:
             raise RuntimeError("offline")
         self.published += 1
 
-    def tidy(self) -> tuple[int, int, int, int]:
+    def tidy(self):
         self.purges += 1
-        return 0, 0, 0, 0
+        return {"purged": 0, "emptied": 0}, (["emptied: ConnectionError()"] if self.tidy_fails else [])
 
-    def push(self):
+    def push(self, progress=None):
         self.pushes += 1
         if self.busy:
             return types.SimpleNamespace(busy=True, sent=0, errors=[])
         if self.offline:
             return types.SimpleNamespace(busy=False, sent=0, errors=["offline"])
-        sent = 0
-        for sidecar in self.folder.glob("*.json"):
+        report = types.SimpleNamespace(busy=False, sent=0, errors=[])
+        for sidecar in sorted(self.folder.glob("*.json")):
+            self.during_push()
             sidecar.unlink()
             sidecar.with_suffix(".wav").unlink()
-            sent += 1
-        return types.SimpleNamespace(busy=False, sent=sent, errors=[])
+            report.sent += 1
+            if progress is not None:
+                progress(report)
+        return report
 
 
 class Loop:
@@ -70,8 +75,8 @@ class UploaderLoopTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.runtime.cleanup()
 
-    def run_loop(self, folder: Path, outbox: FakeOutbox, script, watcher=None) -> dict | None:
-        loop = Loop(script)
+    def run_loop(self, folder: Path, outbox: FakeOutbox, script, watcher=None, loop=None) -> dict | None:
+        loop = loop or Loop(script)
         run_uploader(folder, lambda: outbox, poll_seconds=3, retry_seconds=60,
                      status=UploaderStatus(self.status_path), log=lambda message: None,
                      should_stop=loop.stop, sleep=loop.sleep, clock=lambda: loop.now,
@@ -126,6 +131,35 @@ class UploaderLoopTests(unittest.TestCase):
         self.assertEqual(left, [])
         self.assertLessEqual(outbox.pushes, 4)  # one per poll at most: it never spins
 
+
+    def test_a_failed_tidy_is_tried_again_after_ten_minutes_not_an_hour(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            outbox = FakeOutbox(Path(directory))
+            outbox.tidy_fails = True  # offline at boot
+            self.run_loop(Path(directory), outbox, [lambda: None] * 300)  # 15 min
+        self.assertEqual(outbox.purges, 2)  # at start and 10 min later
+
+    def test_a_long_backlog_keeps_the_state_fresh_while_it_goes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            for index in range(5):
+                write_clip(folder, f"Merlo_{index}", recorded_at=f"2026-10-11T08:0{index}:00+02:00")
+            outbox = FakeOutbox(folder)
+            loop = Loop([lambda: None])
+            seen = []
+
+            def a_minute_per_clip() -> None:
+                loop.now += 60
+                seen.append(read_status(self.status_path))
+
+            outbox.during_push = a_minute_per_clip
+            status = self.run_loop(folder, outbox, None, loop=loop)
+
+        meanwhile = [state for state in seen if state]
+        # written while sending (the health check would call it dead after 5 silent minutes)
+        self.assertEqual([state["pending"] for state in meanwhile], [4, 3, 2, 1])
+        self.assertEqual([state["sent_total"] for state in meanwhile], [0, 0, 0, 0])  # counted once, at the end
+        self.assertEqual((status["pending"], status["sent_total"]), (0, 5))
 
 class StatusTests(unittest.TestCase):
     def test_the_line_under_the_live_table(self) -> None:

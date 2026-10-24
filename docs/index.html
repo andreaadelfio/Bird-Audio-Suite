@@ -5,7 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <title>Bird Audio Suite</title>
     <meta name="robots" content="noindex, nofollow">
-    <meta name="theme-color" content="#3f6d56">
+    <meta name="theme-color" content="#3f6d56" media="(prefers-color-scheme: light)">
+    <meta name="theme-color" content="#161b18" media="(prefers-color-scheme: dark)">
     <!-- Installabile come app (manifest + service-worker.js), come MyFinance e Listino Prezzi -->
     <meta name="application-name" content="Uccelli">
     <meta name="mobile-web-app-capable" content="yes">
@@ -15,7 +16,7 @@
     <link rel="manifest" href="./manifest.webmanifest">
     <link rel="icon" type="image/png" sizes="64x64" href="./assets/favicon-64.png">
     <link rel="apple-touch-icon" href="./assets/apple-touch-icon.png">
-    <link rel="stylesheet" href="./assets/styles.css?v=52">
+    <link rel="stylesheet" href="./assets/styles.css?v=73">
   </head>
   <body>
     <div class="page-shell">
@@ -56,7 +57,7 @@
         <div class="inat-connect">
           <h2>iNaturalist <span id="inat-state" class="inat-state"></span></h2>
           <form id="inat-token-form" class="inat-token">
-            <input id="inat-token" type="password" autocomplete="off" placeholder='token: {"api_token":"..."}'>
+            <input id="inat-token" type="password" autocomplete="off" placeholder='token: {"api_token":"..."}' aria-label="Token di iNaturalist">
             <button type="submit">Collega</button>
           </form>
           <p id="inat-token-hint" class="hint">
@@ -83,7 +84,7 @@
       <section id="filters" class="filters hidden" aria-label="Filtri">
         <div class="status-pills" role="group" aria-label="Stato">
           <button type="button" class="pill on" data-filter-status="">Tutte</button>
-          <button type="button" class="pill" data-filter-status="pending">Da rivedere <span id="pending-pill" class="count"></span></button>
+          <button type="button" class="pill" data-filter-status="pending">Da rivedere</button>
           <button type="button" class="pill" data-filter-status="confirmed">Confermate</button>
           <button type="button" class="pill" data-filter-status="rejected">Scartate</button>
         </div>
@@ -96,11 +97,11 @@
         </div>
         <input id="filter-confidence" type="hidden" value="">
         <button id="select-toggle" type="button" class="pill select-toggle" aria-pressed="false"
-          title="Seleziona piu' osservazioni o clip per un'azione in blocco">Seleziona</button>
+          title="Seleziona più osservazioni o clip per un'azione in blocco">Seleziona</button>
         <details id="more-filters" class="more-filters">
           <summary>Specie e date <span id="filters-active" class="dot hidden"></span></summary>
           <div class="filter-fields">
-            <input id="filter-species" type="search" placeholder="Specie: italiano, inglese o scientifico" aria-label="Specie">
+            <input id="filter-species" type="search" list="species-list" placeholder="Specie: italiano, inglese o scientifico" aria-label="Specie">
             <label class="inline-label">dal <input id="filter-from" type="date"></label>
             <label class="inline-label">al <input id="filter-to" type="date"></label>
             <button id="filters-clear" type="button" class="tool hidden" title="Togli specie e date">✕</button>
@@ -118,7 +119,7 @@
         <button id="link-cancel" type="button">Annulla</button>
       </div>
 
-      <main id="content" aria-live="polite"></main>
+      <main id="content"><p class="empty loading">Carico…</p></main>
       <!-- "Seleziona": actions on what is picked, within reach of a thumb -->
       <div id="bulk-bar" class="bulk-bar hidden" role="toolbar" aria-label="Azioni sulle selezionate"></div>
       <button id="more" class="more hidden" type="button">Carica altre</button>
@@ -131,6 +132,6 @@
     <!-- the iNaturalist widget of andreaadelfio.github.io (repository inat-widget), for the Report -->
     <script defer src="https://andreaadelfio.github.io/inat-widget/inat-widget-custom.js"></script>
     <script src="./assets/config.js?v=51"></script>
-    <script type="module" src="./assets/app.js?v=51"></script>
+    <script type="module" src="./assets/app.js?v=85"></script>
   </body>
 </html>

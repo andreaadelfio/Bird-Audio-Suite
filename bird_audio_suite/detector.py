@@ -43,11 +43,45 @@ from birdnetlib import Recording, RecordingBuffer
 from birdnetlib.analyzer import Analyzer
 
 
+class FastAnalyzer(Analyzer):
+    """birdnetlib's Analyzer with the same results, less Python per 3 s chunk.
+
+    birdnetlib builds a dict of all ~6500 labels for every chunk and sorts it, to keep the few
+    above the threshold: ~7.5 ms a chunk, about a tenth of the live window's BirdNET time (and of
+    the uploader's analysis, with its 55 chunks per 30 s clip). Here numpy picks those few first,
+    in the same order (best first; ties in label order, like the stable sort of the original).
+    """
+
+    def analyze_recording(self, recording):
+        # as birdnetlib does: the species expected at this place and week (cached per position)
+        if self.has_custom_species_list and recording.lon and recording.lat:
+            raise ValueError("Recording lon/lat should not be used in conjunction with a custom species list or path.")
+        if recording.lon and recording.lat and self.classifier_model_path is None:
+            self.set_predicted_species_list_from_position(recording)
+
+        start = 0
+        end = recording.sample_secs
+        results = {}
+        for chunk in recording.chunks:
+            if self.use_custom_classifier:
+                scores = self.predict_with_custom_classifier(chunk, sensitivity=recording.sensitivity)[0]
+            else:
+                scores = self.predict(chunk, sensitivity=recording.sensitivity)[0]
+            keep = np.flatnonzero(scores >= recording.minimum_confidence)
+            keep = keep[np.argsort(-scores[keep], kind="stable")]
+            results[str(start) + "-" + str(end)] = [(self.labels[index], scores[index]) for index in keep]
+            start += recording.sample_secs - recording.overlap
+            end = start + recording.sample_secs
+
+        self.results = results
+        recording.detection_list = self.detections
+
+
 class BirdNetDetector:
     """Thin wrapper around birdnetlib for reusable detection calls."""
 
     def __init__(self) -> None:
-        self.analyzer = Analyzer()
+        self.analyzer = FastAnalyzer()
 
     def detect(
         self,

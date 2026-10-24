@@ -109,19 +109,29 @@ class SupabaseRest:
         response = self.session.get(f"{self.base}/{table}", params=params, timeout=self.timeout)
         return self._check(response, f"{table} read").json()
 
-    def select_column(self, table: str, column: str, page_size: int = 1000) -> list:
-        values: list = []
+    def get_all(self, table: str, params: dict, order: str = "id", page_size: int = 1000) -> list[dict]:
+        """All the rows, page by page: Supabase returns at most 1000 per request, silently."""
+        rows: list[dict] = []
         while True:
             response = self.session.get(
                 f"{self.base}/{table}",
-                params={"select": column, "order": column},
-                headers={"Range": f"{len(values)}-{len(values) + page_size - 1}"},
+                params={**params, "order": order},
+                headers={"Range": f"{len(rows)}-{len(rows) + page_size - 1}"},
                 timeout=self.timeout,
             )
-            page = [row[column] for row in self._check(response, f"{table} read").json()]
-            values.extend(page)
+            page = self._check(response, f"{table} read").json()
+            rows.extend(page)
             if len(page) < page_size:
-                return values
+                return rows
+
+    def existing_ids(self, table: str, ids: list[str], chunk: int = 50) -> set[str]:
+        """Which of `ids` are rows of `table`, asked a few at a time (the URL has a limit)."""
+        found: set[str] = set()
+        for start in range(0, len(ids), chunk):
+            # quoted: clip ids have dots and spaces, maybe commas
+            quoted = ",".join('"' + i.replace("\\", "\\\\").replace('"', '\\"') + '"' for i in ids[start:start + chunk])
+            found.update(row["id"] for row in self.get(table, {"select": "id", "id": f"in.({quoted})"}))
+        return found
 
     def upsert(self, table: str, rows: list[dict], on_conflict: str) -> None:
         if not rows:
@@ -145,11 +155,14 @@ class SupabaseRest:
     def observation_for(self, scientific_name: str, recorded_at: datetime, gap: timedelta | None = None) -> int:
         """The observation a clip belongs to: the one with a clip of the same species within `gap`
         of it (the nearest, if more), else a new one dated the clip's day. Review columns are never
-        touched; across midnight it works too (it looks at times, not days)."""
+        touched; across midnight it works too (it looks at times, not days). Never one already on
+        iNaturalist: a clip joining it would never be reviewed, and lose its files within the hour
+        (a clip that waited offline, or one from the other PC)."""
         gap = gap or timedelta(minutes=settings.OBSERVATION_GAP_MINUTES)
         near = self.get("clips", [
             ("select", "observation_id,recorded_at,observations!inner(scientific_name)"),
             ("observations.scientific_name", f"eq.{scientific_name}"),
+            ("observations.status", "neq.uploaded"),
             ("recorded_at", f"gte.{(recorded_at - gap).isoformat()}"),
             ("recorded_at", f"lte.{(recorded_at + gap).isoformat()}"),
         ])
@@ -453,7 +466,9 @@ class Outbox:
                 else SupabaseStorage(self.config)
             )
 
-    def push(self, limit: int | None = None) -> PushReport:
+    def push(self, limit: int | None = None, progress=None) -> PushReport:
+        """Send what waits, oldest first. `progress(report)` is called after each clip: a long
+        backlog (days offline) takes a while, and the uploader shows meanwhile that it is at work."""
         report = PushReport()
         with detections_lock(self.folder, blocking=False) as acquired:
             if not acquired:
@@ -466,9 +481,14 @@ class Outbox:
                 return report
             if limit is not None:
                 items = items[:limit]
+            ids = [item.clip_id for item in items]
             try:
                 self._connect()
-                deleted = set(self.rest.select_column("deleted_clips", "id"))
+                # only about these clips: the Cestino's list grows forever
+                deleted = self.rest.existing_ids("deleted_clips", ids)
+                # already there: a previous attempt that lost only the answer, or the other PC
+                # (detections/ is in Dropbox); sending it again would undo what the site changed
+                already = self.rest.existing_ids("clips", ids)
             except Exception as exc:  # offline: everything waits for the next attempt
                 report.errors.append(f"Supabase non raggiungibile: {exc}")
                 return report
@@ -478,13 +498,18 @@ class Outbox:
                     if item.clip_id in deleted:
                         self._remove(item)
                         report.discarded += 1
-                        continue
-                    self._send(item, species_sent)
-                    self._remove(item)
-                    report.sent += 1
-                    report.sent_ids.append(item.clip_id)
+                    elif item.clip_id in already:
+                        self._remove(item)
+                        report.sent += 1
+                    else:
+                        self._send(item, species_sent)
+                        self._remove(item)
+                        report.sent += 1
+                        report.sent_ids.append(item.clip_id)
                 except Exception as exc:  # it stays in the folder: the next attempt retries it
                     report.errors.append(f"{item.clip_id}: {exc}")
+                if progress is not None:
+                    progress(report)
             release_perch()  # ~0.9 GB: not kept by the always-on service between rounds
         return report
 
@@ -493,9 +518,7 @@ class Outbox:
         name = data["scientific_name"]
         if name not in species_sent:
             self.names.ensure(name, data.get("english_name", ""))
-            # with its eBird and iNaturalist codes (only those found: offline nothing is overwritten)
-            self.rest.upsert("species", [{**self.names.species_row(name), **self.link_codes(name)}],
-                             on_conflict="scientific_name")
+            self._upsert_species(name)
             species_sent.add(name)
 
         media_path = media_path_for(item.clip_id, item.recorded_at)
@@ -519,26 +542,14 @@ class Outbox:
         # if the clip row then fails, a new observation must not stay behind empty
         observation_id = self.rest.observation_for(name, item.recorded_at)
         try:
-            self._insert_clip(item, data, observation_id, media_path, analysis, perch_heard)
+            row = self._clip_row(item, data, observation_id, media_path, analysis, perch_heard)
+            self.rest.upsert("clips", [row], on_conflict="id")
         except Exception:
             try:
                 self.rest.delete_if_empty(observation_id)
             except Exception:
                 pass  # the hourly clean-up of the uploader removes it later
             raise
-
-    def _insert_clip(self, item: OutboxItem, data: dict, observation_id: int, media_path: str, analysis,
-                     perch_heard=None) -> None:
-        row = self._clip_row(item, data, observation_id, media_path, analysis, perch_heard)
-        try:
-            self.rest.upsert("clips", [row], on_conflict="id")
-        except RuntimeError as exc:
-            if "'perch'" not in str(exc):
-                raise
-            # the schema on Supabase without clips.perch yet (birds_schema.sql not re-run): the clip
-            # goes without Perch's opinion, backfill-perch adds it once the column is there
-            row.pop("perch")
-            self.rest.upsert("clips", [row], on_conflict="id")
 
     def _clip_row(self, item: OutboxItem, data: dict, observation_id: int, media_path: str, analysis,
                   perch_heard) -> dict:
@@ -559,6 +570,13 @@ class Outbox:
             "perch": perch_heard,  # Perch's species, a double check (null: not yet)
         }
 
+    def _upsert_species(self, name: str) -> None:
+        """Its row with the names and the eBird and iNaturalist codes known here: only those found,
+        so an empty name (Wikipedia offline) or a missing code never overwrites one already there."""
+        row = {key: value for key, value in self.names.species_row(name).items() if value}
+        self.rest.upsert("species", [{**row, "scientific_name": name, **self.link_codes(name)}],
+                         on_conflict="scientific_name")
+
     @staticmethod
     def _remove(item: OutboxItem) -> None:
         item.wav.unlink(missing_ok=True)
@@ -572,16 +590,28 @@ class Outbox:
                                               "updated_at": datetime.now(timezone.utc).isoformat()}],
                          on_conflict="key")
 
-    def tidy(self) -> tuple[int, int, int, int]:
+    def tidy(self) -> tuple[dict[str, int], list[str]]:
         """The uploader's hourly housekeeping: files of clips on iNaturalist the site could not
-        remove, observations left empty, the species iNaturalist shows for the uploaded ones, and
-        names for species added by a correction. Returns how many of each."""
-        purged = self.purge_uploaded_media()
-        emptied = self.rest.delete_empty_observations()
-        followed = self.follow_inat_species()
-        named = self.name_new_species()
-        self.fill_perch()
-        return purged, emptied, followed, named
+        remove, observations left empty, the species iNaturalist shows for the uploaded ones, names
+        for species added by a correction, Perch's opinion where it is missing. Each step on its
+        own (iNaturalist down does not hold back the rest). Returns how many of each, and what failed."""
+        self._connect()
+        steps = {
+            "purged": self.purge_uploaded_media,
+            "emptied": self.rest.delete_empty_observations,
+            "followed": self.follow_inat_species,
+            "named": self.name_new_species,
+            "perch": self.fill_perch,
+        }
+        done: dict[str, int] = {}
+        errors: list[str] = []
+        for key, step in steps.items():
+            try:
+                done[key] = step()
+            except Exception as exc:  # offline, or one service down: the next round
+                done[key] = 0
+                errors.append(f"{key}: {exc!r}")
+        return done, errors
 
     def fill_perch(self, limit: int = 20, model=None) -> int:
         """Perch's opinion for clips on Supabase still without it (sent while it could not run, or
@@ -590,12 +620,9 @@ class Outbox:
         from .perch import model as perch_model
 
         self._connect()
-        try:
-            clips = self.rest.get("clips", {
-                "select": "id,media_path,latitude,longitude", "perch": "is.null", "media_deleted_at": "is.null",
-                "latitude": "not.is.null", "order": "recorded_at.desc", "limit": str(limit)})
-        except RuntimeError:
-            return 0  # no clips.perch on Supabase yet (birds_schema.sql not re-run): nothing to fill
+        clips = self.rest.get("clips", {
+            "select": "id,media_path,latitude,longitude", "perch": "is.null", "media_deleted_at": "is.null",
+            "latitude": "not.is.null", "order": "recorded_at.desc", "limit": str(limit)})
         perch = model or (perch_model() if clips else None)
         filled = 0
         try:
@@ -621,13 +648,14 @@ class Outbox:
         (BirdNET's Corvus monedula is iNaturalist's Coloeus monedula) is recognised by its
         iNaturalist taxon and needs no correction. Returns how many observations changed."""
         self._connect()
-        rows = self.rest.get("observations", {
+        rows = self.rest.get_all("observations", {
             "select": "id,scientific_name,corrected_scientific_name,inat_observation_id",
             "status": "eq.uploaded", "inat_observation_id": "not.is.null",
         })
         if not rows:
             return 0
-        known = self.rest.get("species", {"select": "scientific_name,inat_taxon_id", "inat_taxon_id": "not.is.null"})
+        known = self.rest.get_all("species", {"select": "scientific_name,inat_taxon_id", "inat_taxon_id": "not.is.null"},
+                                  order="scientific_name")
         by_taxon = {int(row["inat_taxon_id"]): row["scientific_name"] for row in known}
         taxon_of = {row["scientific_name"]: int(row["inat_taxon_id"]) for row in known}
         changed = 0
@@ -667,8 +695,7 @@ class Outbox:
             name = row["scientific_name"]
             if not any(self.names.ensure(name, birdnet_english_name(name)).values()):
                 continue  # offline, or a name nobody knows: next hour
-            self.rest.upsert("species", [{**self.names.species_row(name), **self.link_codes(name)}],
-                             on_conflict="scientific_name")
+            self._upsert_species(name)
             named += 1
         return named
 

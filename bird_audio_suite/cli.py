@@ -62,7 +62,7 @@ from .health import HeartbeatWriter
 from .inputgain import SOUND_SERVER_DEVICES, SourceVolumeCompensation
 from .metrics import LiveMetrics
 from .uploader import read_status as read_uploader_status, status_line as uploader_status_line
-from .live import LiveDetectionTracker, run_sliding_window_loop
+from .live import MAX_QUEUED_WINDOWS, LiveDetectionTracker, run_sliding_window_loop
 from .species import SpeciesNames
 
 
@@ -965,9 +965,13 @@ class LiveToday:
                 data = json.loads(Path(path).with_suffix(".json").read_text(encoding="utf-8"))
             except (OSError, ValueError):
                 continue
-            day = datetime.fromisoformat(data["recorded_at"]).date().isoformat()
+            start = datetime.fromisoformat(data["recorded_at"])
+            end = start + timedelta(seconds=float(data.get("duration_s") or 0))
+            # the clip starts a few seconds before the bird was heard: around midnight the row
+            # may be on the next day
             with self.lock:
-                self.rows.pop((day, data.get("scientific_name", "")), None)
+                for day in {start.date().isoformat(), end.date().isoformat()}:
+                    self.rows.pop((day, data.get("scientific_name", "")), None)
 
 
 LIVE_TODAY = LiveToday()
@@ -1539,6 +1543,10 @@ def run_live_detection(
     def on_error(exc: Exception) -> None:
         print(f"{datetime.now():%H:%M:%S} - Detection error: {exc!r}")
 
+    def on_skip() -> None:
+        if LIVE_METRICS.record_skip() == 1:  # the first of a spell: the count goes under the table
+            print(f"{datetime.now():%H:%M:%S} - BirdNET è più lento del microfono: salto qualche finestra")
+
     watcher = ConfigWatcher(LIVE_CONFIG_VALUES)
 
     def detect_window(window, playback_window=None):
@@ -1568,6 +1576,8 @@ def run_live_detection(
             on_exported=on_exported,
             on_error=on_error,
             on_timing=LIVE_METRICS.record_window,
+            on_skip=on_skip,
+            max_queued=MAX_QUEUED_WINDOWS,
         )
     finally:
         stop_refresh.set()

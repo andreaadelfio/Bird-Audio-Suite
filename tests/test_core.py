@@ -32,6 +32,22 @@ class AudioTests(unittest.TestCase):
         output_rms = float(np.sqrt(np.mean(denoised**2)))
         self.assertGreater(output_rms, input_rms * 0.8)
 
+    def test_the_noise_reference_is_read_once_for_every_window(self) -> None:
+        from bird_audio_suite import audio
+
+        sample_rate = 16000
+        rng = np.random.default_rng(5)
+        with tempfile.TemporaryDirectory() as directory:
+            noise = Path(directory) / "noise.wav"
+            audio.write_wav_mono(noise, 0.05 * rng.standard_normal(sample_rate), sample_rate)
+            window = (0.05 * rng.standard_normal(sample_rate)).astype(np.float32)
+            with patch.object(audio, "load_audio", wraps=audio.load_audio) as load:
+                first = denoise_signal(window, sample_rate, noise_reference=noise)
+                second = denoise_signal(window, sample_rate, noise_reference=noise)
+        self.assertEqual(load.call_count, 1)
+        np.testing.assert_array_equal(first, second)
+        self.assertLess(float(np.std(first)), float(np.std(window)))  # the noise is taken out
+
     def test_clip_span_policy_can_cover_the_full_slice(self) -> None:
         grouped = {"Turdus merula": (2.0, 3.0, 0.9, "Blackbird")}
 

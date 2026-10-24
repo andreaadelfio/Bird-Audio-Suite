@@ -106,7 +106,9 @@ class ExportTimeTests(unittest.TestCase):
             )
             times = {json.loads(path.with_suffix(".json").read_text())["scientific_name"]:
                      json.loads(path.with_suffix(".json").read_text())["recorded_at"][:19] for path in exported}
+            leftovers = list(Path(directory).glob("*.part"))
 
+        self.assertEqual(leftovers, [])  # each WAV and JSON written aside, then renamed
         self.assertEqual(sorted(path.name for path in exported),
                          ["Merlo_20260901_235955_0.900.wav", "Strix aluco_20260902_000005_0.800.wav"])
         self.assertEqual(times, {"Turdus merula": "2026-09-01T23:59:55", "Strix aluco": "2026-09-02T00:00:05"})
@@ -411,6 +413,19 @@ class LiveSummaryTests(unittest.TestCase):
             today.clips_written([wav])
         # the great tit is in the transit folder (then on Supabase): if it is deleted there, it is gone
         self.assertEqual([row["scientific_name"] for row in today.of_day("2026-10-15")], ["Sitta europaea"])
+
+    def test_a_clip_started_before_midnight_clears_the_owl_heard_after_it(self) -> None:
+        from bird_audio_suite.cli import LiveToday
+
+        today = LiveToday()
+        today.add("Strix aluco", "Tawny Owl", 0.9, datetime(2026, 10, 16, 0, 0, 1).astimezone())
+        with tempfile.TemporaryDirectory() as directory:
+            wav = Path(directory) / "Allocco_20261015_235958_0.900.wav"  # 3 s of pre-roll
+            wav.with_suffix(".json").write_text(json.dumps({
+                "scientific_name": "Strix aluco", "duration_s": 10.0,
+                "recorded_at": datetime(2026, 10, 15, 23, 59, 58).astimezone().isoformat()}))
+            today.clips_written([wav])
+        self.assertEqual(today.of_day("2026-10-16"), [])
 
     def test_supabase_transit_and_memory_become_one_row_per_species(self) -> None:
         remote = [{"scientific_name": "Pica pica", "english_name": "Magpie", "italian_name": "Gazza",

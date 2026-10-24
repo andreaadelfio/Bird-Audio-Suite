@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 import unittest
 from datetime import datetime, timedelta
 
@@ -49,6 +50,19 @@ class LiveMetricsTests(unittest.TestCase):
         data = metrics.snapshot()
         self.assertEqual((data["windows"], data["analysis_max_s"], data["lag_max_s"]), (1, 0.5, 0.2))
 
+    def test_skipped_windows_are_counted_for_ten_minutes(self) -> None:
+        clock = Clock()
+        metrics = LiveMetrics(clock=clock)
+        self.assertEqual((metrics.record_skip(), metrics.record_skip()), (1, 2))
+        metrics.record_window(5.5, 4.8, 9.0)
+        self.assertEqual(metrics.snapshot()["skipped"], 2)
+        self.assertIn("2 finestre saltate", metrics.summary_lines()[0])
+        clock.now += 11 * 60
+        metrics.record_window(0.5, 4.8, 0.2)
+        self.assertEqual(metrics.snapshot()["skipped"], 0)
+        self.assertNotIn("saltate", metrics.summary_lines()[0])
+        self.assertEqual(metrics.record_skip(), 1)  # a new spell
+
     def test_memory_of_this_process(self) -> None:
         rss, peak = memory_mb()
         self.assertGreater(rss, 10)
@@ -81,6 +95,39 @@ class LoopTimingTests(unittest.TestCase):
         self.assertLess(analysis, 1.0)
         self.assertEqual(budget, 2.0)  # half of a 4 s window
         self.assertIsInstance(lag, float)
+
+    def test_a_slow_birdnet_skips_windows_instead_of_piling_them_up(self) -> None:
+        class Tracker:
+            def __init__(self) -> None:
+                self.windows = []
+
+            def handle_result(self, grouped, samples, start_sample, *rest):
+                self.windows.append(start_sample)
+                return []
+
+            def flush(self):
+                return []
+
+        busy, release = threading.Event(), threading.Event()
+
+        def detect(window):
+            busy.set()
+            release.wait(5)  # BirdNET stuck on the first window while the microphone goes on
+            return {}, window
+
+        def frames():
+            for index in range(20):
+                yield np.zeros(100, np.float32)
+                if index == 3:
+                    busy.wait(5)  # the first window is being analysed
+            release.set()
+
+        tracker, skips = Tracker(), []
+        run_sliding_window_loop(frames(), sample_rate=100, slice_frames=4, detect_window=detect, tracker=tracker,
+                                on_skip=lambda: skips.append(1), max_queued=1)
+        # 9 windows: the first being analysed, one waiting, the other 7 skipped
+        self.assertEqual(len(skips), 7)
+        self.assertEqual(tracker.windows, [0, 200])
 
 
 if __name__ == "__main__":

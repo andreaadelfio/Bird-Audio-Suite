@@ -44,6 +44,7 @@ class LiveMetrics:
         self.windows: deque[tuple[float, float, float, float]] = deque()  # (t, analysis, budget, lag)
         self.echo: deque[tuple[float, float, float]] = deque()  # (t, seconds spent, audio seconds)
         self.cpu: deque[tuple[float, float]] = deque([(clock(), cpu_seconds())])
+        self.skipped: deque[float] = deque()  # when a window was skipped: BirdNET was behind
         self.input_gain = None  # inputgain.SourceVolumeCompensation, when the live uses one
         self.subtractor = None  # echo.PlaybackSubtractor, when the live uses one
 
@@ -51,6 +52,8 @@ class LiveMetrics:
         for samples in (self.windows, self.echo):
             while samples and samples[0][0] < now - self.window_seconds:
                 samples.popleft()
+        while self.skipped and self.skipped[0] < now - self.window_seconds:
+            self.skipped.popleft()
         while len(self.cpu) > 1 and self.cpu[1][0] < now - self.window_seconds:
             self.cpu.popleft()
 
@@ -60,6 +63,14 @@ class LiveMetrics:
             self.windows.append((now, analysis_seconds, budget_seconds, lag_seconds))
             self.cpu.append((now, cpu_seconds()))
             self._trim(now)
+
+    def record_skip(self) -> int:
+        """A window not analysed because BirdNET was behind; returns how many in the last 10 min."""
+        now = self.clock()
+        with self.lock:
+            self.skipped.append(now)
+            self._trim(now)
+            return len(self.skipped)
 
     def record_echo(self, seconds: float, audio_seconds: float) -> None:
         now = self.clock()
@@ -95,6 +106,7 @@ class LiveMetrics:
                 "peak_rss_mb": round(peak),
                 "cpu_pct": round(100 * (last_cpu - first_cpu) / (last_t - first_t), 1) if last_t > first_t else None,
                 "echo_pct": round(100 * echo_spent / echo_audio, 2) if echo_audio else None,
+                "skipped": len(self.skipped),
             }
 
     def summary_lines(self) -> list[str]:
@@ -105,6 +117,8 @@ class LiveMetrics:
         timing = (f"Ultimi {self.window_seconds / 60:.0f} min: BirdNET {data['analysis_avg_s']:.2f} s/finestra "
                   f"(max {data['analysis_max_s']:.2f}, {data['load_pct']:.0f}% del tempo), "
                   f"ritardo {data['lag_s']:.1f} s")
+        if data["skipped"]:
+            timing += f", {data['skipped']} finestre saltate (BirdNET indietro)"
         resources = [f"RAM {data['rss_mb']} MB (picco {data['peak_rss_mb']})"]
         if data["cpu_pct"] is not None:
             resources.append(f"CPU {data['cpu_pct']:.0f}%")

@@ -183,27 +183,27 @@ alter table birds.species
 drop table if exists birds.allowed_users;
 drop table if exists birds.settings;
 
--- one observation per species and day until October 2026: now one per visit
+-- one observation per species and day until October 2026: now one per visit. The old day-long
+-- observations are split into visits: a gap of more than 10 minutes between two clips starts a
+-- new observation, with the same status and correction (you decided for the whole day). Those
+-- already on iNaturalist stay whole, so their link stays right. Only once, while the old unique
+-- (day, species) constraint is still there: a re-run must not split again a clip you linked or
+-- moved by hand on the site, or a visit a longer OBSERVATION_GAP_MINUTES keeps together.
 do $$
 declare
-  c record;
-begin
-  for c in select conname from pg_constraint
-           where conrelid = 'birds.observations'::regclass and contype = 'u' loop
-    execute format('alter table birds.observations drop constraint %I', c.conname);
-  end loop;
-end
-$$;
-
--- split the old day-long observations into visits: a gap of more than 10 minutes between two
--- clips starts a new observation, with the same status and correction (you decided for the whole
--- day). Those already on iNaturalist stay whole, so their link stays right. Safe to re-run:
--- afterwards no observation has such a gap.
-do $$
-declare
+  con record;
   part record;
   new_id bigint;
+  old_layout boolean := false;
 begin
+  for con in select conname from pg_constraint
+             where conrelid = 'birds.observations'::regclass and contype = 'u' loop
+    execute format('alter table birds.observations drop constraint %I', con.conname);
+    old_layout := true;
+  end loop;
+  if not old_layout then
+    return;
+  end if;
   for part in
     with ordered as (
       select c.id, c.observation_id, c.recorded_at,

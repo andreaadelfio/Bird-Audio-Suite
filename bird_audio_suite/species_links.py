@@ -23,6 +23,7 @@ EBIRD_MAX_AGE_SECONDS = 180 * 24 * 3600
 INAT_TAXA_URL = "https://api.inaturalist.org/v1/taxa"
 
 _ebird_codes: dict[str, str] | None = None
+_found_codes: dict[str, dict] = {}  # species with both codes: the uploader sends one row per clip
 
 
 def _load_ebird_taxonomy() -> dict[str, str]:
@@ -71,8 +72,15 @@ def inat_taxon(scientific_name: str, session=requests) -> tuple[int, str] | None
 
 def species_codes(scientific_name: str) -> dict:
     """The codes found for a species (missing ones left out, so they never overwrite). eBird is
-    also tried with the name iNaturalist accepts: BirdNET's Corvus monedula is eBird's Coloeus."""
+    also tried with the name iNaturalist accepts: BirdNET's Corvus monedula is eBird's Coloeus.
+    Once both are found they are remembered while the process runs: no request to iNaturalist
+    for every clip of a blackbird."""
+    if scientific_name in _found_codes:
+        return dict(_found_codes[scientific_name])
     taxon = inat_taxon(scientific_name)
     code = ebird_code(scientific_name) or (ebird_code(taxon[1]) if taxon else None)
-    codes = {"ebird_code": code, "inat_taxon_id": taxon[0] if taxon else None}
-    return {key: value for key, value in codes.items() if value is not None}
+    codes = {key: value for key, value in {"ebird_code": code, "inat_taxon_id": taxon[0] if taxon else None}.items()
+             if value is not None}
+    if len(codes) == 2:
+        _found_codes[scientific_name] = dict(codes)
+    return codes

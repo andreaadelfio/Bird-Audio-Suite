@@ -87,17 +87,36 @@ function placeLabel(place) {
 
 // how long a message stays: results go quickly, errors stay longer to be read, "in progress"
 // ones ("Elimino…") are normally replaced by the result and only time out as a safety net
-const STATUS_SECONDS = { done: 4, error: 8, progress: 15 };
+const STATUS_SECONDS = { done: 4, error: 8, progress: 15, undo: 7 };
 let statusTimer = null;
 
-function setStatus(message, isError = false) {
+// undo: a function that takes the change back, offered as "Annulla" while the message stays
+function setStatus(message, isError = false, undo = null) {
   const line = $("#status-line");
   line.textContent = message;
   line.classList.toggle("error", isError);
   clearTimeout(statusTimer);
   if (!message) return;
-  const kind = isError ? "error" : message.endsWith("…") ? "progress" : "done";
-  statusTimer = setTimeout(() => setStatus(""), STATUS_SECONDS[kind] * 1000);
+  if (undo) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "undo";
+    button.textContent = "Annulla";
+    button.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      setStatus("Annullo…");
+      try {
+        await undo();
+        setStatus("Annullato.");
+      } catch (error) {
+        setStatus(`Errore: ${error.message}`, true);
+      }
+    });
+    line.append(" ", button);
+  }
+  const kind = isError ? "error" : undo ? "undo" : message.endsWith("…") ? "progress" : "done";
+  // a long sentence stays long enough to be read (about 15 characters a second)
+  statusTimer = setTimeout(() => setStatus(""), Math.max(STATUS_SECONDS[kind], message.length / 15) * 1000);
 }
 
 $("#status-line").addEventListener("click", () => setStatus("")); // tap to dismiss
@@ -146,9 +165,11 @@ async function refreshCounts() {
       .eq("review", "wrong").neq("observations.status", "rejected"),
   ]);
   $("#pending-count").textContent = pending.count ? String(pending.count) : "";
-  $("#pending-pill").textContent = pending.count ? String(pending.count) : "";
   const trash = (rejected.count || 0) + (wrongClips.count || 0);
   $("#trash-count").textContent = trash ? String(trash) : "";
+  // what the numbers count, for a screen reader (on a computer the tooltip says it too)
+  $('[data-view="observations"]').setAttribute("aria-label", `Osservazioni${pending.count ? `, ${pending.count} da rivedere` : ""}`);
+  $('[data-view="trash"]').setAttribute("aria-label", `Cestino${trash ? `, ${trash} ${trash === 1 ? "elemento" : "elementi"}` : ""}`);
 }
 
 async function matchingSpecies(text) {
@@ -255,7 +276,7 @@ function speciesHeaderHtml(observation, label, kind = observation.status, select
           ${selectable ? selectBox("observation", observation.id, "Seleziona l'osservazione") : ""}
           <h2><i>${escapeHtml(observation.scientific_name)}</i></h2>
           ${speciesLinks(observation.scientific_name)}
-          <span class="badge badge-${kind}">${escapeHtml(label)}</span>
+          ${label ? `<span class="badge badge-${kind}">${escapeHtml(label)}</span>` : ""}
         </div>
         ${names ? `<p class="common-names">${names}</p>` : ""}
       </header>`;
@@ -296,6 +317,7 @@ const ICON_CROSS = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 6.4
 const ICON_UNDO = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12.5 8c-2.65 0-5.05 1-6.9 2.6L2 7v9h9l-3.62-3.62A7.97 7.97 0 0 1 20.1 15.5l2.37-.78A10.48 10.48 0 0 0 12.5 8z"/></svg>';
 const ICON_EDIT = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>';
 const ICON_DENOISE = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7.5 5.6 10 7 8.6 4.5 10 2 7.5 3.4 5 2l1.4 2.5L5 7zm12 9.8L17 14l1.4 2.5L17 19l2.5-1.4L22 19l-1.4-2.5L22 14zM22 2l-2.5 1.4L17 2l1.4 2.5L17 7l2.5-1.4L22 7l-1.4-2.5zm-7.63 5.29a1 1 0 0 0-1.41 0L1.29 18.96a1 1 0 0 0 0 1.41l2.34 2.34a1 1 0 0 0 1.41 0L16.7 11.05a1 1 0 0 0 0-1.41l-2.33-2.35zm-1.03 5.49-2.12-2.12 2.44-2.44 2.12 2.12-2.44 2.44z"/></svg>';
+const ICON_MORE = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 10a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"/></svg>';
 const ICON_LOOP = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/></svg>';
 const SKIP_SECONDS = 2;
 const BAND_PADDING_SECONDS = 0.5;
@@ -389,21 +411,23 @@ function clipHtml(clip, { folded = false, canUnlink = true, onInat = false } = {
         <button type="button" class="tool" data-player="back" title="Indietro di ${SKIP_SECONDS} secondi">−${SKIP_SECONDS}s</button>
         <select class="tool" data-speed title="Velocità: più lenta per sentire i dettagli, più veloce per scorrere la clip"
           aria-label="Velocità di riproduzione">${PLAYBACK_RATES.map(([rate, label]) => `<option value="${rate}"${rate === 1 ? " selected" : ""}>${label}</option>`).join("")}</select>
-        <button type="button" class="tool" data-player="loop" title="Ripeti in continuazione" aria-label="Ripeti">${ICON_LOOP}</button>
-        <button type="button" class="tool denoise" data-player="denoise" aria-label="Riduci il rumore"
+        <button type="button" class="tool" data-player="loop" title="Ripeti in continuazione" aria-label="Ripeti" aria-pressed="false">${ICON_LOOP}</button>
+        <button type="button" class="tool denoise" data-player="denoise" aria-label="Riduci il rumore" aria-pressed="false"
           title="Riduci il rumore: stima il fondo fuori dalle bande e lo sottrae. Tocca ancora per più forte, poi per l'originale">${ICON_DENOISE}</button>
         <span class="clip-tools">
         <button type="button" class="tool" data-player="link" title="Collega la clip anche a un'altra osservazione (o spostala): poi «Collega qui» su quella giusta"
-          aria-label="Collega a un'altra osservazione">${ICON_LINK}</button>
+          aria-label="Collega a un'altra osservazione">${ICON_LINK}<span class="tool-label">Collega</span></button>
         ${canUnlink ? `<button type="button" class="tool" data-player="unlink" title="Non è lo stesso uccello (o la stessa specie): stacca la clip in un'osservazione a sé"
-          aria-label="Stacca la clip">${ICON_UNLINK}</button>` : ""}
+          aria-label="Stacca la clip">${ICON_UNLINK}<span class="tool-label">Stacca</span></button>` : ""}
         <button type="button" class="tool${wrong ? " on" : ""}" data-clip-review="wrong"
           title="${clipReviewLook(wrong).label}" aria-label="${clipReviewLook(wrong).label}">${clipReviewLook(wrong).icon}</button>
         ${onInat && !wrong
           ? `<button type="button" class="tool trash-button" data-delete-clip
-          title="Togli subito audio e spettrogramma da Supabase (sono su iNaturalist): la clip resta nei report" aria-label="Togli i file da Supabase">${ICON_TRASH}</button>`
+          title="Togli subito audio e spettrogramma da Supabase (sono su iNaturalist): la clip resta nei report" aria-label="Togli i file da Supabase">${ICON_TRASH}<span class="tool-label">Togli i file</span></button>`
           : `<button type="button" class="tool trash-button" data-delete-clip
-          title="Elimina subito e per sempre questa clip" aria-label="Elimina definitivamente questa clip">${ICON_TRASH}</button>`}
+          title="Elimina subito e per sempre questa clip" aria-label="Elimina definitivamente questa clip">${ICON_TRASH}<span class="tool-label">Elimina</span></button>`}
+        <button type="button" class="tool more-tools" data-player="more" aria-expanded="false"
+          title="Collega, stacca o elimina la clip" aria-label="Altre azioni sulla clip">${ICON_MORE}</button>
         </span>
       </div>
       ${candidatesHtml(clip)}
@@ -468,11 +492,11 @@ function observationActions(observation) {
       aria-label="Rimetti da rivedere">${ICON_UNDO}</button>`);
   }
   if (status !== "rejected" && status !== "uploaded") {
-    buttons.push(`<button type="button" data-status="rejected" class="round reject" title="Scarta: non è questa specie, va nel Cestino"
+    buttons.push(`<button type="button" data-status="rejected" class="round reject" title="Scarta: non è questa specie, va nel Cestino (tasto S, dopo averla ascoltata; Ctrl+Z annulla)"
       aria-label="Scarta">${ICON_CROSS}</button>`);
   }
   if (status === "pending" || status === "rejected") {
-    buttons.push(`<button type="button" data-status="confirmed" class="round confirm" title="Conferma: la specie è giusta"
+    buttons.push(`<button type="button" data-status="confirmed" class="round confirm" title="Conferma: la specie è giusta (tasto C, dopo averla ascoltata; Ctrl+Z annulla)"
       aria-label="Conferma">${ICON_CHECK}</button>`);
   }
   return buttons.join("");
@@ -483,15 +507,17 @@ function observationHtml(observation) {
   const corrected = observation.corrected_scientific_name || "";
   // on iNaturalist the taxon is iNaturalist's: the PC's uploader copies it here every hour
   const onInat = observation.status === "uploaded";
+  // in a list filtered on its status the badge would only repeat the filter
+  const statusShownByFilter = $("#filter-status").value === observation.status;
   return `
     <article class="observation status-${observation.status} ${confidenceClass(facts.maxConfidence)}${facts.clips.some((clip) => !clip.media_deleted_at) ? "" : " no-clips"}${state.selection.observations.has(observation.id) ? " selected" : ""}" data-id="${observation.id}">
-      ${speciesHeaderHtml(observation, STATUS_LABELS[observation.status] || observation.status, observation.status, true)}
+      ${speciesHeaderHtml(observation, statusShownByFilter ? "" : STATUS_LABELS[observation.status] || observation.status, observation.status, true)}
       ${observationMeta(observation, facts)}
       <div class="fix${corrected ? "" : " hidden"}">
         <span>${onInat ? "Su iNaturalist" : "Specie corretta"}</span>
-        <input data-field="corrected" list="species-list" placeholder="nome scientifico" value="${escapeHtml(corrected)}"
+        <input data-field="corrected" list="species-list" placeholder="nome scientifico o italiano" aria-label="Specie corretta" value="${escapeHtml(corrected)}"
           ${onInat ? 'readonly title="La decide iNaturalist (identificazioni della comunità e tue): si aggiorna da sola ogni ora"' : ""}>
-        ${corrected ? speciesLinks(corrected) : ""}
+        ${fixExtrasHtml(corrected)}
       </div>
       <div class="actions">${observationActions(observation)}</div>
       ${clipsHtml(facts.clips, { canUnlink: facts.clips.length > 1, onInat: observation.status === "uploaded" })}
@@ -533,6 +559,11 @@ content.addEventListener("click", async (event) => {
       const found = findClip(figure.dataset.clip);
       if (found) found.clip.review = value;
       if (state.view === "trash" && value !== "wrong") figure.remove();
+      // no good clip left in a kept observation: the ✕ meant may have been the observation's
+      const allWrong = [...card.querySelectorAll(".clip")].every((clip) => clip.classList.contains("review-wrong"));
+      if (value === "wrong" && allWrong && state.view === "observations" && !card.classList.contains("status-rejected")) {
+        setStatus("Nessuna clip buona rimasta: se non è questa specie, scarta l'osservazione con la ✕ tonda.");
+      }
       refreshCounts();
     } catch (error) {
       setStatus(`Errore: ${error.message}`, true);
@@ -622,11 +653,20 @@ content.addEventListener("click", async (event) => {
   if (statusButton) {
     const changes = { status: statusButton.dataset.status };
     const corrected = card.querySelector('[data-field="corrected"]');
-    if (corrected) changes.corrected = corrected.value; // "" clears a previous correction
+    if (corrected) changes.corrected = scientificName(corrected.value); // "" clears a previous correction
+    const observation = state.observations.get(id);
+    // what "Annulla" puts back: in the Cestino the observation was a rejected one
+    const before = observation
+      ? { status: observation.status, corrected: observation.corrected_scientific_name || "" }
+      : state.view === "trash" ? { status: "rejected" } : null;
     try {
       await updateObservation(id, changes);
-      setStatus(`Osservazione ${STATUS_LABELS[changes.status]}.`);
-      const observation = state.observations.get(id);
+      // the species in the message: "Annulla" says what it takes back
+      const species = card.querySelector(".obs-head h2")?.textContent.trim();
+      setStatus(species ? `${species}: ${STATUS_LABELS[changes.status]}.` : `Osservazione ${STATUS_LABELS[changes.status]}.`, false, before && (async () => {
+        await updateObservation(id, before);
+        await Promise.all([render(), refreshCounts()]);
+      }));
       if (leavesFilteredView(changes.status)) {
         removeCard(card);
       } else if (observation) {
@@ -643,20 +683,41 @@ content.addEventListener("click", async (event) => {
   }
 });
 
+// next to the corrected species: its Italian name, to see it is the one meant, and the links
+function fixExtrasHtml(name) {
+  if (!name) return "";
+  const italian = state.species.get(name)?.italian_name;
+  return `<span class="fix-extras">${italian ? `<span class="fix-name">${escapeHtml(italian)}</span>` : ""}${speciesLinks(name)}</span>`;
+}
+
+// what was typed as the correction: a species already heard, written in Italian or English (or
+// with other capitals), becomes its scientific name; anything else stays as typed
+function scientificName(text) {
+  const needle = text.trim().toLowerCase();
+  if (!needle) return "";
+  const known = [...state.species.values()].find((row) => [row.scientific_name, row.italian_name, row.english_name]
+    .some((name) => (name || "").toLowerCase() === needle));
+  return known ? known.scientific_name : text.trim();
+}
+
 // the corrected species is saved when you leave the field (or press Enter), without changing the status
 content.addEventListener("change", async (event) => {
   const input = event.target.closest('[data-field="corrected"]');
   if (!input) return;
   const card = input.closest(".observation");
   const id = Number(card.dataset.id);
+  input.value = scientificName(input.value); // now, before a ✓ tapped right after reads it
   try {
     await updateObservation(id, { corrected: input.value });
     const observation = state.observations.get(id);
     if (observation) observation.corrected_scientific_name = input.value.trim() || null;
-    const links = card.querySelector(".fix .species-links");
-    links?.remove();
-    if (input.value.trim()) input.insertAdjacentHTML("afterend", speciesLinks(input.value.trim()));
-    setStatus(input.value.trim() ? `Specie corretta: ${input.value.trim()}.` : "Correzione tolta.");
+    card.querySelector(".fix-extras")?.remove();
+    input.insertAdjacentHTML("afterend", fixExtrasHtml(input.value.trim()));
+    const name = input.value.trim();
+    // a name never heard here may be a typo: it is what goes to iNaturalist
+    setStatus(!name ? "Correzione tolta."
+      : state.species.has(name) ? `Specie corretta: ${name}.`
+      : `Specie corretta: ${name} (mai sentita finora: controlla che il nome scientifico sia giusto).`);
   } catch (error) {
     setStatus(`Errore: ${error.message}`, true);
   }
@@ -670,10 +731,23 @@ function leavesFilteredView(newStatus) {
     || (state.view === "trash" && newStatus !== "rejected");
 }
 
+// when you were inside the card (scrolled down to its buttons), the next one comes in from its
+// name, not from its middle; the focus moves to it
 function removeCard(card) {
   card.querySelectorAll("audio").forEach((audio) => audio.pause());
   card.classList.add("leaving");
-  setTimeout(() => card.remove(), 250);
+  const barBottom = $(".top-bar").offsetHeight; // whole: scrolling up brings back its title row
+  const wasInside = card.getBoundingClientRect().top < barBottom && card.getBoundingClientRect().bottom > barBottom;
+  const hadFocus = card.contains(document.activeElement); // the keyboard goes on with the next one
+  setTimeout(() => {
+    const next = card.nextElementSibling;
+    card.remove();
+    // the last one gone: drawn again, to say the list is empty (and what comes next)
+    if (state.view === "observations" && !content.querySelector(".observation")) return render();
+    if (!next?.classList.contains("observation")) return;
+    if (hadFocus) (next.querySelector(".play-button") || next.querySelector("[data-status]"))?.focus({ preventScroll: true });
+    if (wasInside) window.scrollBy({ top: next.getBoundingClientRect().top - barBottom - 8, behavior: "smooth" });
+  }, 250);
 }
 
 // one clip at a time; every playback runs over a range: the kept part (trim), a BirdNET band,
@@ -799,7 +873,11 @@ content.addEventListener("play", (event) => {
   });
   const figure = event.target.closest(".clip");
   figure?.classList.add("playing");
-  if (figure) figure.querySelector(".play-button").innerHTML = ICON_PAUSE;
+  const button = figure?.querySelector(".play-button");
+  if (button) {
+    button.innerHTML = ICON_PAUSE;
+    button.setAttribute("aria-label", "Pausa");
+  }
 }, true);
 
 for (const type of ["pause", "ended"]) {
@@ -812,7 +890,9 @@ for (const type of ["pause", "ended"]) {
       return;
     }
     figure.classList.remove("playing");
-    figure.querySelector(".play-button").innerHTML = ICON_PLAY;
+    const button = figure.querySelector(".play-button");
+    button.innerHTML = ICON_PLAY;
+    button.setAttribute("aria-label", "Riproduci");
   }, true);
 }
 
@@ -928,6 +1008,12 @@ async function saveTrim(figure, start, end) {
   setStatus(start == null ? "Taglio tolto." : `Clip tagliata: ${values.trim_start_s}–${values.trim_end_s} s (il file resta intero).`);
 }
 
+// a spectrogram that does not load (file gone, no network): an empty box with a word, not a broken
+// image; the bands and the audio still work
+content.addEventListener("error", (event) => {
+  if (event.target.matches?.(".spectrogram")) event.target.closest(".spectrogram-box").classList.add("no-image");
+}, true);
+
 content.addEventListener("click", async (event) => {
   const figure = event.target.closest(".clip");
   if (!figure) return;
@@ -946,6 +1032,7 @@ content.addEventListener("click", async (event) => {
       case "loop":
         player.loop = !player.loop;
         control.classList.toggle("on", player.loop);
+        control.setAttribute("aria-pressed", String(player.loop));
         break;
       case "play-selection":
         if (player.selection) playRange(figure, player.selection.start, player.selection.end);
@@ -956,9 +1043,16 @@ content.addEventListener("click", async (event) => {
       case "trim":
         if (player.selection) await saveTrim(figure, player.selection.start, player.selection.end);
         break;
-      case "untrim":
+      case "untrim": {
+        // a tap on the chip is quick to make by mistake: "Annulla" puts the same cut back
+        const { clip } = findClip(figure.dataset.clip) || {};
+        const cut = clip && isTrimmed(clip) ? [Number(clip.trim_start_s), Number(clip.trim_end_s)] : null;
         await saveTrim(figure, null, null);
+        if (cut) {
+          setStatus("Taglio tolto.", false, () => saveTrim(content.querySelector(`.clip[data-clip="${CSS.escape(clip.id)}"]`), ...cut));
+        }
         break;
+      }
       case "denoise":
         await cycleDenoise(figure, control);
         break;
@@ -968,6 +1062,13 @@ content.addEventListener("click", async (event) => {
       case "link":
         startLinking(figure);
         break;
+      case "more": {
+        const open = figure.classList.toggle("more-open");
+        control.setAttribute("aria-expanded", String(open));
+        // they come before ⋯ in the page: the focus goes to the first, Tab then runs through them
+        if (open) figure.querySelector('[data-player="link"]')?.focus({ preventScroll: true });
+        break;
+      }
     }
   } catch (error) {
     setStatus(`Errore: ${error.message}`, true);
@@ -1041,6 +1142,7 @@ async function cycleDenoise(figure, button) {
     player.denoise = level;
     button.classList.toggle("on", level > 0);
     button.classList.toggle("strong", level === 2);
+    button.setAttribute("aria-pressed", String(level > 0));
     // written on the spectrogram ("rumore ridotto: media"): the button stays one icon
     const box = figure.querySelector(".spectrogram-box");
     if (level) box.dataset.denoise = DENOISE_LEVELS[level].label;
@@ -1282,6 +1384,8 @@ async function bulkStatus(status) {
   const observations = pickedObservations().filter((o) => o.status !== status && o.status !== "uploaded");
   const clipReview = { rejected: "wrong", pending: "unreviewed" }[status];
   const clips = clipReview ? pickedClips().filter(({ clip }) => clip.review !== clipReview) : [];
+  // for "Annulla": each one back to what it was, grouped so that it takes a request per value
+  const before = { observations: Map.groupBy(observations, (o) => o.status), clips: Map.groupBy(clips, ({ clip }) => clip.review) };
   if (observations.length) {
     const { error } = await state.client.from("observations")
       .update({ status, reviewed_at: new Date().toISOString() }).in("id", observations.map((o) => o.id));
@@ -1307,8 +1411,20 @@ async function bulkStatus(status) {
   setStatus([
     observations.length ? (observations.length === 1 ? `1 osservazione ${STATUS_LABELS[status]}`
       : `${observations.length} osservazioni ${STATUS_PLURALS[status]}`) : "",
-    clips.length ? `${clips.length} clip ${clipReview === "wrong" ? "scartate" : "rimesse nell'osservazione"}` : "",
-  ].filter(Boolean).join(", ") + ".");
+    clips.length ? `${clips.length} clip ${clipReview === "wrong" ? (clips.length === 1 ? "scartata" : "scartate")
+      : (clips.length === 1 ? "rimessa nell'osservazione" : "rimesse nell'osservazione")}` : "",
+  ].filter(Boolean).join(", ") + ".", false, async () => {
+    for (const [previous, group] of before.observations) {
+      const { error } = await state.client.from("observations")
+        .update({ status: previous, reviewed_at: new Date().toISOString() }).in("id", group.map((o) => o.id));
+      if (error) throw error;
+    }
+    for (const [previous, group] of before.clips) {
+      const { error } = await state.client.from("clips").update({ review: previous }).in("id", group.map(({ clip }) => clip.id));
+      if (error) throw error;
+    }
+    await Promise.all([render(), refreshCounts()]);
+  });
   refreshCounts();
   updateBulkBar();
 }
@@ -1490,13 +1606,43 @@ document.querySelectorAll("[data-link-mode]").forEach((button) => button.addEven
   showLinking();
 }));
 
-// keyboard on a computer: space plays/pauses the last clip used, arrows move by 2 s
+// keyboard on a computer: space plays/pauses the last clip used, arrows move by 2 s; C and S
+// confirm or reject the observation of that clip (once: then a clip has to be played again);
+// Ctrl+Z takes it back
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && state.selection.on) {
     setSelecting(false);
     return;
   }
-  if (event.target.closest("input, textarea, select, button") || event.metaKey || event.ctrlKey || event.altKey) return;
+  // Escape also leaves the linking of a clip, and closes the clips' "⋯"
+  if (event.key === "Escape" && (state.linking || content.querySelector(".clip.more-open"))) {
+    if (state.linking) stopLinking();
+    content.querySelectorAll(".clip.more-open").forEach((clip) => {
+      clip.classList.remove("more-open");
+      clip.querySelector('[data-player="more"]').setAttribute("aria-expanded", "false");
+    });
+    return;
+  }
+  if (event.target.closest("input, textarea, select")) return;
+  // Ctrl+Z (Cmd+Z on a Mac): the "Annulla" of the message, while it is there
+  const undo = $("#status-line .undo");
+  if (undo && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") {
+    event.preventDefault();
+    undo.click();
+    return;
+  }
+  if (event.metaKey || event.ctrlKey || event.altKey) return;
+  const verdict = { c: "confirmed", s: "rejected" }[event.key.toLowerCase()];
+  if (verdict) {
+    const card = state.currentFigure?.isConnected && state.currentFigure.closest(".observation");
+    const button = card && card.querySelector(`.actions [data-status="${verdict}"]`);
+    if (button) {
+      event.preventDefault();
+      button.click();
+    }
+    return;
+  }
+  if (event.target.closest("button")) return;
   const figure = state.currentFigure?.isConnected ? state.currentFigure : content.querySelector(".clip:not(.folded)");
   if (!figure) return;
   if (event.key === " ") {
@@ -1507,6 +1653,24 @@ document.addEventListener("keydown", (event) => {
     skip(figure, event.key === "ArrowLeft" ? -SKIP_SECONDS : SKIP_SECONDS);
   }
 });
+
+// an empty list says why: all done (and what comes next), or the filters (with a way out of them)
+function emptyListHtml(onInat, toUpload = 0) {
+  const status = $("#filter-status").value;
+  const narrowed = $("#filter-species").value.trim() || $("#filter-from").value || $("#filter-to").value
+    || $("#filter-confidence").value;
+  if (!narrowed && !status) {
+    return `<p class="empty">Nessuna osservazione da gestire: quelle già su iNaturalist sono
+      <button type="button" class="species-link" data-open-inat>nel Report</button>.</p>`;
+  }
+  if (!narrowed && status === "pending") {
+    return `<p class="empty">Niente da rivedere: tutto in ordine.${toUpload ? `
+      <button type="button" class="species-link" data-open-inat-panel>${toUpload} ${toUpload === 1 ? "confermata" : "confermate"}
+      da caricare su iNaturalist</button>` : ""}</p>`;
+  }
+  return `<p class="empty">Nessuna osservazione ${onInat ? "da gestire " : ""}con questi filtri.
+    <button type="button" class="species-link" data-clear-filters>Mostra tutte</button></p>`;
+}
 
 async function renderObservations(append = false) {
   if (!append) state.offset = 0;
@@ -1522,13 +1686,32 @@ async function renderObservations(append = false) {
   state.offset += rows.length;
   $("#more").classList.toggle("hidden", rows.length < PAGE_SIZE);
   if (!content.children.length) {
-    content.innerHTML = `<p class="empty">Nessuna osservazione ${onInat ? "da gestire" : ""} con questi filtri.</p>`;
+    // nothing left to review: the next step is iNaturalist
+    const allReviewed = $("#filter-status").value === "pending";
+    const { count } = allReviewed
+      ? await state.client.from("observations").select("id", { count: "exact", head: true }).eq("status", "confirmed")
+      : {};
+    content.innerHTML = emptyListHtml(onInat, count || 0);
   }
   if (onInat) {
     content.insertAdjacentHTML("afterbegin", `<p class="on-inat-note">+${onInat} ${onInat === 1 ? "osservazione" : "osservazioni"}
       su iNaturalist: <button type="button" class="species-link" data-open-inat>nel Report</button></p>`);
   }
 }
+
+// "N confermate da caricare", from an empty "Da rivedere": the iNaturalist panel, open
+content.addEventListener("click", (event) => {
+  if (!event.target.closest("[data-open-inat-panel]")) return;
+  if ($("#inat-panel").classList.contains("hidden")) $("#inat-toggle").click();
+  window.scrollTo({ top: 0 });
+});
+
+// "Mostra tutte", from an empty list: every filter off
+content.addEventListener("click", (event) => {
+  if (!event.target.closest("[data-clear-filters]")) return;
+  for (const id of ["#filter-status", "#filter-confidence", "#filter-species", "#filter-from", "#filter-to"]) $(id).value = "";
+  render();
+});
 
 // "nel Report": the report, with its iNaturalist list open
 content.addEventListener("click", (event) => {
@@ -1656,7 +1839,7 @@ async function deleteForGood(entries, { ask = true } = {}) {
   const gone = clips.length - archived.size;
   const question = `Eliminare definitivamente ${gone} clip${wholeCount ? ` (${wholeCount} ${wholeCount === 1 ? "osservazione intera" : "osservazioni intere"})` : ""}?\n\n`
     + "Audio e spettrogrammi vengono cancellati da Supabase e non si possono recuperare dal sito. I WAV sul PC restano."
-    + (archived.size ? `\n\nDi ${archived.size} clip gia' su iNaturalist si tolgono solo i file: restano nei report.` : "");
+    + (archived.size ? `\n\nDi ${archived.size} clip già su iNaturalist si tolgono solo i file: restano nei report.` : "");
   if (!clips.length || (ask && !window.confirm(question))) return false;
   let deleted = false;
 
@@ -2070,7 +2253,7 @@ function seasonHtml(uploaded) {
   if (!bySpecies.size) return '<p class="empty">Ancora nessuna osservazione caricata.</p>';
   const species = [...bySpecies.values()].sort((a, b) => b.total - a.total);
   const top = Math.max(...species.flatMap(({ counts }) => counts.map((count, month) => count / (days[month].size || 1))));
-  const head = MONTH_LETTERS.map((letter, month) => `<th title="${MONTH_NAMES[month]}: ${days[month].size} giorni con osservazioni caricate">
+  const head = MONTH_LETTERS.map((letter, month) => `<th title="${MONTH_NAMES[month]}: ${days[month].size} ${days[month].size === 1 ? "giorno" : "giorni"} con osservazioni caricate">
     ${letter}<small>${days[month].size || ""}</small></th>`).join("");
   const body = species.map(({ row, counts }) => {
     const name = row.italian_name || row.scientific_name;
@@ -2214,7 +2397,7 @@ async function renderReport(days = Number(localStorage.getItem("reportDays") || 
   content.innerHTML = `
     <div class="report-head">
       <div class="segmented" role="group" aria-label="Periodo">
-        ${[7, 30, 90, 365].map((n) => `<button type="button" data-days="${n}" class="${n === days ? "on" : ""}">${n === 365 ? "1 anno" : `${n} giorni`}</button>`).join("")}
+        ${[7, 30, 90, 365].map((n) => `<button type="button" data-days="${n}" class="${n === days ? "on" : ""}" aria-pressed="${n === days}">${n === 365 ? "1 anno" : `${n} giorni`}</button>`).join("")}
       </div>
     </div>
     <details class="inat-uploads"${openInat ? " open" : ""}>
@@ -2232,8 +2415,8 @@ async function renderReport(days = Number(localStorage.getItem("reportDays") || 
         </div>
         <h3>Osservazioni per ora</h3>
         <div class="hours">${hours.map((count, hour) => `
-          <div class="hour" title="${hour}:00 · ${count} osservazioni">
-            <span class="bar" style="height:${Math.round((count / maxHour) * 100)}%"></span>
+          <div class="hour" title="${hour}:00 · ${count} ${count === 1 ? "osservazione" : "osservazioni"}">
+            <span class="bar"${count ? ` data-count="${count}"` : ""} style="height:${Math.round((count / maxHour) * 100)}%"></span>
             <span class="label">${hour}</span>
           </div>`).join("")}</div>
       </section>
@@ -2300,14 +2483,20 @@ function showSpeciesObservations(scientificName, fromDay) {
 // ---------------------------------------------------------------- navigation
 
 // the current page stays (dimmed) until the new one is ready: no blank flashes
+const LIST_STATUS_KEY = "listStatus";
 let renderToken = 0;
 async function render() {
   const token = ++renderToken;
   // another list: what was picked is not there any more (and only Osservazioni has the selection)
   if (state.view === "observations") clearPicked();
   else setSelecting(false);
-  document.querySelectorAll(".tab").forEach((tab) => tab.classList.toggle("active", tab.dataset.view === state.view));
+  document.querySelectorAll(".tab").forEach((tab) => {
+    tab.classList.toggle("active", tab.dataset.view === state.view);
+    if (tab.dataset.view === state.view) tab.setAttribute("aria-current", "page");
+    else tab.removeAttribute("aria-current");
+  });
   $("#filters").classList.toggle("hidden", state.view !== "observations");
+  storageSet(LIST_STATUS_KEY, $("#filter-status").value); // the list opens again as you left it
   showFilterState();
   content.classList.add("busy");
   const slow = setTimeout(() => setStatus("Carico…"), 400);
@@ -2319,24 +2508,35 @@ async function render() {
     if ($("#status-line").textContent === "Carico…") setStatus("");
   } catch (error) {
     setStatus(`Errore: ${error.message}`, true);
+    if (content.querySelector(".loading")) content.innerHTML = loadErrorHtml(error); // nothing shown yet
   } finally {
     clearTimeout(slow);
     if (token === renderToken) content.classList.remove("busy");
   }
 }
 
-document.querySelectorAll(".tab").forEach((tab) => tab.addEventListener("click", () => {
-  if (state.view !== tab.dataset.view) window.scrollTo({ top: 0 });
+// each view opens again where you left it (the top the first time); the active tab redraws in place
+const scrollByView = {};
+document.querySelectorAll(".tab").forEach((tab) => tab.addEventListener("click", async () => {
+  if (state.view === tab.dataset.view) return render();
+  scrollByView[state.view] = window.scrollY;
   state.view = tab.dataset.view;
-  render();
+  await render();
+  window.scrollTo({ top: scrollByView[state.view] || 0 });
 }));
 
 // status: one tap on its pill; species and dates: typed, applied after a short pause
 function showFilterState() {
   const status = $("#filter-status").value;
-  document.querySelectorAll("[data-filter-status]").forEach((pill) => pill.classList.toggle("on", pill.dataset.filterStatus === status));
+  document.querySelectorAll("[data-filter-status]").forEach((pill) => {
+    pill.classList.toggle("on", pill.dataset.filterStatus === status);
+    pill.setAttribute("aria-pressed", String(pill.dataset.filterStatus === status));
+  });
   const confidence = $("#filter-confidence").value;
-  document.querySelectorAll("[data-filter-confidence]").forEach((pill) => pill.classList.toggle("on", pill.dataset.filterConfidence === confidence));
+  document.querySelectorAll("[data-filter-confidence]").forEach((pill) => {
+    pill.classList.toggle("on", pill.dataset.filterConfidence === confidence);
+    pill.setAttribute("aria-pressed", String(pill.dataset.filterConfidence === confidence));
+  });
   const narrowed = Boolean($("#filter-species").value.trim() || $("#filter-from").value || $("#filter-to").value);
   $("#filters-active").classList.toggle("hidden", !narrowed);
   $("#filters-clear").classList.toggle("hidden", !narrowed);
@@ -2368,19 +2568,48 @@ $("#filters-clear").addEventListener("click", () => {
 
 $("#more").addEventListener("click", loadMore);
 
+// the icon pulses until the page is drawn again
 $("#refresh").addEventListener("click", async () => {
+  const button = $("#refresh");
+  if (button.classList.contains("working")) return;
+  button.classList.add("working");
   try {
     await Promise.all([loadSpecies(), loadSharedSettings()]);
     await refreshCounts();
+    await render();
   } catch (error) {
     setStatus(`Errore: ${error.message}`, true);
-    return;
+  } finally {
+    button.classList.remove("working");
   }
-  render();
 });
+
+// a phone: scrolling down, the title row of the bar slides away (the tabs stay, see styles.css);
+// scrolling up brings it back
+let lastScroll = 0;
+window.addEventListener("scroll", () => {
+  const y = window.scrollY;
+  if (Math.abs(y - lastScroll) < 12) return;
+  $(".top-bar").classList.toggle("compact", y > lastScroll && y > 160 && !$("#volume-panel").classList.contains("open"));
+  lastScroll = y;
+}, { passive: true });
 
 // species and dates open on wide screens, folded away on the phone
 $("#more-filters").open = window.matchMedia("(min-width: 721px)").matches;
+$("#filter-status").value = storageGet(LIST_STATUS_KEY);
+
+// the first load failed (no network, Supabase down): said in the page, with a way to try again
+function loadErrorHtml(error) {
+  const reason = /failed to fetch|network/i.test(error.message) ? "nessuna connessione, o Supabase non risponde" : error.message;
+  return `<p class="empty">Non riesco a caricare i dati: ${escapeHtml(reason)}.
+    <button type="button" class="species-link" data-retry>Riprova</button></p>`;
+}
+
+content.addEventListener("click", (event) => {
+  if (!event.target.closest("[data-retry]")) return;
+  content.innerHTML = '<p class="empty loading">Carico…</p>';
+  start();
+});
 
 async function start() {
   try {
@@ -2388,6 +2617,7 @@ async function start() {
     await refreshCounts();
   } catch (error) {
     setStatus(`Errore: ${error.message}`, true);
+    content.innerHTML = loadErrorHtml(error);
     return;
   }
   render();
@@ -2402,6 +2632,7 @@ if ("serviceWorker" in navigator && window.isSecureContext) {
 state.client = createClient();
 if (!state.client) {
   setStatus("Configurazione mancante: compila assets/config.js (URL e chiave publishable di Supabase).", true);
+  content.innerHTML = '<p class="empty">Configurazione mancante: compila assets/config.js.</p>';
 } else {
   start();
 }

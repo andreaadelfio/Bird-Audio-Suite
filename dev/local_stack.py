@@ -76,15 +76,22 @@ def ensure_postgrest() -> Path:
     return binary
 
 
+def run_sql(server, text: str, what: str) -> str:
+    """psql stops at the first error: errors go to its stderr (on screen), not into the output,
+    and without this a broken schema would look applied."""
+    try:
+        return server.psql("\\set ON_ERROR_STOP on\n" + text)
+    except subprocess.CalledProcessError as error:
+        raise RuntimeError(f"{what}: errore SQL (sopra il messaggio di psql)") from error
+
+
 def start_database():
     import pgserver
 
     STACK_DIR.mkdir(parents=True, exist_ok=True)
     server = pgserver.get_server(str(STACK_DIR / "pgdata"), cleanup_mode="stop")
     for sql_file in (PROJECT_ROOT / "dev" / "local_supabase_stubs.sql", PROJECT_ROOT / "supabase" / "birds_schema.sql"):
-        output = server.psql(sql_file.read_text(encoding="utf-8"))
-        if "ERROR" in output:
-            raise RuntimeError(f"{sql_file.name}:\n{output}")
+        run_sql(server, sql_file.read_text(encoding="utf-8"), sql_file.name)
     return server
 
 
@@ -109,8 +116,10 @@ def start_postgrest(server) -> subprocess.Popen:
         try:
             urllib.request.urlopen(f"http://127.0.0.1:{POSTGREST_PORT}/", timeout=1)
             return process
-        except urllib.error.HTTPError:
-            return process  # it answers: ready
+        except urllib.error.HTTPError as error:
+            if error.code != 503:  # 503: up, but still reading the schema
+                return process  # it answers: ready
+            time.sleep(0.2)
         except OSError:
             time.sleep(0.2)
     process.terminate()
@@ -149,9 +158,7 @@ def load_snapshot(server) -> str:
             statements.append(f"insert into birds.{table} ({','.join(columns)}) {override}values {values};")
         print(f"  {table}: {len(rows)}")
     statements.append("select setval(pg_get_serial_sequence('birds.observations', 'id'), (select coalesce(max(id), 1) from birds.observations));")
-    output = server.psql("\n".join(statements))
-    if "ERROR" in output:
-        raise RuntimeError(output)
+    run_sql(server, "\n".join(statements), "snapshot")
     return f"{url}/storage/v1/object/public/bird-audio"
 
 

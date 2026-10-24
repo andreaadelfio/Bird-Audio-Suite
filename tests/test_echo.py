@@ -28,6 +28,16 @@ class EchoCancellerTests(unittest.TestCase):
         original = samples[: delayed.size]
         self.assertLess(float(np.sqrt(np.mean((delayed - original) ** 2))), 1e-5)
 
+    def test_reference_history_is_newest_first(self) -> None:
+        canceller = EchoCanceller(taps=4)
+        pushed = []
+        for value in range(1, 11):
+            spectrum = np.full(canceller.frame // 2 + 1, value, np.complex64)
+            history = canceller._push_reference(spectrum)
+            pushed.insert(0, value)
+            expected = (pushed + [0] * 4)[:4]
+            self.assertEqual([int(row[0].real) for row in history], expected)
+
     def test_skipping_ffts_while_the_pc_is_silent_changes_nothing(self) -> None:
         rng = np.random.default_rng(7)
         mic = rng.standard_normal(48_000 * 3).astype(np.float32) * 0.1

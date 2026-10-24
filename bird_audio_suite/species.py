@@ -46,6 +46,7 @@ class SpeciesNames:
         self.lookup_online = lookup_online
         self.names: dict[str, dict[str, str]] = {}
         self._wiki: dict[str, wikipediaapi.Wikipedia] = {}
+        self._not_found: set[tuple[str, str]] = set()  # asked already: not again on every clip
         self._load_cache()
 
     # ------------------------------------------------------------ cache and Supabase
@@ -68,11 +69,12 @@ class SpeciesNames:
         temp.replace(self.cache_path)
 
     def refresh_from(self, rows: list[dict]) -> None:
-        """Take the names stored on Supabase (they win over the cache)."""
+        """Take the names stored on Supabase (they win over the cache; an empty one does not)."""
         for row in rows:
             name = str(row.get("scientific_name") or "").strip()
             if name:
-                self.names[name] = {field: str(row.get(field) or "") for field in NAME_FIELDS}
+                cached = self.names.get(name, {})
+                self.names[name] = {field: str(row.get(field) or cached.get(field) or "") for field in NAME_FIELDS}
         self.save_cache()
 
     # ------------------------------------------------------------ names
@@ -110,7 +112,9 @@ class SpeciesNames:
     # ------------------------------------------------------------ Wikipedia
 
     def lookup(self, language: str, scientific_name: str) -> str | None:
-        if not self.lookup_online:
+        """Once per species and language for this object (the uploader builds a new one every
+        hour): a name Wikipedia does not have is not asked again for every clip."""
+        if not self.lookup_online or (language, scientific_name) in self._not_found:
             return None
         if language not in self._wiki:
             self._wiki[language] = wikipediaapi.Wikipedia(
@@ -118,15 +122,19 @@ class SpeciesNames:
                 extract_format=wikipediaapi.ExtractFormat.HTML,
                 user_agent="bird-audio-suite",
             )
-        return self._lookup_localized_name(self._wiki[language], scientific_name)
+        found = self._lookup_localized_name(self._wiki[language], scientific_name)
+        if found == "":  # Wikipedia answered, without a name (None: offline, asked again later)
+            self._not_found.add((language, scientific_name))
+        return found or None
 
     @staticmethod
     def _lookup_localized_name(wiki, scientific_name: str) -> str | None:
+        """The name, "" when Wikipedia has none, None when it could not be asked."""
         # Network errors must never break detection (in live mode this runs in the audio loop).
         try:
             page = wiki.page(scientific_name)
             if not page.exists():
-                return None
+                return ""
             summary = page.summary or ""
         except Exception as exc:
             print(f"Wikipedia lookup failed for {scientific_name}: {exc}")
@@ -134,10 +142,10 @@ class SpeciesNames:
 
         if "<b>" in summary:
             try:
-                return SpeciesNames._clean_localized_name(summary.split("<b>", 1)[1].split("<", 1)[0])
+                return SpeciesNames._clean_localized_name(summary.split("<b>", 1)[1].split("<", 1)[0]) or ""
             except (IndexError, ValueError):
-                return None
-        return None
+                return ""
+        return ""
 
     @staticmethod
     def _clean_localized_name(raw_name: str) -> str | None:

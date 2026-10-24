@@ -128,7 +128,7 @@ def measure() -> list[dict]:
                               playback_suppression_min_confidence=0.5, verbose=False)
     playback = synthetic_audio(9.6, seed=2)
     seconds = timed(quiet(lambda: detect_live_slice(window, SAMPLE_RATE, detector, args, playback)), repeat=3)
-    step("live: finestra con il PC che suona", seconds, f"{100 * seconds / 4.8:.0f}% dei 4.8 s (BirdNET due volte)")
+    step("live: finestra con il PC che suona", seconds, f"{100 * seconds / 4.8:.0f}% dei 4.8 s (BirdNET sul PC solo se il microfono sente un uccello)")
 
     from bird_audio_suite.echo import EchoCanceller
 

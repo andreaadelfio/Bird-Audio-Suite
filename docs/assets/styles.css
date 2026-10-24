@@ -1,6 +1,7 @@
 /* Same palette as MyFinance, with a dark variant. Dense layout: on a computer an observation is
    one row (facts and actions on the left, its clips on the right), on the phone one column. */
 :root {
+  color-scheme: light dark; /* the browser's own controls (dates, scrollbars) follow the theme */
   --bg: #f4efe7;
   --surface: #fffaf4;
   --sunken: #efe8dd;
@@ -11,11 +12,11 @@
   --accent-deep: #2c4f3d;
   --positive: #2f7a3e;
   --negative: #a23b2f;
-  --pending: #b7791f;
+  --pending: #9a6412; /* amber dark enough to read on the cards (4.8:1) */
   --uploaded: #2f6f8f;
   --on-accent: #fff; /* text on accent-coloured buttons */
   --likely: #2f7a3e;
-  --unsure: #b7791f;
+  --unsure: #9a6412;
   --radius: 10px;
   --control: 2rem; /* height of buttons and fields */
   --gap: 0.5rem;
@@ -123,6 +124,7 @@ label { color: var(--ink-soft); font-size: 0.85rem; }
 }
 
 .icon-button svg { width: 1.1rem; height: 1.1rem; fill: var(--accent); }
+.icon-button.working svg { animation: working 0.8s ease-in-out infinite alternate; }
 .pill-button { padding: 0 0.8rem; border-radius: 999px; color: var(--accent-deep); font-weight: 600; }
 .pill-button[aria-expanded="true"] { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 
@@ -208,8 +210,6 @@ label { color: var(--ink-soft); font-size: 0.85rem; }
 .filters { display: flex; flex-wrap: wrap; align-items: center; gap: var(--gap) 1rem; margin-bottom: 0.6rem; }
 .status-pills { display: flex; gap: 0.25rem; }
 .pill { min-height: 1.85rem; border-radius: 999px; padding: 0 0.75rem; }
-.pill .count:not(:empty) { margin-left: 0.15rem; }
-.pill.on .count { background: rgba(255, 255, 255, 0.28); }
 
 .more-filters > summary { cursor: pointer; color: var(--accent-deep); font-weight: 600; list-style: none; }
 .more-filters > summary::-webkit-details-marker { display: none; }
@@ -263,7 +263,8 @@ label { color: var(--ink-soft); font-size: 0.85rem; }
 
 .obs-head { grid-area: head; min-width: 0; }
 .title-row { display: flex; align-items: center; gap: 0.35rem; min-width: 0; }
-.obs-head h2 { margin: 0; font-size: 1.05rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* the scientific name is what you check: on two lines rather than cut */
+.obs-head h2 { min-width: 0; margin: 0; font-size: 1.05rem; line-height: 1.2; overflow-wrap: anywhere; }
 .common-names { margin: 0.05rem 0 0; color: var(--ink-soft); }
 
 .badge {
@@ -336,8 +337,10 @@ label { color: var(--ink-soft); font-size: 0.85rem; }
 .candidate.perch { display: inline-flex; align-items: center; gap: 0.25em; border: 1px solid var(--line); background: var(--surface); color: var(--ink); }
 
 /* the species BirdNET should have said: opened from the actions, saved when you leave the field */
-.fix { grid-area: fix; display: flex; align-items: center; gap: 0.35rem; font-size: 0.85rem; color: var(--ink-soft); }
-.fix input { flex: 1; min-width: 0; }
+.fix { grid-area: fix; display: flex; flex-wrap: wrap; align-items: center; gap: 0.35rem; font-size: 0.85rem; color: var(--ink-soft); }
+.fix input { flex: 1 1 9rem; min-width: 0; } /* the name whole; its Italian name and links wrap below */
+.fix-extras { display: inline-flex; align-items: center; gap: 0.35rem; margin-left: auto; }
+.fix-name { color: var(--ink); }
 
 .actions { grid-area: acts; display: flex; flex-wrap: wrap; gap: 0.3rem; align-items: center; }
 .actions .spacer { flex: 1; }
@@ -386,6 +389,17 @@ button.inat { border-color: var(--uploaded); color: var(--uploaded); }
 }
 
 .spectrogram { display: block; width: 100%; height: 100%; object-fit: fill; pointer-events: none; }
+.no-image .spectrogram { visibility: hidden; }
+.no-image::before {
+  content: "spettrogramma non disponibile";
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: rgba(255, 255, 255, 0.45);
+  font-size: 0.75rem;
+  pointer-events: none;
+}
 
 /* where BirdNET heard the species, from 0.6: green when likely (>= 0.8), amber when unsure (0.6-0.8);
    the stronger, the more visible. Tap one to hear just that part */
@@ -448,7 +462,31 @@ button.inat { border-color: var(--uploaded); color: var(--uploaded); }
    only when the clip is too narrow for both */
 .player { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem; padding: 0.3rem; }
 .player button { flex: none; }
-.clip-tools { display: flex; gap: 0.25rem; margin-left: auto; }
+.clip-tools { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 0.25rem; margin-left: auto; }
+/* a narrow clip (a phone, three in a row): the player on one row, with Scarta in sight and link,
+   unlink and delete behind "⋯" (the buttons keep their size) */
+.clip { container-type: inline-size; }
+.more-tools { display: none; }
+.tool-label { display: none; }
+@container (max-width: 400px) {
+  .more-tools { display: block; }
+  .clip:not(.more-open) :is([data-player="link"], [data-player="unlink"], [data-delete-clip]) { display: none; }
+  /* Scarta and ⋯ always at the end of the first row; opened, the others on a row of their own,
+     on the right, with their names (a phone has no tooltips) */
+  .clip-tools { display: contents; }
+  .player [data-clip-review] { margin-left: auto; }
+  .clip.more-open :is([data-player="link"], [data-player="unlink"], [data-delete-clip]) {
+    order: 1;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    width: auto;
+    padding: 0 0.5rem;
+  }
+  .clip.more-open [data-player="link"] { margin-left: auto; }
+  .clip.more-open .tool-label { display: inline; }
+}
+.more-tools[aria-expanded="true"] { background: var(--sunken); border-color: var(--accent); }
 
 .play-button {
   display: grid;
@@ -549,6 +587,16 @@ button.denoise.strong { background: var(--accent-deep); border-color: var(--acce
 }
 
 @keyframes toast-in { from { opacity: 0; transform: translate(-50%, 0.5rem); } }
+/* "Annulla" after a change of status: on the toast's dark (or light) background */
+.status-line .undo {
+  min-height: 1.8rem;
+  margin-left: 0.6rem;
+  border-color: color-mix(in srgb, var(--bg) 55%, transparent);
+  background: transparent;
+  color: var(--bg);
+  font-weight: 600;
+}
+.status-line .undo:hover { background: color-mix(in srgb, var(--bg) 15%, transparent); }
 .status-line.error:not(:empty) { background: var(--negative); color: var(--on-accent); }
 .error { color: var(--negative); }
 
@@ -637,13 +685,14 @@ button.denoise.strong { background: var(--accent-deep); border-color: var(--acce
 .season-table td.none { background: none; color: var(--ink-soft); }
 .season-table tbody th .species-link { white-space: nowrap; }
 
-/* a phone: the twelve months in sight, long names shortened (whole in the tooltip) */
+/* a phone: the twelve months in sight, long names on two lines */
 @media (max-width: 720px) {
   .season-table { border-spacing: 1px; }
   .season-table th, .season-table td { font-size: 0.6rem; }
   .season-table td { width: 1.15rem; min-width: 1.15rem; height: 1.25rem; }
   .season-table tbody th { padding-right: 0.25rem; }
-  .season-table tbody th .species-link { display: block; max-width: 6.2rem; overflow: hidden; text-overflow: ellipsis; font-size: 0.72rem; }
+  .season-table tbody th { white-space: normal; }
+  .season-table tbody th .species-link { display: block; max-width: 6.2rem; font-size: 0.72rem; line-height: 1.15; white-space: normal; }
   .season-table thead th:first-child small { display: none; }
 }
 
@@ -667,15 +716,27 @@ button.denoise.strong { background: var(--accent-deep); border-color: var(--acce
   grid-template-columns: repeat(24, 1fr);
   gap: 2px;
   align-items: end;
-  height: 96px;
-  padding: 0.4rem 0.5rem 0.2rem;
+  height: 108px;
+  padding: 1rem 0.5rem 0.2rem; /* room for the number over the tallest bar */
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--radius);
 }
 
 .hour { display: grid; grid-template-rows: 1fr auto; height: 100%; text-align: center; }
-.hour .bar { align-self: end; background: var(--accent); border-radius: 2px 2px 0 0; min-height: 1px; }
+.hour .bar { position: relative; align-self: end; background: var(--accent); border-radius: 2px 2px 0 0; min-height: 1px; }
+/* how many, over each bar: a phone has no tooltip */
+.hour .bar[data-count]::before {
+  content: attr(data-count);
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  color: var(--ink-soft);
+  font-size: 0.6rem;
+  line-height: 1.3;
+  font-variant-numeric: tabular-nums;
+}
 .hour .label { font-size: 0.65rem; color: var(--ink-soft); }
 .hour:not(:nth-child(3n + 1)) .label { visibility: hidden; }
 
@@ -702,6 +763,10 @@ button.denoise.strong { background: var(--accent-deep); border-color: var(--acce
 
   .top-bar h1 { flex: 1; font-size: 1.05rem; }
   .tabs { order: 3; width: 100%; }
+  /* scrolling down, the title row slides away and the tabs stay (2.9rem: the row and its gap) */
+  .top-bar { transition: transform 0.2s ease-out; }
+  .top-bar.compact { transform: translateY(-2.9rem); }
+  .top-bar.compact ~ .link-banner { top: 3.7rem; }
   .tab { flex: 1; min-height: 2.3rem; padding: 0 0.3rem; }
 
   /* the volume opens under the bar, from the speaker */
@@ -725,8 +790,9 @@ button.denoise.strong { background: var(--accent-deep); border-color: var(--acce
   .more-filters[open] { flex-basis: 100%; }
   .filter-fields { margin-top: 0.4rem; }
   .filter-fields input[type="search"] { width: 100%; }
-  .filter-fields .inline-label { flex: 1 1 40%; }
-  .filter-fields .inline-label input { flex: 1; min-width: 0; }
+  .filter-fields .inline-label { flex: 1 1 40%; min-width: 0; }
+  /* width 0: the date fields' own width no longer pushes "al" to a row of its own */
+  .filter-fields .inline-label input { flex: 1; min-width: 0; width: 0; }
 
   .observation {
     grid-template-columns: minmax(0, 1fr);
@@ -753,9 +819,34 @@ button.denoise.strong { background: var(--accent-deep); border-color: var(--acce
   button.round svg { width: 1.45rem; height: 1.45rem; }
 
   .more, .show-clips { width: 100%; }
+  .report-table .species-link { padding: 0.35rem 0; } /* a taller target for a finger, same look */
+  .more-filters > summary, .inat-uploads > summary { padding: 0.45rem 0; }
   .report-grid { grid-template-columns: minmax(0, 1fr); }
   .tiles { grid-template-columns: repeat(3, 1fr); }
   .trash-head .danger { width: 100%; }
+}
+
+/* a tablet or a small window: the volume behind the speaker too, so the bar stays on one row */
+@media (min-width: 721px) and (max-width: 960px) {
+  #volume-toggle { display: grid; }
+  .volume-panel { display: none; }
+  .volume-panel.open { display: flex; order: 4; width: 100%; margin-left: 0; }
+  .volume-panel input[type="range"] { flex: 1; width: auto; }
+  .top-tools { margin-left: auto; }
+}
+
+/* a touch screen wider than a phone (a tablet, a phone sideways): the desktop layout with the
+   phone's finger-sized controls */
+@media (pointer: coarse) and (min-width: 721px) {
+  :root { --control: 2.5rem; }
+  .pill, .tab { min-height: 2.2rem; }
+  .play-button { width: 2.3rem; min-height: 2.3rem; }
+  button.tool { min-height: 2.3rem; padding: 0 0.6rem; font-size: 0.85rem; }
+  select.tool { width: 2.7rem; min-height: 2.3rem; }
+  .trash-button { width: 2.3rem; }
+  .species-links a, .example-button { width: 1.75rem; min-height: 1.75rem; height: 1.75rem; }
+  button.round { width: 2.7rem; min-height: 2.7rem; }
+  .candidate { min-height: 2rem; }
 }
 
 /* a list narrowed to a species or dates: how many of those are on iNaturalist */
@@ -779,6 +870,7 @@ body.selecting .select-box {
 body.selecting .select-box svg { width: 1.1rem; height: 1.1rem; fill: currentColor; }
 body.selecting .select-box[aria-pressed="true"] { border-color: var(--accent); background: var(--accent); color: var(--on-accent); }
 .spectrogram-box .select-box { position: absolute; top: 4px; right: 4px; z-index: 2; }
+body.selecting .trim-chip { right: calc(1.7rem + 8px); } /* next to the box, not under it */
 .observation.selected { outline: 2px solid var(--accent); outline-offset: -1px; }
 .clip.selected { outline: 2px solid var(--accent); outline-offset: -2px; }
 .select-toggle.on { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
@@ -803,8 +895,11 @@ body.selecting #content { padding-bottom: 4.5rem; } /* the last card is not hidd
 .bulk-bar .spacer { flex: 1; }
 .bulk-bar button:disabled { opacity: 0.35; }
 .bulk-actions { display: flex; align-items: center; gap: 0.4rem; }
+/* the messages (and their "Annulla") above the bar, not on it */
+body.selecting .status-line:not(:empty) { bottom: calc(4.8rem + env(safe-area-inset-bottom)); }
 /* a phone: count, all and done on top, the actions below them */
 @media (max-width: 720px) {
+  body.selecting .status-line:not(:empty) { bottom: calc(8rem + env(safe-area-inset-bottom)); }
   .bulk-bar { flex-wrap: wrap; }
   .bulk-bar .spacer { display: none; }
   .bulk-bar .bulk-done { margin-left: auto; }
@@ -829,5 +924,5 @@ body.selecting #content { padding-bottom: 4.5rem; } /* the last card is not hidd
 .link-banner #link-what { flex: 1 1 280px; }
 .link-here { animation: toast-in 0.18s ease-out; }
 @media (max-width: 720px) {
-  .link-banner { top: 6.6rem; }
+  .link-banner { top: 6.6rem; transition: top 0.2s ease-out; } /* with the bar's title row */
 }

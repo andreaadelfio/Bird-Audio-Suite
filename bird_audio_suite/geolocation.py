@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from dataclasses import asdict, dataclass
+from http.client import HTTPException
 from pathlib import Path
-from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 
@@ -28,9 +29,22 @@ def _fetch_json(url: str, timeout_seconds: float) -> dict | None:
     request = Request(url, headers={"User-Agent": USER_AGENT})
     try:
         with urlopen(request, timeout=timeout_seconds) as response:
-            return json.load(response)
-    except (URLError, TimeoutError, ValueError, json.JSONDecodeError):
+            data = json.load(response)
+    # OSError: also a connection reset halfway (not a URLError); HTTPException: a cut answer
+    except (OSError, HTTPException, ValueError):
         return None
+    return data if isinstance(data, dict) else None
+
+
+def _coordinates(data: dict) -> tuple[float, float] | None:
+    """Latitude and longitude of an answer, if they are real coordinates."""
+    try:
+        latitude, longitude = float(data.get("latitude")), float(data.get("longitude"))
+    except (TypeError, ValueError):
+        return None
+    if not (math.isfinite(latitude) and math.isfinite(longitude) and abs(latitude) <= 90 and abs(longitude) <= 180):
+        return None
+    return latitude, longitude
 
 
 def _lookup_environment() -> ResolvedLocation | None:
@@ -56,12 +70,8 @@ def _lookup_environment() -> ResolvedLocation | None:
 
 def _lookup_ipapi(timeout_seconds: float) -> ResolvedLocation | None:
     data = _fetch_json("https://ipapi.co/json/", timeout_seconds)
-    if not data:
-        return None
-
-    latitude = data.get("latitude")
-    longitude = data.get("longitude")
-    if latitude is None or longitude is None:
+    coordinates = _coordinates(data) if data else None
+    if coordinates is None:  # also its {"error": true, "reason": "RateLimited"}
         return None
 
     place_name = _build_place_name(
@@ -73,8 +83,8 @@ def _lookup_ipapi(timeout_seconds: float) -> ResolvedLocation | None:
         return None
 
     return ResolvedLocation(
-        latitude=float(latitude),
-        longitude=float(longitude),
+        latitude=coordinates[0],
+        longitude=coordinates[1],
         place_name=place_name,
         source="ipapi",
         used_fallback=False,
@@ -85,12 +95,10 @@ def _lookup_ipwhois(timeout_seconds: float) -> ResolvedLocation | None:
     data = _fetch_json("https://ipwho.is/", timeout_seconds)
     if not data or not data.get("success"):
         return None
-    if data.get("connection", {}).get("proxy"):
+    if (data.get("connection") or {}).get("proxy"):
         return None
-
-    latitude = data.get("latitude")
-    longitude = data.get("longitude")
-    if latitude is None or longitude is None:
+    coordinates = _coordinates(data)
+    if coordinates is None:
         return None
 
     place_name = _build_place_name(
@@ -102,8 +110,8 @@ def _lookup_ipwhois(timeout_seconds: float) -> ResolvedLocation | None:
         return None
 
     return ResolvedLocation(
-        latitude=float(latitude),
-        longitude=float(longitude),
+        latitude=coordinates[0],
+        longitude=coordinates[1],
         place_name=place_name,
         source="ipwhois",
         used_fallback=False,
@@ -130,6 +138,7 @@ def _save_last_known(cache_path: Path | None, location: ResolvedLocation) -> Non
     if cache_path is None:
         return
     try:
+        Path(cache_path).parent.mkdir(parents=True, exist_ok=True)
         Path(cache_path).write_text(json.dumps(asdict(location)), encoding="utf-8")
     except OSError:
         pass

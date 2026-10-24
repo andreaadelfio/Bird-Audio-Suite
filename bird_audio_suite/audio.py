@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import fcntl
 import json
+import os
 import re
 from contextlib import contextmanager
 from datetime import datetime, timedelta
+from functools import lru_cache
 from pathlib import Path
 
 import librosa
@@ -53,6 +55,15 @@ def load_audio(path: Path, sample_rate: int | None = None) -> tuple[np.ndarray, 
     return samples.astype(np.float32), int(loaded_rate)
 
 
+@lru_cache(maxsize=4)
+def noise_profile(noise_reference: Path, sample_rate: int) -> np.ndarray | None:
+    """Mean spectrum of a noise recording, read once: the live denoises every window with it."""
+    noise_signal, _ = load_audio(noise_reference, sample_rate=sample_rate)
+    if not noise_signal.size:
+        return None
+    return np.mean(np.abs(librosa.stft(noise_signal)), axis=1, keepdims=True)
+
+
 def denoise_signal(
     samples: np.ndarray,
     sample_rate: int,
@@ -69,18 +80,12 @@ def denoise_signal(
 
     signal_magnitude = np.abs(signal_stft)
     signal_phase = np.angle(signal_stft)
-    if noise_reference is None:
-        noise_profile = np.zeros((signal_stft.shape[0], 1), dtype=np.float32)
-    else:
-        noise_signal, _ = load_audio(noise_reference, sample_rate=sample_rate)
-        if noise_signal.size:
-            noise_stft = librosa.stft(noise_signal)
-            noise_profile = np.mean(np.abs(noise_stft), axis=1, keepdims=True)
-        else:
-            noise_profile = np.zeros((signal_stft.shape[0], 1), dtype=np.float32)
+    profile = noise_profile(Path(noise_reference), int(sample_rate)) if noise_reference is not None else None
+    if profile is None:
+        profile = np.zeros((signal_stft.shape[0], 1), dtype=np.float32)
 
     filtered_magnitude = np.maximum(
-        signal_magnitude - noise_reduction_factor * noise_profile,
+        signal_magnitude - noise_reduction_factor * profile,
         0.0,
     )
 
@@ -260,6 +265,14 @@ def parse_timestamp_from_name(name: str) -> datetime | None:
     return None
 
 
+def replace_durably(partial: Path, final: Path) -> None:
+    """Give a finished file its name only once it is on disk: after a power cut (the laptop's
+    battery) a clip is whole or not there, never an empty WAV next to a JSON pointing at it."""
+    with Path(partial).open("rb+") as handle:
+        os.fsync(handle.fileno())
+    Path(partial).replace(final)
+
+
 @contextmanager
 def detections_lock(detections_dir: Path, blocking: bool = True):
     """Exclusive lock on the transit folder, so two uploaders (the live service and the `sync`
@@ -318,7 +331,7 @@ def export_detection_clips(
         output_path = detections_dir / f"{clip_name}_{heard_at:%Y%m%d_%H%M%S}_{confidence:.3f}.wav"
         partial_wav = output_path.with_suffix(".wav.part")
         write_wav_mono(partial_wav, normalized[start_index:end_index], sample_rate)
-        partial_wav.replace(output_path)
+        replace_durably(partial_wav, output_path)
         sidecar = {
             "id": output_path.name,
             "scientific_name": scientific_name,
@@ -334,7 +347,7 @@ def export_detection_clips(
         }
         partial_json = output_path.with_suffix(".json.part")
         partial_json.write_text(json.dumps(sidecar, ensure_ascii=False), encoding="utf-8")
-        partial_json.replace(output_path.with_suffix(".json"))
+        replace_durably(partial_json, output_path.with_suffix(".json"))
         exported_paths.append(output_path)
 
     return exported_paths

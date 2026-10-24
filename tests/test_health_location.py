@@ -40,6 +40,11 @@ class FindProblemsTests(unittest.TestCase):
         self.assertEqual(list(behind), ["slow"])
         self.assertIn("95 s", behind["slow"])
         self.assertEqual(list(find_problems(NOW, "active", {**keeping_up, "rss_mb": 1500})), ["memory"])
+        # keeping up only by skipping windows is falling behind too; one now and then is not
+        self.assertEqual(find_problems(NOW, "active", {**keeping_up, "skipped": 2}), {})
+        skipping = find_problems(NOW, "active", {**keeping_up, "skipped": 40, "load_pct": 180})
+        self.assertEqual(list(skipping), ["slow"])
+        self.assertIn("saltato 40 finestre", skipping["slow"])
 
 
 class AlertStateTests(unittest.TestCase):
@@ -115,6 +120,36 @@ class LocationCacheTests(unittest.TestCase):
         self.assertEqual(location.place_name, "Berlin, Germany")
         self.assertEqual(location.source, "config")
 
+
+    def test_a_connection_cut_halfway_or_a_strange_answer_is_just_no_answer(self) -> None:
+        class Reset:
+            def __enter__(self):
+                raise ConnectionResetError(104, "Connection reset by peer")  # not a URLError
+
+            def __exit__(self, *args):
+                return False
+
+        with patch.object(geolocation, "urlopen", lambda request, timeout: Reset()):
+            self.assertIsNone(geolocation._fetch_json("https://ipapi.co/json/", 1))
+        with patch.object(geolocation, "_fetch_json", return_value={"error": True, "reason": "RateLimited"}):
+            self.assertIsNone(geolocation._lookup_ipapi(1))
+        with patch.object(geolocation, "_fetch_json", return_value={"latitude": "n/a", "longitude": 13.5, "city": "X"}):
+            self.assertIsNone(geolocation._lookup_ipapi(1))
+        with patch.object(geolocation, "_fetch_json", return_value={"success": True, "latitude": 95.0, "longitude": 13.5,
+                                                                   "city": "X", "connection": None}):
+            self.assertIsNone(geolocation._lookup_ipwhois(1))
+        with patch.object(geolocation, "_fetch_json", return_value={"latitude": "45.8", "longitude": "13.53",
+                                                                   "city": "Monfalcone", "country_name": "Italy"}):
+            self.assertEqual(geolocation._lookup_ipapi(1).latitude, 45.8)
+
+    def test_the_last_position_is_saved_even_without_its_folder(self) -> None:
+        online = ResolvedLocation(45.80, 13.53, "Monfalcone", "ipwhois", False)
+        with tempfile.TemporaryDirectory() as directory:
+            cache = Path(directory) / "runtime" / "location.json"
+            with patch.object(geolocation, "_lookup_environment", return_value=None), \
+                    patch.object(geolocation, "_lookup_ipapi", return_value=online):
+                self.resolve(cache)
+            self.assertTrue(cache.exists())
 
 if __name__ == "__main__":
     unittest.main()

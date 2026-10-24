@@ -1,7 +1,7 @@
 // Service worker (come in MyFinance e Listino Prezzi): serve per installare il sito come app.
 // Prima la rete, così si vede sempre l'ultima versione; senza rete si apre almeno
 // l'interfaccia salvata. Dati, audio e spettrogrammi (Supabase) non passano di qui.
-const CACHE_NAME = "birds-shell-v2"; // v2: the new icons (October 2026)
+const CACHE_NAME = "birds-shell-v4"; // v4: clip tools behind ⋯, compact bar, C/S keys (October 2026)
 const APP_SHELL = [
   "./",
   "./index.html",

@@ -15,6 +15,7 @@ from bird_audio_suite.audio import detections_lock, export_detection_clips
 from bird_audio_suite.cloud import (
     CloudConfig,
     Outbox,
+    SupabaseRest,
     SupabaseStorage,
     convert_legacy_csvs,
     media_path_for,
@@ -43,18 +44,20 @@ class FakeNames:
 
 
 class FakeRest:
-    def __init__(self, deleted=(), offline=False) -> None:
+    def __init__(self, deleted=(), offline=False, on_supabase=()) -> None:
         self.deleted = list(deleted)
+        self.on_supabase = list(on_supabase)
         self.offline = offline
+        self.asked: list[tuple[str, list[str]]] = []
         self.upserts: list[tuple[str, list[dict]]] = []
         self.observations: dict[int, tuple[str, str]] = {}  # id -> (day, species)
         self.clip_times: list[tuple[int, str, datetime]] = []  # (observation id, species, time)
 
-    def select_column(self, table, column):
+    def existing_ids(self, table, ids):
         if self.offline:
             raise RuntimeError("no network")
-        assert (table, column) == ("deleted_clips", "id")
-        return self.deleted
+        self.asked.append((table, list(ids)))
+        return set(ids) & set(self.deleted if table == "deleted_clips" else self.on_supabase)
 
     def upsert(self, table, rows, on_conflict):
         self.upserts.append((table, rows))
@@ -216,6 +219,38 @@ class PushTests(unittest.TestCase):
         self.assertTrue(report.busy)
         self.assertEqual(report.sent, 0)
 
+    def test_only_the_waiting_clips_are_asked_about_and_one_already_there_is_not_sent_again(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            first = export(folder, datetime(2026, 10, 9, 6, 55))
+            export(folder, datetime(2026, 10, 9, 18, 10), confidence=0.97)
+            # the first made it on a previous attempt that lost only the answer (or the other PC sent it)
+            rest = FakeRest(on_supabase=[first.name])
+            progress = []
+            report = outbox(folder, rest).push(progress=lambda partial: progress.append(partial.sent))
+            left = [path.name for path in folder.iterdir() if path.name != ".lock"]
+
+        # the Cestino and the clips, about these two clips only: never the whole (ever growing) list
+        self.assertEqual([table for table, _ in rest.asked], ["deleted_clips", "clips"])
+        self.assertEqual(len(rest.asked[0][1]), 2)
+        clip_rows = [row for table, rows in rest.upserts if table == "clips" for row in rows]
+        self.assertEqual([row["id"] for row in clip_rows], ["Merlo_20261009_181000_0.970.wav"])  # only the new one
+        self.assertEqual((report.sent, report.sent_ids, left), (2, ["Merlo_20261009_181000_0.970.wav"], []))
+        self.assertEqual(progress, [1, 2])  # after each clip: a long backlog shows it is at work
+
+
+    def test_an_empty_name_or_a_missing_code_never_overwrites_supabase(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            export(folder, datetime(2026, 10, 9, 6, 55))
+            rest = FakeRest()
+            box = outbox(folder, rest)
+            box.names.names["Turdus merula"]["german_name"] = ""  # Wikipedia offline on this PC
+            box.link_codes = lambda name: {}  # eBird and iNaturalist offline
+            box.push()
+        species_rows = [row for table, rows in rest.upserts if table == "species" for row in rows]
+        self.assertEqual(species_rows, [{"scientific_name": "Turdus merula", "english_name": "Blackbird",
+                                         "italian_name": "Merlo"}])
 
 class FailedClipTests(unittest.TestCase):
     def test_an_observation_created_for_a_clip_that_did_not_make_it_does_not_stay_empty(self) -> None:
@@ -384,6 +419,9 @@ class InatSpeciesTests(unittest.TestCase):
                         {"scientific_name": "Sitta europaea", "inat_taxon_id": 14824},
                         {"scientific_name": "Parus major", "inat_taxon_id": 203153}]
 
+            def get_all(self, table, params, order="id"):  # every page: more than 1000 uploaded, one day
+                return self.get(table, params)
+
             def update(self, table, filters, values):
                 self.updates.append((filters["id"], values["corrected_scientific_name"]))
 
@@ -421,24 +459,6 @@ class PerchDoubleCheckTests(unittest.TestCase):
         self.assertEqual((report.sent, clip_rows[0]["perch"]), (1, None))  # null: backfill-perch adds it later
 
 
-class PerchColumnMissingTests(unittest.TestCase):
-    def test_clips_still_go_while_supabase_has_no_perch_column_yet(self) -> None:
-        class Rest(FakeRest):
-            def upsert(self, table, rows, on_conflict):
-                if table == "clips" and "perch" in rows[0]:
-                    raise RuntimeError("Supabase clips upsert (400): Could not find the 'perch' column of 'clips'")
-                super().upsert(table, rows, on_conflict)
-
-        with tempfile.TemporaryDirectory() as directory:
-            folder = Path(directory)
-            export(folder, datetime(2026, 10, 9, 6, 55))
-            rest = Rest()
-            report = outbox(folder, rest).push()
-        clip_rows = [row for table, rows in rest.upserts if table == "clips" for row in rows]
-        self.assertEqual((report.sent, report.errors), (1, []))
-        self.assertNotIn("perch", clip_rows[0])
-
-
 class StorageTests(unittest.TestCase):
     def test_uploads_to_the_public_bucket_with_upsert(self) -> None:
         posts = []
@@ -465,6 +485,70 @@ class StorageTests(unittest.TestCase):
         self.assertEqual(slugify_public_id("Codibùgnolo_20260901_113103_0.980"), "codibugnolo_20260901_113103_0-980")
         self.assertEqual(media_path_for("Gallinella D_Acqua_20261004_205425_0.867.wav", datetime(2026, 10, 4, 20, 54)),
                          "20261004/gallinella-d_acqua_20261004_205425_0-867")
+
+
+class RestSession:
+    """requests.Session stand-in: records the GETs, answers with `pages` in turn."""
+
+    def __init__(self, pages) -> None:
+        self.headers: dict = {}
+        self.pages, self.calls = list(pages), []
+
+    def get(self, url, params=None, headers=None, timeout=None):
+        self.calls.append((url, params, headers))
+        rows = self.pages.pop(0) if self.pages else []
+        return types.SimpleNamespace(status_code=200, text="", json=lambda: rows)
+
+
+def rest_with(session) -> SupabaseRest:
+    return SupabaseRest(CloudConfig(supabase_url="https://abc.supabase.co", supabase_key="k"), session=session)
+
+
+class SupabaseRestTests(unittest.TestCase):
+    def test_all_rows_page_by_page_past_supabases_1000(self) -> None:
+        session = RestSession([[{"id": i} for i in range(1000)], [{"id": 1000}, {"id": 1001}]])
+        rows = rest_with(session).get_all("observations", {"select": "id", "status": "eq.uploaded"})
+        self.assertEqual(len(rows), 1002)
+        self.assertEqual([call[2]["Range"] for call in session.calls], ["0-999", "1000-1999"])
+        self.assertEqual(session.calls[0][1], {"select": "id", "status": "eq.uploaded", "order": "id"})  # stable pages
+
+    def test_ids_are_asked_quoted_a_few_at_a_time(self) -> None:
+        ids = [f"Merlo_20261009_0655{i:02d}_0.910.wav" for i in range(60)] + ['Gallinella D"Acqua, x.wav']
+        session = RestSession([[{"id": ids[0]}], [{"id": ids[-1]}]])
+        found = rest_with(session).existing_ids("deleted_clips", ids)
+        self.assertEqual(found, {ids[0], ids[-1]})
+        self.assertEqual(len(session.calls), 2)  # 50 per request: the URL stays short
+        first = session.calls[0][1]["id"]
+        self.assertTrue(first.startswith('in.("Merlo_20261009_065500_0.910.wav","Merlo_20261009_065501_0.910.wav"'))
+        self.assertTrue(session.calls[1][1]["id"].endswith(r'"Gallinella D\"Acqua, x.wav")'))
+
+    def test_a_clip_never_joins_an_observation_already_on_inaturalist(self) -> None:
+        session = RestSession([[{"observation_id": 7, "recorded_at": "2026-10-09T06:58:00+00:00"},
+                                {"observation_id": 5, "recorded_at": "2026-10-09T06:50:00+00:00"}]])
+        heard = datetime(2026, 10, 9, 6, 57, tzinfo=timezone.utc)
+        self.assertEqual(rest_with(session).observation_for("Turdus merula", heard, timedelta(minutes=10)), 7)
+        params = session.calls[0][1]
+        self.assertIn(("observations.status", "neq.uploaded"), params)
+        self.assertIn(("observations.scientific_name", "eq.Turdus merula"), params)
+
+
+class TidyTests(unittest.TestCase):
+    def test_a_step_that_fails_does_not_hold_back_the_others(self) -> None:
+        config = CloudConfig(supabase_url="https://example.supabase.co", supabase_key="k")
+        box = Outbox(Path("."), FakeNames(), config, rest=types.SimpleNamespace(delete_empty_observations=lambda: 2),
+                     storage=FakeStorage())
+        box.purge_uploaded_media = lambda: 1
+
+        def inaturalist_down():
+            raise RuntimeError("502 Bad Gateway")
+
+        box.follow_inat_species = inaturalist_down
+        box.name_new_species = lambda: 3
+        box.fill_perch = lambda: 4
+        done, errors = box.tidy()
+        self.assertEqual(done, {"purged": 1, "emptied": 2, "followed": 0, "named": 3, "perch": 4})
+        self.assertEqual(len(errors), 1)
+        self.assertIn("followed", errors[0])
 
 
 if __name__ == "__main__":

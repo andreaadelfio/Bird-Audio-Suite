@@ -6,10 +6,12 @@ process with low CPU and disk priority (systemd unit bird-audio-suite-sync): not
 slow the listening down, not even through Python's GIL.
 
 It looks at the folder every few seconds, so a clip is on Supabase moments after it closes;
-what failed (offline) is tried again every minute. Once an hour it also removes from Storage the
-files of observations on iNaturalist that the site could not remove after the upload
-(Outbox.purge_uploaded_media). After each round it writes its state into
-the runtime folder: the live table shows it, the health check warns when clips stay stuck.
+what failed (offline) is tried again every minute. Once an hour it also tidies up (Outbox.tidy:
+files of observations on iNaturalist that the site could not remove after the upload, empty
+observations, iNaturalist's species, names of new species, Perch); a step that failed is tried
+again after ten minutes. After each round, and every half minute while a long backlog goes, it
+writes its state into the runtime folder: the live table shows it, the health check warns when
+clips stay stuck.
 """
 
 from __future__ import annotations
@@ -28,7 +30,17 @@ POLL_SECONDS = 3.0
 RETRY_SECONDS = 60.0
 NAMES_REFRESH_SECONDS = 3600.0
 PURGE_EVERY_SECONDS = 3600.0
+TIDY_RETRY_SECONDS = 600.0  # a housekeeping step failed (offline at boot, iNaturalist down)
+PROGRESS_SECONDS = 30.0  # state written meanwhile, while a long backlog is being sent
 STALE_STATUS_SECONDS = 3 * 60  # the uploader writes at least every RETRY_SECONDS
+# what Outbox.tidy did, for the log
+TIDY_MESSAGES = {
+    "purged": "tolti da Supabase i file di {} clip gia' su iNaturalist",
+    "emptied": "eliminate {} osservazioni rimaste senza clip",
+    "followed": "{} osservazioni caricate prendono la specie mostrata da iNaturalist",
+    "named": "nomi e link per {} specie nuove (corrette sul sito)",
+    "perch": "parere di Perch aggiunto a {} clip",
+}
 
 
 def folder_signature(folder: Path) -> tuple[tuple[str, int], ...]:
@@ -46,11 +58,13 @@ class UploaderStatus:
         self.sent_total = 0
         self.last_sent_at: float | None = None
 
-    def write(self, pending: list, report=None, seconds: float = 0.0, error: str = "") -> None:
+    def write(self, pending: list, report=None, seconds: float = 0.0, error: str = "", finished: bool = True) -> None:
+        """`finished=False`: a push still at work (its clips are counted once, when it ends)."""
         if report is not None and report.sent:
-            self.sent_total += report.sent
             self.last_sent_at = time.time()
-            self.durations.extend([seconds / report.sent] * report.sent)
+            if finished:
+                self.sent_total += report.sent
+                self.durations.extend([seconds / report.sent] * report.sent)
         oldest = min((item.data.get("recorded_at", "") for item in pending), default="")
         payload = {
             "updated_at": time.time(),
@@ -100,6 +114,8 @@ def run_uploader(
     retry_seconds: float = RETRY_SECONDS,
     names_refresh_seconds: float = NAMES_REFRESH_SECONDS,
     purge_every_seconds: float = PURGE_EVERY_SECONDS,
+    tidy_retry_seconds: float = TIDY_RETRY_SECONDS,
+    progress_seconds: float = PROGRESS_SECONDS,
     status: UploaderStatus | None = None,
     log: Callable[[str], None] = print,
     should_stop: Callable[[], bool] = lambda: False,
@@ -139,8 +155,16 @@ def run_uploader(
             if clock() - built_at >= names_refresh_seconds:
                 outbox, built_at = make_outbox(), clock()
             started = clock()
+            shown = [started]
+
+            def progress(partial) -> None:
+                # a long backlog: the live table and the health check see it is at work
+                if clock() - shown[0] >= progress_seconds:
+                    shown[0] = clock()
+                    status.write(outbox_items(detections_dir), partial, finished=False)
+
             try:
-                report, error = outbox.push(), ""
+                report, error = outbox.push(progress=progress), ""
             except Exception as exc:  # e.g. Supabase unreachable while reading the Cestino list
                 report, error = None, repr(exc)
             seconds = clock() - started
@@ -156,15 +180,16 @@ def run_uploader(
         if clock() - last_purge >= purge_every_seconds:
             last_purge = clock()
             try:
-                purged, emptied, followed, named = outbox.tidy()
-                if purged:
-                    log(f"{datetime.now():%H:%M:%S} - tolti da Supabase i file di {purged} clip gia' su iNaturalist")
-                if emptied:
-                    log(f"{datetime.now():%H:%M:%S} - eliminate {emptied} osservazioni rimaste senza clip")
-                if followed:
-                    log(f"{datetime.now():%H:%M:%S} - {followed} osservazioni caricate prendono la specie mostrata da iNaturalist")
-                if named:
-                    log(f"{datetime.now():%H:%M:%S} - nomi e link per {named} specie nuove (corrette sul sito)")
-            except Exception as exc:  # offline: next hour
-                log(f"{datetime.now():%H:%M:%S} - pulizia oraria rimandata: {exc!r}")
+                done, errors = outbox.tidy()
+            except Exception as exc:
+                done, errors = {}, [repr(exc)]
+            for key, count in done.items():
+                if count and key in TIDY_MESSAGES:
+                    log(f"{datetime.now():%H:%M:%S} - {TIDY_MESSAGES[key].format(count)}")
+            if errors:
+                log(f"{datetime.now():%H:%M:%S} - pulizia oraria, riprovo tra {tidy_retry_seconds / 60:.0f} min: "
+                    + "; ".join(errors))
+                # offline at boot, or iNaturalist down: not a whole hour without it
+                last_purge = clock() - purge_every_seconds + tidy_retry_seconds
         sleep(poll_seconds)
+

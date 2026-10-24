@@ -79,12 +79,24 @@ class EchoCanceller:
     def reset(self) -> None:
         bins = self.frame // 2 + 1
         self.weights = np.zeros((self.taps, bins), np.complex64)
-        self.history = np.zeros((self.taps, bins), np.complex64)
+        # the reference spectra, newest first: a view on a buffer twice as long where each frame is
+        # written twice, so a new frame moves an index instead of copying the whole history
+        self._history = np.zeros((2 * self.taps, bins), np.complex64)
+        self._newest = 0
         self._silent_frames = self.taps  # the history holds only silence
         self._reference_power = 0.0  # long-term mean power of a reference bin
         self._overshoot = 0  # frames in a row that came out louder than DIVERGENCE_RATIO x the mic
         self._mic_level = getattr(self, "_mic_level", 0.0)  # the mic's recent power: kept across resets
         self.resets = getattr(self, "resets", 0)
+
+    @property
+    def history(self) -> np.ndarray:
+        return self._history[self._newest:self._newest + self.taps]
+
+    def _push_reference(self, spectrum: np.ndarray) -> np.ndarray:
+        self._newest = (self._newest - 1) % self.taps
+        self._history[self._newest] = self._history[self._newest + self.taps] = spectrum
+        return self.history
 
     def process(self, mic: np.ndarray, reference: np.ndarray) -> np.ndarray:
         mic_buffer = np.concatenate((self._mic, np.asarray(mic, np.float32)))
@@ -101,13 +113,12 @@ class EchoCanceller:
                 self._overlap += mic_frame * self.window * self.window / 2
             else:
                 spectrum = np.fft.rfft(mic_frame * self.window)
-                self.history = np.roll(self.history, 1, axis=0)
-                self.history[0] = np.fft.rfft(ref_frame * self.window)
-                frame_power = float(np.mean(np.abs(self.history[0]) ** 2))
+                history = self._push_reference(np.fft.rfft(ref_frame * self.window))
+                frame_power = float(np.mean(np.abs(history[0]) ** 2))
                 if frame_power > 0:
                     self._reference_power = (frame_power if self._reference_power == 0
                                              else 0.99 * self._reference_power + 0.01 * frame_power)
-                error = spectrum - (self.weights * self.history).sum(axis=0)
+                error = spectrum - (self.weights * history).sum(axis=0)
                 mic_energy = float(np.sum(np.abs(spectrum) ** 2))
                 self._mic_level = (mic_energy if self._mic_level == 0 else
                                    MIC_LEVEL_SMOOTHING * self._mic_level + (1 - MIC_LEVEL_SMOOTHING) * mic_energy)
@@ -120,8 +131,9 @@ class EchoCanceller:
                     self._overshoot = 0
                 else:
                     regularisation = 1e-12 + REGULARISATION * self.taps * self._reference_power
-                    power = (np.abs(self.history) ** 2).sum(axis=0) + regularisation
-                    self.weights += (self.step * np.conj(self.history) * error / power).astype(np.complex64)
+                    power = (np.abs(history) ** 2).sum(axis=0) + regularisation
+                    # the per-bin factor first (513 values), then one product over the taps
+                    self.weights += np.conj(history) * (self.step * error / power).astype(np.complex64)
                     magnitude = np.abs(self.weights)
                     too_big = magnitude > MAX_WEIGHT
                     if too_big.any():

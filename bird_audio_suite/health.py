@@ -25,6 +25,8 @@ SILENCE_RMS = 0.0001
 CONSECUTIVE_CHECKS_TO_ALERT = 2
 # the analysis finishes this far behind the microphone: BirdNET is slower than real time
 SLOW_LAG_SECONDS = 60
+# ... or it keeps up only by skipping windows (live.MAX_QUEUED_WINDOWS): one now and then is harmless
+SLOW_SKIPPED_WINDOWS = 10
 MEMORY_LIMIT_MB = 1200
 
 
@@ -90,8 +92,11 @@ def find_problems(now: float, service_state: str, heartbeat: dict | None) -> dic
         problems["silent"] = f"Solo silenzio digitale da 10 minuti dal microfono ({device}): è muto o scollegato?"
     # written by metrics.LiveMetrics
     lag = float(heartbeat.get("lag_s") or 0)
-    if lag > SLOW_LAG_SECONDS:
-        problems["slow"] = (f"Il live è indietro di {lag:.0f} s sul microfono: BirdNET ci mette "
+    skipped = int(heartbeat.get("skipped") or 0)
+    if lag > SLOW_LAG_SECONDS or skipped >= SLOW_SKIPPED_WINDOWS:
+        behind = f"è indietro di {lag:.0f} s sul microfono" if lag > SLOW_LAG_SECONDS else \
+            f"ha saltato {skipped} finestre negli ultimi 10 minuti"
+        problems["slow"] = (f"Il live {behind}: BirdNET ci mette "
                             f"{float(heartbeat.get('analysis_avg_s') or 0):.1f} s per finestra "
                             f"({float(heartbeat.get('load_pct') or 0):.0f}% del tempo disponibile).")
     rss = float(heartbeat.get("rss_mb") or 0)
