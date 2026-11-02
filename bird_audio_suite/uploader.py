@@ -6,10 +6,10 @@ process with low CPU and disk priority (systemd unit bird-audio-suite-sync): not
 slow the listening down, not even through Python's GIL.
 
 It looks at the folder every few seconds, so a clip is on Supabase moments after it closes;
-what failed (offline) is tried again every minute. Once an hour it also tidies up (Outbox.tidy:
-files of observations on iNaturalist that the site could not remove after the upload, empty
-observations, iNaturalist's species, names of new species, Perch); a step that failed is tried
-again after ten minutes. After each round, and every half minute while a long backlog goes, it
+what failed (offline) is tried again every minute (the log says it once, and when it is over).
+Once an hour it also tidies up (Outbox.tidy: files of observations on iNaturalist that the site
+could not remove after the upload, empty observations, iNaturalist's species, names of new
+species, Perch); a step that failed is tried again after ten minutes. After each round, and every half minute while a long backlog goes, it
 writes its state into the runtime folder: the live table shows it, the health check warns when
 clips stay stuck.
 """
@@ -17,6 +17,7 @@ clips stay stuck.
 from __future__ import annotations
 
 import json
+import re
 import time
 from collections import deque
 from datetime import datetime
@@ -41,6 +42,12 @@ TIDY_MESSAGES = {
     "named": "nomi e link per {} specie nuove (corrette sul sito)",
     "perch": "parere di Perch aggiunto a {} clip",
 }
+
+
+def same_error(message: str) -> str:
+    """An error as the log compares it: without the memory addresses (`object at 0x7f...`)
+    that make every repr of the same connection error look new."""
+    return re.sub(r" at 0x[0-9a-f]+", "", message)
 
 
 def folder_signature(folder: Path) -> tuple[tuple[str, int], ...]:
@@ -134,6 +141,7 @@ def run_uploader(
                                        log=log, clock=clock)
     outbox, built_at = make_outbox(), clock()
     last_signature = None
+    last_error = ""  # logged once, not every minute while it lasts (a night offline)
     last_push = -retry_seconds
     last_purge = -purge_every_seconds
     settings_due, settings_tried, settings_failed = True, -retry_seconds, False
@@ -174,8 +182,12 @@ def run_uploader(
                 last_signature = signature
                 if report is not None and report.sent:
                     log(f"{datetime.now():%H:%M:%S} - su Supabase {report.sent} clip in {seconds:.1f} s")
-                if error or (report is not None and report.errors):
-                    log(f"{datetime.now():%H:%M:%S} - in attesa: {error or report.errors[0]}")
+                problem = error or (report.errors[0] if report is not None and report.errors else "")
+                if problem and same_error(problem) != last_error:
+                    log(f"{datetime.now():%H:%M:%S} - in attesa: {problem}")
+                elif last_error and not problem:
+                    log(f"{datetime.now():%H:%M:%S} - invio di nuovo a posto")
+                last_error = same_error(problem)
                 status.write(outbox_items(detections_dir), report, seconds, error)
         if clock() - last_purge >= purge_every_seconds:
             last_purge = clock()

@@ -319,6 +319,21 @@ class SpeciesNamesTests(unittest.TestCase):
 
         self.assertIsNone(SpeciesNames._lookup_localized_name(BrokenWiki(), "Turdus merula"))
 
+    def test_a_slow_wikipedia_holds_the_live_seconds_not_minutes(self) -> None:
+        built = []
+
+        class NoAnswer:
+            def __init__(self, **kwargs) -> None:
+                built.append(kwargs)
+
+            def page(self, name):
+                raise TimeoutError("no answer")
+
+        with tempfile.TemporaryDirectory() as directory, patch("wikipediaapi.Wikipedia", NoAnswer):
+            self.assertIsNone(SpeciesNames(Path(directory) / "names.json").lookup("it", "Turdus merula"))
+
+        self.assertEqual((built[0]["max_retries"], built[0]["timeout"]), (0, 4.0))
+
     def test_localized_names_are_cleaned(self) -> None:
         self.assertEqual(SpeciesNames._clean_localized_name("rondone, "), "Rondone")
         self.assertEqual(SpeciesNames._clean_localized_name("cuculo o"), "Cuculo")

@@ -512,6 +512,15 @@ class SupabaseRestTests(unittest.TestCase):
         self.assertEqual([call[2]["Range"] for call in session.calls], ["0-999", "1000-1999"])
         self.assertEqual(session.calls[0][1], {"select": "id", "status": "eq.uploaded", "order": "id"})  # stable pages
 
+    def test_backfills_take_every_clip_or_just_the_first_n(self) -> None:
+        from bird_audio_suite.cli import clips_to_backfill
+
+        session = RestSession([[{"id": i} for i in range(1000)], [{"id": 1000}]])
+        self.assertEqual(len(clips_to_backfill(rest_with(session), {"perch": "is.null"}, None)), 1001)
+        session = RestSession([[{"id": 0}]])
+        clips_to_backfill(rest_with(session), {"perch": "is.null"}, 5)
+        self.assertEqual(session.calls[0][1], {"perch": "is.null", "order": "recorded_at,id", "limit": "5"})
+
     def test_ids_are_asked_quoted_a_few_at_a_time(self) -> None:
         ids = [f"Merlo_20261009_0655{i:02d}_0.910.wav" for i in range(60)] + ['Gallinella D"Acqua, x.wav']
         session = RestSession([[{"id": ids[0]}], [{"id": ids[-1]}]])

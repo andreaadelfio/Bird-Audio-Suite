@@ -20,6 +20,9 @@ import wikipediaapi
 DEFAULT_NAMES_CACHE = Path.home() / ".cache" / "bird-audio-suite" / "species_names.json"
 NAME_FIELDS = ("english_name", "italian_name", "german_name")
 BIRDNET_LABELS = "models/analyzer/BirdNET_GLOBAL_6K_V2.4_Labels.txt"
+# the live waits for a new species' names: a slow network costs seconds, not minutes (the
+# library's default, 10 s and three retries, is ~45 s per language); the uploader asks again later
+LOOKUP_TIMEOUT_SECONDS = 4.0
 
 
 @lru_cache(maxsize=1)
@@ -121,6 +124,8 @@ class SpeciesNames:
                 language=language,
                 extract_format=wikipediaapi.ExtractFormat.HTML,
                 user_agent="bird-audio-suite",
+                max_retries=0,
+                timeout=LOOKUP_TIMEOUT_SECONDS,
             )
         found = self._lookup_localized_name(self._wiki[language], scientific_name)
         if found == "":  # Wikipedia answered, without a name (None: offline, asked again later)

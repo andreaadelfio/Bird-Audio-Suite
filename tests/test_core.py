@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import numpy as np
+import soundfile
 
 
 
@@ -129,6 +130,30 @@ class CliTests(unittest.TestCase):
 
             self.assertEqual(selected_index, 13)
             probe.assert_called_once_with([devices[0]], 1.0)
+
+    def test_a_broken_file_in_a_batch_is_skipped_and_the_others_analysed(self) -> None:
+        from bird_audio_suite.cli import run_batch
+
+        class FakeDetector:
+            analysed: list[str] = []
+
+            def detect(self, path, **_kwargs):
+                self.analysed.append(Path(path).name)
+                return []
+
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            (folder / "20260601_063000.wav").write_bytes(b"RIFFgarbage")  # cut by a full card
+            soundfile.write(folder / "20260601_064000.wav", np.zeros(16000, dtype=np.float32), 16000)
+            args = build_parser().parse_args(["batch", "--directory", directory])
+            args.disable_denoise = True
+            detector = FakeDetector()
+            with patch("bird_audio_suite.cli.BirdNetDetector", return_value=detector), \
+                    patch("bird_audio_suite.cli.resolve_runtime_location"):
+                code = run_batch(args)
+
+        self.assertEqual(code, 1)  # said, not hidden
+        self.assertEqual(detector.analysed, ["20260601_064000.wav"])
 
 
 class LiveSliceTests(unittest.TestCase):

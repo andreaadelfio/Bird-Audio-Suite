@@ -180,7 +180,7 @@ async function matchingSpecies(text) {
     .map((row) => row.scientific_name);
 }
 
-// likely: at least one clip >= 0.8; unsure: none (an anti-join on a second, aliased embedding,
+// likely: at least one clip >= LIKELY_CONFIDENCE; unsure: none (an anti-join on a second, aliased embedding,
 // so the observation still brings all its clips)
 function withConfidenceFilter(query) {
   const confidence = $("#filter-confidence").value;
@@ -1672,9 +1672,17 @@ function emptyListHtml(onInat, toUpload = 0) {
     <button type="button" class="species-link" data-clear-filters>Mostra tutte</button></p>`;
 }
 
+// A page is painted when its data arrives: a slower answer to an older request (another tab
+// tapped meanwhile, a filter still being typed on a slow phone) must not cover a newer one.
+// Each repaint takes a number; "load more" belongs to the list it extends.
+let paintToken = 0;
+const superseded = (token) => token !== paintToken;
+
 async function renderObservations(append = false) {
+  const token = append ? paintToken : ++paintToken;
   if (!append) state.offset = 0;
   const [rows, onInat] = await Promise.all([fetchObservations(), append ? 0 : uploadedAlongside()]);
+  if (superseded(token)) return;
   if (!append) {
     // replaced only now that the new list is here: no blank page while it loads
     content.querySelectorAll("audio").forEach((audio) => audio.pause());
@@ -1691,6 +1699,7 @@ async function renderObservations(append = false) {
     const { count } = allReviewed
       ? await state.client.from("observations").select("id", { count: "exact", head: true }).eq("status", "confirmed")
       : {};
+    if (superseded(token)) return;
     content.innerHTML = emptyListHtml(onInat, count || 0);
   }
   if (onInat) {
@@ -1725,7 +1734,9 @@ content.addEventListener("click", (event) => {
 // the next page loads by itself when the end of the list comes into view
 let loadingMore = false;
 async function loadMore() {
-  if (loadingMore || $("#more").classList.contains("hidden") || state.view !== "observations") return;
+  // not while the list is being drawn again: it would load its first page twice
+  if (loadingMore || content.classList.contains("busy") || $("#more").classList.contains("hidden")
+    || state.view !== "observations") return;
   loadingMore = true;
   $("#more").textContent = "Carico…";
   try {
@@ -1781,7 +1792,9 @@ function trashSummary(observations, clips) {
 }
 
 async function renderTrash() {
+  const token = ++paintToken;
   const { rejected, partial } = await fetchTrash();
+  if (superseded(token)) return;
   state.trash = new Map([
     ...rejected.map((observation) => [observation.id, { whole: true, clips: observation.clips || [] }]),
     ...partial.map((observation) => [observation.id, { whole: false, clips: observation.clips || [] }]),
@@ -1817,9 +1830,13 @@ function keepsItsRow(observation, clip) {
 // clip uses them.
 async function removeFiles(clips) {
   const ids = clips.map((clip) => clip.id);
-  const { data: sharing, error } = await state.client.from("clips").select("id,media_path,media_deleted_at")
-    .in("media_path", [...new Set(clips.map((clip) => clip.media_path))]);
-  if (error) throw error;
+  // a few paths per request: a whole Cestino in one URL is too long for the server
+  const sharing = [];
+  for (const part of chunks([...new Set(clips.map((clip) => clip.media_path))], 50)) {
+    const { data, error } = await state.client.from("clips").select("id,media_path,media_deleted_at").in("media_path", part);
+    if (error) throw error;
+    sharing.push(...data);
+  }
   const stillUsed = new Set(sharing.filter((row) => !ids.includes(row.id) && !row.media_deleted_at).map((row) => row.media_path));
   const paths = config.mediaBaseUrl ? [] : clips.filter((clip) => !stillUsed.has(clip.media_path))
     .flatMap((clip) => [`${clip.media_path}.mp3`, `${clip.media_path}-spectrogram.jpg`]);
@@ -1863,8 +1880,10 @@ async function deleteForGood(entries, { ask = true } = {}) {
     }
     if (archived.size) {
       const now = new Date().toISOString();
-      const { error } = await state.client.from("clips").update({ media_deleted_at: now }).in("id", [...archived]);
-      if (error) throw error;
+      for (const part of chunks([...archived], 50)) {
+        const { error } = await state.client.from("clips").update({ media_deleted_at: now }).in("id", part);
+        if (error) throw error;
+      }
       clips.filter((clip) => archived.has(clip.id)).forEach((clip) => { clip.media_deleted_at = now; });
     }
     const observationIds = entries.filter((entry) => entry.whole).map((entry) => entry.observationId);
@@ -1991,6 +2010,8 @@ async function resolveTaxonId(scientificName) {
   const name = scientificName.trim();
   if (taxonIds.has(name)) return taxonIds.get(name);
   const response = await fetch(`${INAT_API}/taxa?q=${encodeURIComponent(name)}&rank=species,subspecies&per_page=30`);
+  // busy (429) or down: say so, not "species not found"
+  if (!response.ok) throw new Error(`iNaturalist ${response.status} cercando "${name}": riprova tra poco`);
   const data = await response.json();
   // Exact name, or a name iNaturalist lists as a synonym (Corvus monedula -> Coloeus monedula).
   // Never "the first result": for Pica pica it is a Brazilian woodpecker ("pica-pau").
@@ -2168,9 +2189,16 @@ $("#inat-token-form").addEventListener("submit", async (event) => {
   }
   if (!token) return;
   setStatus("Controllo il token…");
-  const response = await fetch(`${INAT_API}/users/me`, { headers: { Authorization: `Bearer ${token}` } });
+  let response;
+  try {
+    response = await fetch(`${INAT_API}/users/me`, { headers: { Authorization: `Bearer ${token}` } });
+  } catch {
+    setStatus("iNaturalist non risponde (sei offline?): riprova tra poco.", true);
+    return;
+  }
   if (!response.ok) {
-    setStatus("Token non valido: copialo di nuovo dalla pagina del token.", true);
+    setStatus(response.status === 401 ? "Token non valido: copialo di nuovo dalla pagina del token."
+      : `iNaturalist ${response.status}: riprova tra poco.`, true);
     return;
   }
   const me = await response.json();
@@ -2207,9 +2235,13 @@ $("#inat-upload-all").addEventListener("click", async () => {
   } catch (error) {
     setStatus(`iNaturalist: ${error.message}`, true);
   }
-  await refreshCounts();
-  await renderInatPanel();
-  if (state.view !== "report" && state.view !== "trash") renderObservations();
+  try {
+    await refreshCounts();
+    await renderInatPanel();
+  } catch {
+    button.disabled = false; // connection gone at the end: the button stays usable for another try
+  }
+  if (state.view !== "report" && state.view !== "trash") renderObservations().catch(() => {});
 });
 
 // ---------------------------------------------------------------- report
@@ -2336,16 +2368,23 @@ function sortSpeciesTable(key) {
   table.querySelector("tbody").innerHTML = sortedSpecies(speciesTable.rows).map(speciesTable.rowHtml).join("");
 }
 
+// YYYY-MM-DD of the local day, like observations.day (the PC's date): not toISOString's UTC
+// day, which until 01:00 (02:00 in summer) is still yesterday
+function localIsoDay(date = new Date()) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
 function isoDaysAgo(days) {
   const date = new Date();
   date.setDate(date.getDate() - days);
-  return date.toISOString().slice(0, 10);
+  return localIsoDay(date);
 }
 
 // One thing in one place: the period's numbers, when the birds were heard, the species (NEW the
 // first time ever), and, folded on top, what is on iNaturalist with its species by month. Every
 // count is of observations (visits), the unit you review; clips and reviewing stay in their tabs.
-async function renderReport(days = Number(localStorage.getItem("reportDays") || 7)) {
+async function renderReport(days = Number(storageGet("reportDays")) || 7) {
+  const token = ++paintToken;
   const from = isoDaysAgo(days - 1);
   // a species name opens its observations of exactly this period
   const speciesLink = (row) => `<button type="button" class="species-link" data-species="${escapeHtml(row.scientific_name)}"
@@ -2358,6 +2397,7 @@ async function renderReport(days = Number(localStorage.getItem("reportDays") || 
     fetchAll(() => state.client.from("daily_summary").select("observation_id, day, scientific_name, italian_name")
       .eq("status", "uploaded").order("observation_id")),
   ]);
+  if (superseded(token)) return;
   const openInat = state.openInatList;
   state.openInatList = false;
   // what is on iNaturalist (its audio lives there now): counted here, shown by the iNaturalist widget
@@ -2465,7 +2505,7 @@ content.addEventListener("click", (event) => {
   }
   const button = event.target.closest("[data-days]");
   if (!button) return;
-  localStorage.setItem("reportDays", button.dataset.days);
+  storageSet("reportDays", button.dataset.days);
   renderReport(Number(button.dataset.days)).catch((error) => setStatus(`Errore: ${error.message}`, true));
 });
 
@@ -2473,7 +2513,7 @@ function showSpeciesObservations(scientificName, fromDay) {
   $("#filter-status").value = "";
   $("#filter-species").value = scientificName;
   $("#filter-from").value = fromDay;
-  $("#filter-to").value = new Date().toISOString().slice(0, 10);
+  $("#filter-to").value = localIsoDay();
   $("#more-filters").open = true;
   state.view = "observations";
   window.scrollTo(0, 0);
@@ -2571,6 +2611,7 @@ $("#more").addEventListener("click", loadMore);
 // the icon pulses until the page is drawn again
 $("#refresh").addEventListener("click", async () => {
   const button = $("#refresh");
+  if (!state.client) return window.location.reload(); // opened offline: start again
   if (button.classList.contains("working")) return;
   button.classList.add("working");
   try {
@@ -2581,6 +2622,29 @@ $("#refresh").addEventListener("click", async () => {
     setStatus(`Errore: ${error.message}`, true);
   } finally {
     button.classList.remove("working");
+  }
+});
+
+// Back to the site (the app on the phone, a tab) after a while: what the PC heard meanwhile.
+// The numbers always; the page only near its top and with nothing in progress (a selection, a
+// clip being linked, a field being typed in, a clip playing), so nothing is taken from under you.
+const STALE_AFTER_MS = 10 * 60 * 1000;
+let hiddenSince = null;
+document.addEventListener("visibilitychange", async () => {
+  if (document.hidden) {
+    hiddenSince = Date.now();
+    return;
+  }
+  const away = hiddenSince === null ? 0 : Date.now() - hiddenSince;
+  hiddenSince = null;
+  if (away < STALE_AFTER_MS || !state.client) return;
+  try {
+    await refreshCounts();
+    const busy = state.selection.on || state.linking || document.activeElement?.matches("input, textarea, select")
+      || [...content.querySelectorAll("audio")].some((audio) => !audio.paused);
+    if (!busy && window.scrollY < 400) await render();
+  } catch {
+    // offline on return: the page stays as it was, ↻ tries again
   }
 });
 
@@ -2629,8 +2693,16 @@ if ("serviceWorker" in navigator && window.isSecureContext) {
   });
 }
 
-state.client = createClient();
-if (!state.client) {
+// opened offline (the app on the phone): the page comes from its cache, Supabase's library from
+// the internet does not. Said, and the page reloads by itself when the connection is back.
+if (!window.supabase) {
+  content.innerHTML = `<p class="empty">Nessuna connessione: non riesco a raggiungere Supabase.
+    <button type="button" class="species-link" data-reload>Riprova</button></p>`;
+  content.addEventListener("click", (event) => {
+    if (event.target.closest("[data-reload]")) window.location.reload();
+  });
+  window.addEventListener("online", () => window.location.reload(), { once: true });
+} else if (!(state.client = createClient())) {
   setStatus("Configurazione mancante: compila assets/config.js (URL e chiave publishable di Supabase).", true);
   content.innerHTML = '<p class="empty">Configurazione mancante: compila assets/config.js.</p>';
 } else {

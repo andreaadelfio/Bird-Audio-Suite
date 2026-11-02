@@ -1,7 +1,7 @@
 # Core detection
 birdnetlib>=0.18.0
 audioread>=3.0.0
-wikipedia-api>=0.6.0
+wikipedia-api>=0.16.0  # max_retries (species.py)
 
 # Live microphone mode
 pvrecorder>=1.2.0

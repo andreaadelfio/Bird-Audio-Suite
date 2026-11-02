@@ -346,7 +346,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Keep running: send each clip as soon as the live writes it (the bird-audio-suite-sync service).",
     )
 
-    subparsers.add_parser(
+    refresh_parser = subparsers.add_parser(
         "refresh-species",
         help="Fill the eBird and iNaturalist codes of the species on Supabase that lack them.",
     )
@@ -368,6 +368,11 @@ def build_parser() -> argparse.ArgumentParser:
     perch_parser.add_argument("--limit", type=int, help="At most N clips.")
     perch_parser.add_argument("--all", action="store_true",
                               help="Every clip with its files, again (after a change of the model or of the list).")
+
+    # also against the local stand-in (make web-dev), like sync
+    for command_parser in (refresh_parser, backfill_parser, perch_parser):
+        command_parser.add_argument("--config", type=Path, default=None,
+                                    help="Settings file. Default: ~/.config/bird-audio-suite/cloud.env")
 
     return parser
 
@@ -1211,6 +1216,7 @@ def run_batch(args: argparse.Namespace) -> int:
     resolve_runtime_location(args)
     species_names = SpeciesNames()
     detector = BirdNetDetector()
+    failed: list[str] = []
 
     for file_path in files:
         if not file_path.exists():
@@ -1221,21 +1227,21 @@ def run_batch(args: argparse.Namespace) -> int:
         analysis_samples = None
         analysis_rate = None
 
-        if args.denoise:
-            analysis_samples, analysis_rate = load_audio(file_path)
-            analysis_samples = denoise_signal(
-                analysis_samples,
-                analysis_rate,
-                noise_reference=args.noise_ref,
-                high_pass_hz=args.high_pass_hz,
-                noise_reduction_factor=args.noise_reduction_factor,
-            )
-
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_handle:
-                analysis_path = Path(temp_handle.name)
-            write_wav_mono(analysis_path, analysis_samples, analysis_rate)
-
         try:
+            if args.denoise:
+                analysis_samples, analysis_rate = load_audio(file_path)
+                analysis_samples = denoise_signal(
+                    analysis_samples,
+                    analysis_rate,
+                    noise_reference=args.noise_ref,
+                    high_pass_hz=args.high_pass_hz,
+                    noise_reduction_factor=args.noise_reduction_factor,
+                )
+
+                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_handle:
+                    analysis_path = Path(temp_handle.name)
+                write_wav_mono(analysis_path, analysis_samples, analysis_rate)
+
             if analysis_samples is not None:
                 duration_seconds = len(analysis_samples) / float(analysis_rate)
             else:
@@ -1293,6 +1299,9 @@ def run_batch(args: argparse.Namespace) -> int:
                 )
                 for path in exported:
                     print(f"  exported {path.name}")
+        except Exception as exc:  # a broken or cut file: the others go on
+            print(f"  errore, file saltato: {exc!r}")
+            failed.append(file_path.name)
         finally:
             if analysis_path != file_path and analysis_path.exists():
                 analysis_path.unlink()
@@ -1300,8 +1309,13 @@ def run_batch(args: argparse.Namespace) -> int:
     if args.export_clips:
         # like the live service: the clips go to Supabase now, or stay until the next sync
         report = push_outbox(args.detections_dir, species_names)
-        print(f"Su Supabase: {report.sent} clip, in attesa: {report.pending - report.sent - report.discarded}")
-    return 0
+        if report.busy:
+            print("Su Supabase: le manda il servizio di invio, gia' al lavoro")
+        else:
+            print(f"Su Supabase: {report.sent} clip, in attesa: {report.pending - report.sent - report.discarded}")
+    if failed:
+        print(f"{len(failed)} file non analizzati: {', '.join(failed)}")
+    return 1 if failed else 0
 
 
 def detect_live_slice(
@@ -1591,7 +1605,8 @@ def load_species_names() -> SpeciesNames:
     client = _remote_client()
     if client is not None:
         try:
-            names.refresh_from(client.get("species", {"select": "scientific_name,english_name,italian_name,german_name"}))
+            names.refresh_from(client.get_all("species", {"select": "scientific_name,english_name,italian_name,german_name"},
+                                              order="scientific_name"))
         except Exception:
             pass
     return names
@@ -1888,27 +1903,39 @@ def run_sync(args: argparse.Namespace) -> int:
     return 1 if report.errors else 0
 
 
+def cloud_clients(args: argparse.Namespace):
+    """(SupabaseRest, storage) of the settings file given with --config (the real one by default);
+    MEDIA_STORAGE=local reads the files from the local folder, like sync."""
+    from .cloud import DEFAULT_CLOUD_CONFIG, CloudConfig, LocalMediaStorage, SupabaseRest, SupabaseStorage
+
+    config = CloudConfig.load(getattr(args, "config", None) or DEFAULT_CLOUD_CONFIG)
+    storage = LocalMediaStorage(config.local_media_dir) if config.media_storage == "local" else SupabaseStorage(config)
+    return SupabaseRest(config), storage
+
+
+def clips_to_backfill(rest, params: dict, limit: int | None) -> list[dict]:
+    """The clips a backfill works on, oldest first: the first `limit`, or all of them (page by
+    page: Supabase silently stops at 1000 rows per request)."""
+    if limit:
+        return rest.get("clips", {**params, "order": "recorded_at,id", "limit": str(limit)})
+    return rest.get_all("clips", params, order="recorded_at,id")
+
+
 def run_backfill_segments(args: argparse.Namespace) -> int:
     """analysis.py on the clips already on Supabase: their MP3 analysed again, confidence, bands and
     candidates replaced (the live's own score stays in live_confidence). Without --all only the
     clips never analysed; --retry-empty also those where the species was not found."""
     from .analysis import detector
-    from .cloud import CloudConfig, SupabaseRest, SupabaseStorage, analyse_stored_clip
+    from .cloud import analyse_stored_clip
 
-    config = CloudConfig.load()
-    rest, storage = SupabaseRest(config), SupabaseStorage(config)
-    clips = rest.get(
-        "clips",
-        {
-            "select": "id,media_path,recorded_at,latitude,longitude,observations(scientific_name)",
-            "media_deleted_at": "is.null",  # files already removed (on iNaturalist): nothing to analyse
-            "manual": "is.false",  # placed by hand in an observation of another species: your decision
-            **({} if args.all else {"or": "(segments.is.null,segments.eq.[])"} if args.retry_empty
-               else {"segments": "is.null"}),
-            "order": "recorded_at",
-            "limit": str(args.limit or 100000),
-        },
-    )
+    rest, storage = cloud_clients(args)
+    clips = clips_to_backfill(rest, {
+        "select": "id,media_path,recorded_at,latitude,longitude,observations(scientific_name)",
+        "media_deleted_at": "is.null",  # files already removed (on iNaturalist): nothing to analyse
+        "manual": "is.false",  # placed by hand in an observation of another species: your decision
+        **({} if args.all else {"or": "(segments.is.null,segments.eq.[])"} if args.retry_empty
+           else {"segments": "is.null"}),
+    }, args.limit)
     print(f"Clip da analizzare: {len(clips)}")
     model = detector()
     done = empty = 0
@@ -1929,14 +1956,13 @@ def run_backfill_segments(args: argparse.Namespace) -> int:
 def run_backfill_perch(args: argparse.Namespace) -> int:
     """Perch on the clips already on Supabase (their MP3): its species among those observed
     around each clip, into clips.perch. Without --all only the clips still without it."""
-    from .cloud import CloudConfig, SupabaseRest, SupabaseStorage, stored_samples
+    from .cloud import stored_samples
     from .perch import model, nearby_species
 
-    config = CloudConfig.load()
-    rest, storage = SupabaseRest(config), SupabaseStorage(config)
-    clips = rest.get("clips", {
+    rest, storage = cloud_clients(args)
+    clips = clips_to_backfill(rest, {
         "select": "id,media_path,latitude,longitude", "media_deleted_at": "is.null", "latitude": "not.is.null",
-        **({} if args.all else {"perch": "is.null"}), "order": "recorded_at", "limit": str(args.limit or 100000)})
+        **({} if args.all else {"perch": "is.null"})}, args.limit)
     print(f"Clip da controllare con Perch: {len(clips)}")
     perch = model()
     if perch is None:
@@ -1963,12 +1989,11 @@ def run_backfill_perch(args: argparse.Namespace) -> int:
 
 def run_refresh_species(args: argparse.Namespace) -> int:
     """eBird code and iNaturalist taxon of each species still without them (links on the site)."""
-    from .cloud import CloudConfig, SupabaseRest
     from .species_links import species_codes
 
-    rest = SupabaseRest(CloudConfig.load())
-    rows = rest.get("species", {"select": "scientific_name,ebird_code,inat_taxon_id",
-                                "or": "(ebird_code.is.null,inat_taxon_id.is.null)"})
+    rest, _storage = cloud_clients(args)
+    rows = rest.get_all("species", {"select": "scientific_name,ebird_code,inat_taxon_id",
+                                    "or": "(ebird_code.is.null,inat_taxon_id.is.null)"}, order="scientific_name")
     print(f"Specie senza codici: {len(rows)}")
     missing = []
     for row in rows:

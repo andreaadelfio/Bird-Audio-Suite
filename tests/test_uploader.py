@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 
 from bird_audio_suite.health import find_upload_problems
-from bird_audio_suite.uploader import UploaderStatus, read_status, run_uploader, status_line
+from bird_audio_suite.uploader import UploaderStatus, read_status, run_uploader, same_error, status_line
 
 
 def write_clip(folder: Path, name: str, recorded_at: str = "2026-10-11T08:00:00+02:00") -> None:
@@ -75,10 +75,10 @@ class UploaderLoopTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.runtime.cleanup()
 
-    def run_loop(self, folder: Path, outbox: FakeOutbox, script, watcher=None, loop=None) -> dict | None:
+    def run_loop(self, folder: Path, outbox: FakeOutbox, script, watcher=None, loop=None, log=None) -> dict | None:
         loop = loop or Loop(script)
         run_uploader(folder, lambda: outbox, poll_seconds=3, retry_seconds=60,
-                     status=UploaderStatus(self.status_path), log=lambda message: None,
+                     status=UploaderStatus(self.status_path), log=log or (lambda message: None),
                      should_stop=loop.stop, sleep=loop.sleep, clock=lambda: loop.now,
                      watcher=watcher or types.SimpleNamespace(poll=lambda: {}))
         return read_status(self.status_path)
@@ -114,6 +114,29 @@ class UploaderLoopTests(unittest.TestCase):
         self.assertEqual(outbox.pushes, 3)  # at 0, 60 and 120 s
         self.assertEqual(outbox.purges, 1)  # once an hour
         self.assertEqual((status["pending"], status["last_error"]), (1, "offline"))
+
+    def test_an_error_is_logged_once_while_it_lasts_and_its_end_too(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            write_clip(folder, "Merlo_1")
+            outbox = FakeOutbox(folder)
+            outbox.offline = True
+            lines: list[str] = []
+
+            def back_online() -> None:
+                outbox.offline = False
+
+            self.run_loop(folder, outbox, [lambda: None] * 45 + [back_online] + [lambda: None] * 20,
+                          log=lines.append)
+
+        self.assertEqual([line[11:] for line in lines if "attesa" in line or "a posto" in line],
+                         ["in attesa: offline", "invio di nuovo a posto"])  # not one line a minute
+
+    def test_the_same_connection_error_is_the_same_whatever_its_memory_address(self) -> None:
+        first = "Supabase non raggiungibile: ConnectionError(<urllib3.connection.HTTPSConnection object at 0x7f3a1c2b5e50>)"
+        again = first.replace("0x7f3a1c2b5e50", "0x7f3a1c0d9f10")
+        self.assertEqual(same_error(first), same_error(again))
+        self.assertNotEqual(same_error(first), same_error("Merlo_1.wav: l'MP3 non risulta nel bucket"))
 
     def test_a_busy_folder_is_looked_at_again_after_a_pause(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
