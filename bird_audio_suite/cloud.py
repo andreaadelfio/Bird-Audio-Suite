@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import csv
 import json
+import random
 import re
 import shutil
 import tempfile
@@ -334,8 +335,8 @@ def clip_analysis(item) -> dict:
     data = item.data
     return analyse_samples(
         samples, rate, data["scientific_name"],
-        latitude=data.get("latitude") if data.get("latitude") is not None else 45.8,
-        longitude=data.get("longitude") if data.get("longitude") is not None else 13.5,
+        latitude=data.get("latitude") if data.get("latitude") is not None else settings.DEFAULT_LATITUDE,
+        longitude=data.get("longitude") if data.get("longitude") is not None else settings.DEFAULT_LONGITUDE,
         when=item.recorded_at,
     )
 
@@ -375,8 +376,8 @@ def analyse_stored_clip(storage, clip: dict, model=None) -> dict:
     samples, rate = stored_samples(storage, clip)
     return analyse_samples(
         samples, rate, clip["observations"]["scientific_name"],
-        latitude=clip["latitude"] if clip.get("latitude") is not None else 45.8,
-        longitude=clip["longitude"] if clip.get("longitude") is not None else 13.5,
+        latitude=clip["latitude"] if clip.get("latitude") is not None else settings.DEFAULT_LATITUDE,
+        longitude=clip["longitude"] if clip.get("longitude") is not None else settings.DEFAULT_LONGITUDE,
         when=datetime.fromisoformat(clip["recorded_at"]), model=model,
     )
 
@@ -416,6 +417,15 @@ class PushReport:
     errors: list[str] = field(default_factory=list)
 
 
+def recorded_instant(data: dict) -> float:
+    """When a clip was heard, comparable across offsets: the strings are not (the clocks went back
+    on 25 October, or the laptop travelled to another time zone)."""
+    try:
+        return datetime.fromisoformat(data["recorded_at"]).timestamp()
+    except (KeyError, TypeError, ValueError):
+        return 0.0
+
+
 def outbox_items(folder: Path) -> list[OutboxItem]:
     """Complete clips waiting in the transit folder, oldest first."""
     items = []
@@ -427,7 +437,7 @@ def outbox_items(folder: Path) -> list[OutboxItem]:
         wav = sidecar.with_suffix(".wav")
         if wav.exists() and data.get("id") == wav.name:
             items.append(OutboxItem(wav, sidecar, data))
-    return sorted(items, key=lambda item: item.data.get("recorded_at", ""))
+    return sorted(items, key=lambda item: recorded_instant(item.data))
 
 
 class Outbox:
@@ -531,12 +541,17 @@ class Outbox:
             raise RuntimeError("l'MP3 non risulta nel bucket: la clip resta sul PC")
         try:
             analysis = self.analyse(item)
-        except Exception:  # never a reason to keep the clip back: the live's numbers then
+        except Exception as exc:  # never a reason to keep the clip back: the live's numbers then
             analysis = None
+            # in the log: a model broken by an update would otherwise leave every clip without bands
+            print(f"{datetime.now():%H:%M:%S} - {item.clip_id}: analisi BirdNET non riuscita ({exc!r}), "
+                  "parte con i numeri del live (backfill-segments la rifa)")
         try:
             perch_heard = self.double_check(item)
-        except Exception:  # the same: backfill-perch adds it later
+        except Exception as exc:  # the same: backfill-perch adds it later
             perch_heard = None
+            print(f"{datetime.now():%H:%M:%S} - {item.clip_id}: Perch non riuscito ({exc!r}), lo aggiunge "
+                  "la pulizia oraria")
 
         # asked right before the clip row (the previous clip, just sent, may be within ten minutes);
         # if the clip row then fails, a new observation must not stay behind empty
@@ -687,11 +702,13 @@ class Outbox:
     def name_new_species(self, limit: int = 20) -> int:
         """Species added by a correction on the site (the database trigger writes only the
         scientific name): English name from BirdNET's labels (or Wikipedia), Italian and German from
-        Wikipedia, eBird and iNaturalist codes. Returns how many got their names."""
+        Wikipedia, eBird and iNaturalist codes. Returns how many got their names. A random `limit`
+        of them each hour: a few that nobody can name (a family, a fox) never hold the others back."""
         self._connect()
-        rows = self.rest.get("species", {"select": "scientific_name", "english_name": "eq.", "limit": str(limit)})
+        rows = self.rest.get_all("species", {"select": "scientific_name", "english_name": "eq."},
+                                 order="scientific_name")
         named = 0
-        for row in rows:
+        for row in random.sample(rows, min(limit, len(rows))):
             name = row["scientific_name"]
             if not any(self.names.ensure(name, birdnet_english_name(name)).values()):
                 continue  # offline, or a name nobody knows: next hour

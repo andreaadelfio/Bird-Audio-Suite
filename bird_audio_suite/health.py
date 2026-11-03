@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import time
 from collections import deque
@@ -122,6 +123,22 @@ def find_upload_problems(now: float, status: dict | None) -> dict[str, str]:
     return {}
 
 
+# the live writes each clip into detections/ (in the project folder): a full disk loses them
+DETECTIONS_DIR = Path(__file__).resolve().parent.parent / "detections"
+MIN_FREE_BYTES = 1024 ** 3
+
+
+def find_disk_problems(folder: Path = DETECTIONS_DIR, usage=shutil.disk_usage) -> dict[str, str]:
+    """Space left where the clips are written."""
+    try:
+        free = usage(folder if Path(folder).exists() else Path(folder).parent).free
+    except OSError:
+        return {}
+    if free < MIN_FREE_BYTES:
+        return {"disk": f"Disco quasi pieno: {free / 1024 ** 2:.0f} MB liberi, le nuove clip non si possono salvare."}
+    return {}
+
+
 def service_state() -> str:
     try:
         completed = subprocess.run(
@@ -173,6 +190,28 @@ def update_state(state: dict, problems: dict[str, str]) -> tuple[dict, list[tupl
     return {"counts": counts, "notified": sorted(notified)}, to_alert, resolved
 
 
+# what each problem becomes when it is over (several problems at once: each is said when it ends)
+RESOLVED_LABELS = {
+    "service": "il servizio live e' di nuovo attivo",
+    "stale": "il live analizza di nuovo l'audio",
+    "silent": "il microfono sente di nuovo",
+    "slow": "il live e' di nuovo al passo",
+    "memory": "la RAM del live e' tornata normale",
+    "uploader": "il servizio di invio gira di nuovo",
+    "stuck": "le clip arrivano di nuovo su Supabase",
+    "disk": "c'e' di nuovo spazio sul disco",
+}
+
+
+def resolution_message(resolved: list[str], problems: dict[str, str]) -> str | None:
+    """The notification for announced problems now over, or None."""
+    if not resolved:
+        return None
+    if not problems:
+        return "Tutto di nuovo a posto: il live ascolta e le clip arrivano su Supabase."
+    return "Risolto: " + "; ".join(RESOLVED_LABELS.get(key, key) for key in resolved) + "."
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Bird Audio Suite health check.")
     parser.add_argument("--test-notification", action="store_true", help="Send a test notification and exit.")
@@ -184,11 +223,13 @@ def main(argv: list[str] | None = None) -> int:
     now = time.time()
     problems = find_problems(now, service_state(), read_json(HEARTBEAT_FILE))
     problems.update(find_upload_problems(now, read_json(UPLOADER_STATUS_FILE)))
+    problems.update(find_disk_problems())
     state, to_alert, resolved = update_state(read_json(STATE_FILE) or {}, problems)
     for _key, message in to_alert:
         notify("Bird Audio Suite: problema", message, urgency="critical")
-    if resolved and not problems:
-        notify("Bird Audio Suite", "Tutto di nuovo a posto: il live ascolta e le clip arrivano su Supabase.")
+    message = resolution_message(resolved, problems)
+    if message:
+        notify("Bird Audio Suite", message)
     STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
     STATE_FILE.write_text(json.dumps(state), encoding="utf-8")
     return 0

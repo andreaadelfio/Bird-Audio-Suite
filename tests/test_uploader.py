@@ -138,6 +138,35 @@ class UploaderLoopTests(unittest.TestCase):
         self.assertEqual(same_error(first), same_error(again))
         self.assertNotEqual(same_error(first), same_error("Merlo_1.wav: l'MP3 non risulta nel bucket"))
 
+    def test_the_threshold_for_the_site_says_when_it_could_not_go_and_when_it_went(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            outbox = FakeOutbox(Path(directory))
+            outbox.offline = True
+            lines: list[str] = []
+
+            def back_online() -> None:
+                outbox.offline = False
+
+            self.run_loop(Path(directory), outbox, [lambda: None] * 45 + [back_online] + [lambda: None] * 25,
+                          log=lines.append)
+
+        self.assertEqual([line[11:].split(":")[0] for line in lines if "soglie" in line],
+                         ["soglie per il sito non inviate", "soglie per il sito inviate"])
+
+    def test_the_oldest_clip_is_the_oldest_in_time_not_as_text(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            # 25 October, the clocks go back: 02:30 summer time (00:30 UTC) came before 02:10 winter time (01:10 UTC)
+            write_clip(folder, "Merlo_1", "2026-10-25T02:10:00+01:00")
+            write_clip(folder, "Merlo_2", "2026-10-25T02:30:00+02:00")
+            from bird_audio_suite.cloud import outbox_items
+
+            items = outbox_items(folder)
+            UploaderStatus(self.status_path).write(items)
+
+        self.assertEqual([item.data["id"] for item in items], ["Merlo_2.wav", "Merlo_1.wav"])
+        self.assertEqual(read_status(self.status_path)["oldest_pending"], "2026-10-25T02:30:00+02:00")
+
     def test_a_busy_folder_is_looked_at_again_after_a_pause(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             folder = Path(directory)

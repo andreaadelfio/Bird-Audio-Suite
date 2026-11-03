@@ -72,7 +72,10 @@ class UploaderStatus:
             if finished:
                 self.sent_total += report.sent
                 self.durations.extend([seconds / report.sent] * report.sent)
-        oldest = min((item.data.get("recorded_at", "") for item in pending), default="")
+        from .cloud import recorded_instant
+
+        first = min(pending, key=lambda item: recorded_instant(item.data), default=None)
+        oldest = first.data.get("recorded_at", "") if first is not None else ""
         payload = {
             "updated_at": time.time(),
             "pending": len(pending),
@@ -152,6 +155,8 @@ def run_uploader(
             settings_tried = clock()
             try:
                 outbox.publish_settings()
+                if settings_failed:
+                    log(f"{datetime.now():%H:%M:%S} - soglie per il sito inviate")
                 settings_due = settings_failed = False
             except Exception as exc:  # offline, or the table not created yet: the next minute
                 if not settings_failed:

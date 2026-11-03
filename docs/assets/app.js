@@ -109,7 +109,7 @@ function setStatus(message, isError = false, undo = null) {
         await undo();
         setStatus("Annullato.");
       } catch (error) {
-        setStatus(`Errore: ${error.message}`, true);
+        setStatus(`Errore: ${errorReason(error)}`, true);
       }
     });
     line.append(" ", button);
@@ -164,6 +164,8 @@ async function refreshCounts() {
     state.client.from("clips").select("id, observations!inner(status)", { count: "exact", head: true })
       .eq("review", "wrong").neq("observations.status", "rejected"),
   ]);
+  // not read (no connection): the numbers shown stay, not blanks that look like "nothing to review"
+  if (pending.error || rejected.error || wrongClips.error) return;
   $("#pending-count").textContent = pending.count ? String(pending.count) : "";
   const trash = (rejected.count || 0) + (wrongClips.count || 0);
   $("#trash-count").textContent = trash ? String(trash) : "";
@@ -566,7 +568,7 @@ content.addEventListener("click", async (event) => {
       }
       refreshCounts();
     } catch (error) {
-      setStatus(`Errore: ${error.message}`, true);
+      setStatus(`Errore: ${errorReason(error)}`, true);
     }
     return;
   }
@@ -636,7 +638,7 @@ content.addEventListener("click", async (event) => {
     try {
       await linkClipTo(id);
     } catch (error) {
-      setStatus(`Collegamento non riuscito: ${error.message}`, true);
+      setStatus(`Collegamento non riuscito: ${errorReason(error)}`, true);
     }
     return;
   }
@@ -678,7 +680,7 @@ content.addEventListener("click", async (event) => {
       }
       refreshCounts();
     } catch (error) {
-      setStatus(`Errore: ${error.message}`, true);
+      setStatus(`Errore: ${errorReason(error)}`, true);
     }
   }
 });
@@ -719,7 +721,7 @@ content.addEventListener("change", async (event) => {
       : state.species.has(name) ? `Specie corretta: ${name}.`
       : `Specie corretta: ${name} (mai sentita finora: controlla che il nome scientifico sia giusto).`);
   } catch (error) {
-    setStatus(`Errore: ${error.message}`, true);
+    setStatus(`Errore: ${errorReason(error)}`, true);
   }
 });
 
@@ -746,7 +748,10 @@ function removeCard(card) {
     if (state.view === "observations" && !content.querySelector(".observation")) return render();
     if (!next?.classList.contains("observation")) return;
     if (hadFocus) (next.querySelector(".play-button") || next.querySelector("[data-status]"))?.focus({ preventScroll: true });
-    if (wasInside) window.scrollBy({ top: next.getBoundingClientRect().top - barBottom - 8, behavior: "smooth" });
+    if (wasInside) {
+      const smooth = !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      window.scrollBy({ top: next.getBoundingClientRect().top - barBottom - 8, behavior: smooth ? "smooth" : "auto" });
+    }
   }, 250);
 }
 
@@ -784,7 +789,7 @@ const VOLUME_MIN_DB = -20;
 const VOLUME_MAX_DB = 30;
 let volumeDb = Math.min(Math.max(Number(storageGet(VOLUME_KEY)) || 0, VOLUME_MIN_DB), VOLUME_MAX_DB);
 let listeningContext = null;
-const volumeGains = new Set();
+const volumeGains = new Map(); // gain -> { audio, source }: the clips routed through the volume
 
 function audioContext() {
   if (!listeningContext) {
@@ -805,11 +810,19 @@ function routeThroughVolume(audio) {
   if (audio.dataset.volume) return;
   const context = audioContext();
   if (!context) return; // no Web Audio: plain playback, at most 100%
+  // clips no longer on the page (the list drawn again): let them and their audio go
+  for (const [gain, routed] of volumeGains) {
+    if (routed.audio.isConnected) continue;
+    routed.source.disconnect();
+    gain.disconnect();
+    volumeGains.delete(gain);
+  }
   try {
     const gain = context.createGain();
     gain.gain.value = 10 ** (volumeDb / 20);
-    context.createMediaElementSource(audio).connect(gain).connect(context.destination);
-    volumeGains.add(gain);
+    const source = context.createMediaElementSource(audio);
+    source.connect(gain).connect(context.destination);
+    volumeGains.set(gain, { audio, source });
     audio.dataset.volume = "1";
   } catch (error) {
     console.warn("Volume oltre il 100% non disponibile per questa clip:", error);
@@ -821,7 +834,7 @@ function setVolume(db) {
   storageSet(VOLUME_KEY, volumeDb ? String(volumeDb) : "");
   const now = listeningContext ? listeningContext.currentTime : 0;
   // also on what is playing now, smoothed over a few ms (no click)
-  for (const gain of volumeGains) gain.gain.setTargetAtTime(10 ** (volumeDb / 20), now, 0.02);
+  for (const gain of volumeGains.keys()) gain.gain.setTargetAtTime(10 ** (volumeDb / 20), now, 0.02);
   $("#volume").value = String(volumeDb);
   $("#volume-value").textContent = volumeLabel(volumeDb);
   $("#volume-value").classList.toggle("on", volumeDb !== 0);
@@ -844,7 +857,7 @@ function playRange(figure, start, end) {
   audioContext()?.resume(); // inside the tap: browsers start audio only on a user gesture
   routeThroughVolume(audio);
   seekWhenReady(audio, start);
-  audio.play().catch((error) => setStatus(`Audio: ${error.message}`, true));
+  audio.play().catch(playFailed);
 }
 
 function togglePlayback(figure) {
@@ -1009,10 +1022,19 @@ async function saveTrim(figure, start, end) {
 }
 
 // a spectrogram that does not load (file gone, no network): an empty box with a word, not a broken
-// image; the bands and the audio still work
+// image; the bands and the audio still work. Audio that does not load: said in words, not the
+// browser's "no supported sources"
 content.addEventListener("error", (event) => {
   if (event.target.matches?.(".spectrogram")) event.target.closest(".spectrogram-box").classList.add("no-image");
+  if (event.target.matches?.("audio") && event.target.getAttribute("src")) {
+    setStatus("Audio non disponibile: nessuna connessione, o il file non è più su Supabase.", true);
+  }
 }, true);
+
+// play() refused: a file that does not load is said by the error above
+function playFailed(error) {
+  if (error.name !== "NotSupportedError" && error.name !== "AbortError") setStatus(`Audio: ${error.message}`, true);
+}
 
 content.addEventListener("click", async (event) => {
   const figure = event.target.closest(".clip");
@@ -1071,7 +1093,7 @@ content.addEventListener("click", async (event) => {
       }
     }
   } catch (error) {
-    setStatus(`Errore: ${error.message}`, true);
+    setStatus(`Errore: ${errorReason(error)}`, true);
   }
 });
 
@@ -1097,13 +1119,22 @@ function denoiseInWorker(samples, rate, segments, options) {
     denoiseWorker = new Worker("./assets/denoise-worker.js?v=1");
     denoiseWorker.onmessage = (event) => {
       const { id, samples: cleaned } = event.data;
-      denoiseWaiting.get(id)?.(cleaned);
+      denoiseWaiting.get(id)?.resolve(cleaned);
       denoiseWaiting.delete(id);
+    };
+    // it failed (or its file did not load): the jobs end with an error, not a button that spins
+    // forever, and the next tap starts a new worker
+    denoiseWorker.onerror = (event) => {
+      event.preventDefault();
+      denoiseWaiting.forEach(({ reject }) => reject(new Error("riduzione del rumore non riuscita")));
+      denoiseWaiting.clear();
+      denoiseWorker.terminate();
+      denoiseWorker = null;
     };
   }
   const id = ++denoiseJobs;
-  return new Promise((resolve) => {
-    denoiseWaiting.set(id, resolve);
+  return new Promise((resolve, reject) => {
+    denoiseWaiting.set(id, { resolve, reject });
     const copy = new Float32Array(samples); // transferred to the worker
     denoiseWorker.postMessage({ id, samples: copy, rate, segments, options }, [copy.buffer]);
   });
@@ -1127,7 +1158,7 @@ function swapSource(audio, url) {
   audio.src = url;
   audio.load();
   seekWhenReady(audio, at);
-  if (playing) audio.play().catch((error) => setStatus(`Audio: ${error.message}`, true));
+  if (playing) audio.play().catch(playFailed);
 }
 
 async function cycleDenoise(figure, button) {
@@ -1195,11 +1226,20 @@ async function playExample(name, button) {
       setStatus(`Nessun esempio audio di ${name} su iNaturalist.`);
       return;
     }
-    const index = (exampleNext.get(name) || 0) % sounds.length;
-    exampleNext.set(name, index + 1);
-    exampleAudio = new Audio(sounds[index].url);
+    // the next one; a file this browser cannot play (an Ogg on an older iPhone): the one after
+    let index;
+    for (let tries = 0; ; tries += 1) {
+      index = (exampleNext.get(name) || 0) % sounds.length;
+      exampleNext.set(name, index + 1);
+      exampleAudio = new Audio(sounds[index].url);
+      try {
+        await exampleAudio.play();
+        break;
+      } catch (error) {
+        if (error.name !== "NotSupportedError" || tries + 1 >= sounds.length) throw error;
+      }
+    }
     exampleAudio.addEventListener("ended", () => button.classList.remove("on"));
-    await exampleAudio.play();
     button.classList.add("on");
     setStatus(`Esempio ${index + 1} di ${sounds.length}: ${sounds[index].attribution} (iNaturalist)`);
   } catch (error) {
@@ -1270,7 +1310,11 @@ async function unlinkClip(figure) {
     .select("*, species(italian_name,english_name,german_name)").single();
   if (error) throw error;
   const { error: moveError } = await state.client.from("clips").update({ observation_id: data.id }).eq("id", found.clip.id);
-  if (moveError) throw moveError;
+  if (moveError) {
+    // the clip stayed where it was: not an empty observation left behind (else the PC removes it within the hour)
+    await state.client.from("observations").delete().eq("id", data.id);
+    throw moveError;
+  }
   found.observation.clips = found.observation.clips.filter((clip) => clip.id !== found.clip.id);
   found.clip.observation_id = data.id;
   const separate = { ...data, clips: [found.clip] };
@@ -1380,12 +1424,22 @@ function cardOf(observation) {
 
 // a status for the observations, and for the clips picked alone what it means for a clip:
 // discarded (wrong) or back in their observation (unreviewed)
+// Map.groupBy, which phones before iOS 17.4 do not have
+function groupBy(items, keyOf) {
+  const groups = new Map();
+  for (const item of items) {
+    const key = keyOf(item);
+    groups.set(key, [...(groups.get(key) || []), item]);
+  }
+  return groups;
+}
+
 async function bulkStatus(status) {
   const observations = pickedObservations().filter((o) => o.status !== status && o.status !== "uploaded");
   const clipReview = { rejected: "wrong", pending: "unreviewed" }[status];
   const clips = clipReview ? pickedClips().filter(({ clip }) => clip.review !== clipReview) : [];
   // for "Annulla": each one back to what it was, grouped so that it takes a request per value
-  const before = { observations: Map.groupBy(observations, (o) => o.status), clips: Map.groupBy(clips, ({ clip }) => clip.review) };
+  const before = { observations: groupBy(observations, (o) => o.status), clips: groupBy(clips, ({ clip }) => clip.review) };
   if (observations.length) {
     const { error } = await state.client.from("observations")
       .update({ status, reviewed_at: new Date().toISOString() }).in("id", observations.map((o) => o.id));
@@ -1509,7 +1563,7 @@ $("#bulk-bar").addEventListener("click", async (event) => {
     else if (action === "inat") await bulkInat();
     else await bulkStatus(action);
   } catch (error) {
-    setStatus(`Errore: ${error.message}`, true);
+    setStatus(`Errore: ${errorReason(error)}`, true);
   } finally {
     buttons.forEach((each) => { each.disabled = false; });
     updateBulkBar();
@@ -1642,7 +1696,7 @@ document.addEventListener("keydown", (event) => {
     }
     return;
   }
-  if (event.target.closest("button")) return;
+  if (event.target.closest("button, a, summary")) return; // space there opens or presses it
   const figure = state.currentFigure?.isConnected ? state.currentFigure : content.querySelector(".clip:not(.folded)");
   if (!figure) return;
   if (event.key === " ") {
@@ -1742,7 +1796,7 @@ async function loadMore() {
   try {
     await renderObservations(true);
   } catch (error) {
-    setStatus(`Errore: ${error.message}`, true);
+    setStatus(`Errore: ${errorReason(error)}`, true);
   } finally {
     loadingMore = false;
     $("#more").textContent = "Carica altre";
@@ -1758,15 +1812,15 @@ if ("IntersectionObserver" in window) {
 // ---------------------------------------------------------------- Cestino
 
 async function fetchTrash() {
+  // all of them, page by page: "Svuota il cestino" empties what the badge counts
   const [rejected, partial] = await Promise.all([
-    state.client.from("observations").select(OBSERVATION_SELECT)
-      .eq("status", "rejected").order("day", { ascending: false }).limit(500),
+    fetchAll(() => state.client.from("observations").select(OBSERVATION_SELECT)
+      .eq("status", "rejected").order("day", { ascending: false }).order("id")),
     // kept observations, with only their rejected clips
-    state.client.from("observations").select("*, species(italian_name,english_name,german_name), clips!inner(*)")
-      .neq("status", "rejected").eq("clips.review", "wrong").order("day", { ascending: false }).limit(500),
+    fetchAll(() => state.client.from("observations").select("*, species(italian_name,english_name,german_name), clips!inner(*)")
+      .neq("status", "rejected").eq("clips.review", "wrong").order("day", { ascending: false }).order("id")),
   ]);
-  if (rejected.error || partial.error) throw rejected.error || partial.error;
-  return { rejected: rejected.data, partial: partial.data };
+  return { rejected, partial };
 }
 
 function trashCardHtml(observation, whole) {
@@ -1903,10 +1957,11 @@ async function deleteForGood(entries, { ask = true } = {}) {
       archived.size ? `Audio tolto da Supabase per ${archived.size} clip su iNaturalist: restano nei report.` : ""].join(" ").trim());
     deleted = true;
   } catch (error) {
-    setStatus(`Errore durante l'eliminazione: ${error.message}`, true);
+    setStatus(`Errore durante l'eliminazione: ${errorReason(error)}`, true);
   }
   await refreshCounts();
   if (state.view === "trash") await renderTrash();
+  else if (!deleted) await render(); // stopped halfway: the list as it is now on Supabase
   return deleted;
 }
 
@@ -2009,7 +2064,7 @@ async function inatRequest(path, options = {}) {
 async function resolveTaxonId(scientificName) {
   const name = scientificName.trim();
   if (taxonIds.has(name)) return taxonIds.get(name);
-  const response = await fetch(`${INAT_API}/taxa?q=${encodeURIComponent(name)}&rank=species,subspecies&per_page=30`);
+  const response = await fetch(`${INAT_API}/taxa?q=${encodeURIComponent(name)}&rank=species,subspecies,genus&per_page=30`);
   // busy (429) or down: say so, not "species not found"
   if (!response.ok) throw new Error(`iNaturalist ${response.status} cercando "${name}": riprova tra poco`);
   const data = await response.json();
@@ -2173,7 +2228,7 @@ $("#inat-toggle").addEventListener("click", () => {
   panel.classList.toggle("hidden");
   $("#inat-toggle").setAttribute("aria-expanded", String(!panel.classList.contains("hidden")));
   if (!panel.classList.contains("hidden")) {
-    renderInatPanel().catch((error) => setStatus(`Errore: ${error.message}`, true));
+    renderInatPanel().catch((error) => setStatus(`Errore: ${errorReason(error)}`, true));
   }
 });
 
@@ -2368,16 +2423,12 @@ function sortSpeciesTable(key) {
   table.querySelector("tbody").innerHTML = sortedSpecies(speciesTable.rows).map(speciesTable.rowHtml).join("");
 }
 
-// YYYY-MM-DD of the local day, like observations.day (the PC's date): not toISOString's UTC
-// day, which until 01:00 (02:00 in summer) is still yesterday
-function localIsoDay(date = new Date()) {
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
-}
-
+// the local day, like observations.day (the PC's date): not toISOString's UTC day, which until
+// 01:00 (02:00 in summer) is still yesterday
 function isoDaysAgo(days) {
   const date = new Date();
   date.setDate(date.getDate() - days);
-  return localIsoDay(date);
+  return localDay(date);
 }
 
 // One thing in one place: the period's numbers, when the birds were heard, the species (NEW the
@@ -2398,6 +2449,7 @@ async function renderReport(days = Number(storageGet("reportDays")) || 7) {
       .eq("status", "uploaded").order("observation_id")),
   ]);
   if (superseded(token)) return;
+  const longer = [30, 90, 365].find((n) => n > days); // an empty period: one tap to a longer one
   const openInat = state.openInatList;
   state.openInatList = false;
   // what is on iNaturalist (its audio lives there now): counted here, shown by the iNaturalist widget
@@ -2465,7 +2517,8 @@ async function renderReport(days = Number(storageGet("reportDays")) || 7) {
         ${speciesRows.length ? `<div class="table-scroll"><table class="report-table species-table">
           <thead><tr>${speciesHeadHtml()}</tr></thead>
           <tbody>${sortedSpecies(speciesRows).map(speciesTable.rowHtml).join("")}</tbody>
-        </table></div>` : '<p class="empty">Nessuna specie in questo periodo.</p>'}
+        </table></div>` : `<p class="empty">Nessuna specie in questo periodo.${longer ? ` <button type="button"
+          class="species-link" data-days="${longer}">Guarda ${longer === 365 ? "l'ultimo anno" : `gli ultimi ${longer} giorni`}</button>` : ""}</p>`}
       </section>
     </div>`;
   startInatWidget();
@@ -2489,7 +2542,16 @@ function inatWidgetHtml(from) {
 // the report is drawn after the page loaded: the widget starts on its new box here
 function startInatWidget() {
   const box = content.querySelector("[data-inat-widget]");
-  if (box && window.InatWidget) new window.InatWidget(box);
+  if (!box) return;
+  if (window.InatWidget) {
+    new window.InatWidget(box);
+    return;
+  }
+  // its script did not load (offline, blocked): the same observations, one tap away
+  const url = `https://www.inaturalist.org/observations?user_id=${encodeURIComponent(box.dataset.inatSource)}`
+    + `&d1=${encodeURIComponent(box.dataset.inatDateFrom)}`;
+  box.innerHTML = `<p class="empty">Il riquadro di iNaturalist non si è caricato:
+    <a href="${escapeHtml(url)}" target="_blank" rel="noopener">le tue osservazioni del periodo su iNaturalist</a>.</p>`;
 }
 
 content.addEventListener("click", (event) => {
@@ -2506,14 +2568,16 @@ content.addEventListener("click", (event) => {
   const button = event.target.closest("[data-days]");
   if (!button) return;
   storageSet("reportDays", button.dataset.days);
-  renderReport(Number(button.dataset.days)).catch((error) => setStatus(`Errore: ${error.message}`, true));
+  renderReport(Number(button.dataset.days)).catch((error) => setStatus(`Errore: ${errorReason(error)}`, true));
 });
 
 function showSpeciesObservations(scientificName, fromDay) {
+  // all of them, as the report counts them: no status, no likely/unsure left on from before
   $("#filter-status").value = "";
+  $("#filter-confidence").value = "";
   $("#filter-species").value = scientificName;
   $("#filter-from").value = fromDay;
-  $("#filter-to").value = localIsoDay();
+  $("#filter-to").value = localDay(new Date());
   $("#more-filters").open = true;
   state.view = "observations";
   window.scrollTo(0, 0);
@@ -2547,7 +2611,7 @@ async function render() {
     else await renderObservations();
     if ($("#status-line").textContent === "Carico…") setStatus("");
   } catch (error) {
-    setStatus(`Errore: ${error.message}`, true);
+    setStatus(`Errore: ${errorReason(error)}`, true);
     if (content.querySelector(".loading")) content.innerHTML = loadErrorHtml(error); // nothing shown yet
   } finally {
     clearTimeout(slow);
@@ -2619,7 +2683,7 @@ $("#refresh").addEventListener("click", async () => {
     await refreshCounts();
     await render();
   } catch (error) {
-    setStatus(`Errore: ${error.message}`, true);
+    setStatus(`Errore: ${errorReason(error)}`, true);
   } finally {
     button.classList.remove("working");
   }
@@ -2663,8 +2727,12 @@ $("#more-filters").open = window.matchMedia("(min-width: 721px)").matches;
 $("#filter-status").value = storageGet(LIST_STATUS_KEY);
 
 // the first load failed (no network, Supabase down): said in the page, with a way to try again
+function errorReason(error) {
+  return /failed to fetch|network|load failed/i.test(error.message) ? "nessuna connessione, o Supabase non risponde" : error.message;
+}
+
 function loadErrorHtml(error) {
-  const reason = /failed to fetch|network/i.test(error.message) ? "nessuna connessione, o Supabase non risponde" : error.message;
+  const reason = errorReason(error);
   return `<p class="empty">Non riesco a caricare i dati: ${escapeHtml(reason)}.
     <button type="button" class="species-link" data-retry>Riprova</button></p>`;
 }
@@ -2680,7 +2748,7 @@ async function start() {
     await Promise.all([loadSpecies(), loadSharedSettings()]);
     await refreshCounts();
   } catch (error) {
-    setStatus(`Errore: ${error.message}`, true);
+    setStatus(`Errore: ${errorReason(error)}`, true);
     content.innerHTML = loadErrorHtml(error);
     return;
   }

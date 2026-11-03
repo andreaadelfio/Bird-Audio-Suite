@@ -486,6 +486,11 @@ button.inat { border-color: var(--uploaded); color: var(--uploaded); }
   .clip.more-open [data-player="link"] { margin-left: auto; }
   .clip.more-open .tool-label { display: inline; }
 }
+/* the smallest phones (320 px): a little less air, so ⋯ stays on the row (same height to tap) */
+@container (max-width: 300px) {
+  .player { gap: 2px; }
+  .player button.tool { padding: 0 0.4rem; }
+}
 .more-tools[aria-expanded="true"] { background: var(--sunken); border-color: var(--accent); }
 
 .play-button {
@@ -925,4 +930,10 @@ body.selecting .status-line:not(:empty) { bottom: calc(4.8rem + env(safe-area-in
 .link-here { animation: toast-in 0.18s ease-out; }
 @media (max-width: 720px) {
   .link-banner { top: 6.6rem; transition: top 0.2s ease-out; } /* with the bar's title row */
+}
+
+/* "reduce motion" on the phone or computer: nothing slides (the toast, the bar, a card leaving);
+   the pulse of a button at work stays, it only fades */
+@media (prefers-reduced-motion: reduce) {
+  .observation, .top-bar, .status-line, .link-here { transition: none; animation: none; }
 }

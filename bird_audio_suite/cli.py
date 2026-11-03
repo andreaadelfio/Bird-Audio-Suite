@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import queue
 import shlex
 import signal
@@ -555,6 +556,7 @@ def choose_loudest_sounddevice_index(measurements: list[dict]) -> int:
 
 _SOUNDDEVICE_PROBE_SCRIPT = r'''
 import json
+import os
 import sys
 import time
 
@@ -983,6 +985,7 @@ LIVE_TODAY = LiveToday()
 LIVE_METRICS = LiveMetrics()
 _PRINT_LOCK = threading.Lock()
 _REMOTE: dict = {"loaded": False, "client": None}
+_LAST_REMOTE: dict = {"day": None, "rows": None}  # the last answer of daily_summary
 
 
 def _remote_client():
@@ -999,13 +1002,17 @@ def _remote_client():
     return _REMOTE["client"]
 
 
-def remote_daily_rows(day: str) -> list[dict] | None:
-    """Observations of `day` (YYYY-MM-DD) on Supabase, rejected ones excluded; None if offline."""
+def remote_daily_rows(day: str, cached: bool = False) -> list[dict] | None:
+    """Observations of `day` (YYYY-MM-DD) on Supabase, rejected ones excluded; None if offline.
+    `cached`: the last answer of that day, without asking (the live loop must not wait on the
+    network: the table refresher asks again every minute)."""
+    if cached and _LAST_REMOTE["day"] == day:
+        return _LAST_REMOTE["rows"]
     client = _remote_client()
     if client is None:
         return None
     try:
-        return client.get(
+        rows = client.get(
             "daily_summary",
             {
                 "select": "scientific_name,english_name,italian_name,german_name,max_confidence,last_heard,rarity,daily_average",
@@ -1014,7 +1021,9 @@ def remote_daily_rows(day: str) -> list[dict] | None:
             },
         )
     except Exception:
-        return None
+        rows = None  # offline: so the table says, until the refresher reads it again
+    _LAST_REMOTE.update(day=day, rows=rows)
+    return rows
 
 
 def pending_clip_rows(detections_dir: Path, day: str) -> list[dict]:
@@ -1080,10 +1089,12 @@ def merge_daily_records(remote: list[dict], local: list[dict], names: SpeciesNam
     ]
 
 
-def print_daily_detection_summary(detections_dir: Path, names: SpeciesNames | None = None, title: str = "") -> None:
-    """Today's table: Supabase (the shared truth, reviews included) plus what is still on its way."""
+def print_daily_detection_summary(detections_dir: Path, names: SpeciesNames | None = None, title: str = "",
+                                  cached: bool = False) -> None:
+    """Today's table: Supabase (the shared truth, reviews included) plus what is still on its way.
+    `cached`: Supabase as last read (see remote_daily_rows)."""
     day = datetime.now().date().isoformat()
-    remote = remote_daily_rows(day)
+    remote = remote_daily_rows(day, cached)
     local = pending_clip_rows(detections_dir, day) + LIVE_TODAY.of_day(day)
     rows = merge_daily_records(remote or [], local, names)
 
@@ -1139,7 +1150,8 @@ def record_live_detection_observation(
     species_names.ensure(scientific_name, english_name)
     LIVE_TODAY.add(scientific_name, english_name, confidence, observed_at.astimezone())
     try:
-        print_daily_detection_summary(detections_dir, species_names)
+        # at once, with Supabase as last read: this runs in the audio loop
+        print_daily_detection_summary(detections_dir, species_names, cached=True)
     except Exception as exc:  # the table is only a view: it must never cost a detection
         print(f"{datetime.now():%H:%M:%S} - Tabella non aggiornata: {exc!r}")
     return observed_at
@@ -1794,6 +1806,27 @@ def _raise_keyboard_interrupt(signum, frame) -> None:
     raise KeyboardInterrupt
 
 
+def live_service_pid() -> int:
+    """The process of the live service (0 when it is not running)."""
+    from .health import SERVICE_NAME
+
+    try:
+        shown = subprocess.run(["systemctl", "--user", "show", "-p", "MainPID", "--value", SERVICE_NAME],
+                               capture_output=True, text=True, timeout=10).stdout.strip()
+        return int(shown or 0)
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return 0
+
+
+def second_listener_warning(service_pid: int | None = None, own_pid: int | None = None) -> str:
+    """Started by hand while the live service runs: two listeners would write every bird twice."""
+    service_pid = live_service_pid() if service_pid is None else service_pid
+    if not service_pid or service_pid == (own_pid or os.getpid()):
+        return ""  # no service running, or this is the service itself
+    return ("Attenzione: il servizio live e' gia' attivo (make stop per fermarlo): due ascolti insieme "
+            "salvano ogni uccello due volte.")
+
+
 def run_live(args: argparse.Namespace) -> int:
     backend = getattr(args, "backend", DEFAULT_LIVE_BACKEND)
     if backend == "auto":
@@ -1802,6 +1835,10 @@ def run_live(args: argparse.Namespace) -> int:
     if getattr(args, "list_devices", False):
         print_available_audio_devices(backend)
         return 0
+
+    warning = second_listener_warning()
+    if warning:
+        print(warning)
 
     # systemd stops the service with SIGTERM: handle it like Ctrl+C so open clips are saved
     previous_handler = signal.signal(signal.SIGTERM, _raise_keyboard_interrupt)
@@ -1995,14 +2032,17 @@ def run_refresh_species(args: argparse.Namespace) -> int:
     rows = rest.get_all("species", {"select": "scientific_name,ebird_code,inat_taxon_id",
                                     "or": "(ebird_code.is.null,inat_taxon_id.is.null)"}, order="scientific_name")
     print(f"Specie senza codici: {len(rows)}")
-    missing = []
+    missing: dict[str, list[str]] = {"ebird_code": [], "inat_taxon_id": []}
     for row in rows:
         codes = species_codes(row["scientific_name"])
         if codes:
             rest.update("species", {"scientific_name": f"eq.{row['scientific_name']}"}, codes)
-        if len(codes) < 2:
-            missing.append(row["scientific_name"])
-    print(f"Fatto. Senza codice eBird o iNaturalist: {', '.join(missing) or 'nessuna'}")
+        for key, names in missing.items():
+            if not (codes.get(key) or row.get(key)):  # neither found now nor there before
+                names.append(row["scientific_name"])
+    # a genus or a family has no eBird code: it is listed here every time, nothing is wrong
+    print(f"Fatto. Senza codice eBird: {', '.join(missing['ebird_code']) or 'nessuna'}. "
+          f"Senza iNaturalist: {', '.join(missing['inat_taxon_id']) or 'nessuna'}.")
     return 0
 
 

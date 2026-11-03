@@ -114,7 +114,6 @@ install-health:
 	systemctl --user daemon-reload
 	systemctl --user enable --now "$(HEALTH_NAME).timer"
 
-# Every 15 minutes: push new detections to Supabase (catches up after being offline).
 # The uploader: its own always-on service, so MP3, spectrograms and uploads never slow the
 # live listener down. Low priority: whatever the live needs comes first.
 install-sync:
@@ -162,4 +161,4 @@ log-sync:
 	journalctl --user -u "$(SYNC_NAME).service" -o cat -e
 
 status:
-	systemctl --user status --no-pager "$(SERVICE_NAME)" "$(SYNC_NAME).service"
+	systemctl --user status --no-pager "$(SERVICE_NAME)" "$(SYNC_NAME).service" "$(HEALTH_NAME).timer"

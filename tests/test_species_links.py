@@ -33,9 +33,25 @@ class SpeciesLinksTests(unittest.TestCase):
             self.assertEqual(species_links.species_codes("Corvus monedula"),
                              {"ebird_code": "eurjac", "inat_taxon_id": 336399})
         with patch.object(species_links, "_ebird_codes", {}), patch.object(species_links, "_found_codes", {}), \
+                patch.object(species_links, "_ebird_retry_at", float("inf")), \
                 patch.object(species_links, "inat_taxon", lambda name: None):
             self.assertEqual(species_links.species_codes("Avis ignota"), {})  # nothing found: nothing overwritten
 
+
+    def test_an_empty_ebird_list_is_loaded_again_later_not_kept_for_days(self) -> None:
+        loads = []
+
+        def load():
+            loads.append(1)
+            return {} if len(loads) == 1 else {"turdus merula": "eurbla"}  # offline, then online
+
+        with patch.object(species_links, "_ebird_codes", None), patch.object(species_links, "_ebird_retry_at", 0.0), \
+                patch.object(species_links, "_load_ebird_taxonomy", load):
+            self.assertIsNone(species_links.ebird_code("Turdus merula"))
+            self.assertIsNone(species_links.ebird_code("Turdus merula"))  # not every species: once an hour
+            species_links._ebird_retry_at = 0.0  # an hour later
+            self.assertEqual(species_links.ebird_code("Turdus merula"), "eurbla")
+        self.assertEqual(len(loads), 2)
 
     def test_codes_found_are_not_asked_again_for_every_clip(self) -> None:
         asked = []
@@ -80,6 +96,9 @@ class WikipediaNamesTests(unittest.TestCase):
             self.assertEqual(Wiki.calls, 2)
             Wiki.offline = True
             self.assertIsNone(names.lookup("it", "Pica pica"))
+            self.assertIsNone(names.lookup("it", "Pica pica"))  # not again at once: the live would wait again
+            self.assertEqual(Wiki.calls, 3)
+            names._offline_until = 0.0  # ten minutes later
             self.assertIsNone(names.lookup("it", "Pica pica"))  # offline is not an answer: asked again
             self.assertEqual(Wiki.calls, 4)
 

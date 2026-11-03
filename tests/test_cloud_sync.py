@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import contextlib
 import csv
+import io
 import json
 import tempfile
 import types
@@ -270,6 +272,25 @@ class FailedClipTests(unittest.TestCase):
         self.assertEqual(rest.observations, {})  # and no empty observation is left behind
 
 
+    def test_a_broken_analysis_still_sends_the_clip_and_says_so(self) -> None:
+        def broken(item):
+            raise RuntimeError("model file missing")
+
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            export(folder, datetime(2026, 10, 16, 8, 45, 37), confidence=0.91)
+            rest = FakeRest()
+            box = outbox(folder, rest)
+            box.analyse = box.double_check = broken
+            printed = io.StringIO()
+            with contextlib.redirect_stdout(printed):
+                report = box.push()
+        row = next(rows[0] for table, rows in rest.upserts if table == "clips")
+        self.assertEqual((report.sent, row["confidence"], row["perch"]), (1, 0.91, None))  # the live's numbers
+        self.assertIn("analisi BirdNET non riuscita", printed.getvalue())
+        self.assertIn("Perch non riuscito", printed.getvalue())
+
+
 class ObservationVisitTests(unittest.TestCase):
     def test_clips_within_ten_minutes_are_one_observation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -359,7 +380,7 @@ class CorrectedSpeciesTests(unittest.TestCase):
         class Rest:
             upserts = []
 
-            def get(self, table, params):
+            def get_all(self, table, params, order="id"):
                 assert (table, params["english_name"]) == ("species", "eq.")
                 return [{"scientific_name": "Turdus philomelos"}, {"scientific_name": "Nomen ignotum"}]
 
@@ -380,6 +401,28 @@ class CorrectedSpeciesTests(unittest.TestCase):
         self.assertEqual(rest.upserts, [{"scientific_name": "Turdus philomelos", "english_name": "Song Thrush",
                                          "italian_name": "Turdus philomelos", "german_name": "Turdus philomelos",
                                          "ebird_code": "sonthr1"}])
+
+    def test_species_nobody_can_name_never_hold_the_others_back(self) -> None:
+        unknown = [{"scientific_name": f"Nomen ignotum {i}"} for i in range(20)]
+
+        unnamed = unknown + [{"scientific_name": "Turdus philomelos"}]  # the newest, last
+
+        class Rest:
+            def get_all(self, table, params, order="id"):
+                return list(unnamed)
+
+            def upsert(self, table, rows, on_conflict):
+                unnamed.remove({"scientific_name": rows[0]["scientific_name"]})  # named: no longer asked
+
+        class Names(FakeNames):
+            def ensure(self, scientific_name, english_name=""):
+                if scientific_name.startswith("Nomen"):
+                    return {"english_name": "", "italian_name": "", "german_name": ""}
+                return super().ensure(scientific_name, english_name)
+
+        box = Outbox(Path("."), Names(), CloudConfig(supabase_url="https://x.supabase.co", supabase_key="k"),
+                     rest=Rest(), storage=FakeStorage(), link_codes=lambda name: {})
+        self.assertEqual(sum(box.name_new_species() for _ in range(10)), 1)  # named within ten hours
 
     def test_birdnet_knows_english_names_without_loading_the_model(self) -> None:
         from bird_audio_suite.species import birdnet_english_name

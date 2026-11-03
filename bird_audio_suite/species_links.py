@@ -23,6 +23,8 @@ EBIRD_MAX_AGE_SECONDS = 180 * 24 * 3600
 INAT_TAXA_URL = "https://api.inaturalist.org/v1/taxa"
 
 _ebird_codes: dict[str, str] | None = None
+_ebird_retry_at = 0.0  # time.monotonic() from which an empty taxonomy (offline at start) is loaded again
+EBIRD_RETRY_SECONDS = 3600.0
 _found_codes: dict[str, dict] = {}  # species with both codes: the uploader sends one row per clip
 
 
@@ -32,8 +34,13 @@ def _load_ebird_taxonomy() -> dict[str, str]:
         try:
             response = requests.get(EBIRD_TAXONOMY_URL, timeout=60)
             response.raise_for_status()
+            if not response.text.startswith("SCIENTIFIC_NAME"):
+                raise requests.RequestException("not the taxonomy (an error page?)")
+            # whole or not at all: a download cut halfway must not pass for six months as the list
             EBIRD_TAXONOMY_FILE.parent.mkdir(parents=True, exist_ok=True)
-            EBIRD_TAXONOMY_FILE.write_text(response.text, encoding="utf-8")
+            partial = EBIRD_TAXONOMY_FILE.with_suffix(".part")
+            partial.write_text(response.text, encoding="utf-8")
+            partial.replace(EBIRD_TAXONOMY_FILE)
         except (OSError, requests.RequestException):
             pass  # an older copy is still better than nothing
     try:
@@ -45,17 +52,19 @@ def _load_ebird_taxonomy() -> dict[str, str]:
 
 
 def ebird_code(scientific_name: str) -> str | None:
-    global _ebird_codes
-    if _ebird_codes is None:
+    global _ebird_codes, _ebird_retry_at
+    # loaded once; empty (offline when the uploader started, days ago): again, once an hour
+    if not _ebird_codes and time.monotonic() >= _ebird_retry_at:
         _ebird_codes = _load_ebird_taxonomy()
-    return _ebird_codes.get(scientific_name.strip().lower())
+        _ebird_retry_at = time.monotonic() + EBIRD_RETRY_SECONDS
+    return (_ebird_codes or {}).get(scientific_name.strip().lower())
 
 
 def inat_taxon(scientific_name: str, session=requests) -> tuple[int, str] | None:
     """(taxon id, the name iNaturalist accepts), matching the exact name or a synonym."""
     name = scientific_name.strip()
     try:
-        response = session.get(INAT_TAXA_URL, params={"q": name, "rank": "species,subspecies", "per_page": 30},
+        response = session.get(INAT_TAXA_URL, params={"q": name, "rank": "species,subspecies,genus", "per_page": 30},
                                timeout=30)
         response.raise_for_status()
         results = [item for item in response.json().get("results", []) if item.get("is_active", True) is not False]

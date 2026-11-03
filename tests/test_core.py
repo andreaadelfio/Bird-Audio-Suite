@@ -131,6 +131,13 @@ class CliTests(unittest.TestCase):
             self.assertEqual(selected_index, 13)
             probe.assert_called_once_with([devices[0]], 1.0)
 
+    def test_a_live_started_by_hand_warns_when_the_service_already_listens(self) -> None:
+        from bird_audio_suite.cli import second_listener_warning
+
+        self.assertIn("gia' attivo", second_listener_warning(service_pid=4242, own_pid=777))
+        self.assertEqual(second_listener_warning(service_pid=0, own_pid=777), "")  # not running
+        self.assertEqual(second_listener_warning(service_pid=4242, own_pid=4242), "")  # the service itself
+
     def test_a_broken_file_in_a_batch_is_skipped_and_the_others_analysed(self) -> None:
         from bird_audio_suite.cli import run_batch
 

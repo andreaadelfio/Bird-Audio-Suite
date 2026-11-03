@@ -116,8 +116,14 @@ RICARICA_AUTOMATICA = """<script>
 
 def ultima_modifica():
     """Data dell'ultimo file del sito salvato (per la ricarica automatica)."""
-    file = [f for f in CARTELLA.rglob("*") if f.is_file()]
-    return str(max(f.stat().st_mtime for f in file))
+    date = []
+    for f in CARTELLA.rglob("*"):
+        try:
+            if f.is_file():
+                date.append(f.stat().st_mtime)
+        except OSError:
+            pass  # un file temporaneo dell'editor sparito nel frattempo
+    return str(max(date, default=0))
 
 
 def ip_locale():

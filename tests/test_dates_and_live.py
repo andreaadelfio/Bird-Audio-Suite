@@ -4,6 +4,7 @@ import csv
 import json
 import os
 import tempfile
+import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -154,6 +155,51 @@ class LiveTrackerTests(unittest.TestCase):
         # from the window start to the end of the second window (15s)
         self.assertAlmostEqual(clip_seconds, 15.0)
 
+    def test_windows_skipped_by_a_busy_birdnet_leave_no_hole_in_the_clip(self) -> None:
+        window = 10 * SAMPLE_RATE
+        step = window // 2
+        start = datetime(2026, 9, 1, 12, 0, 0)
+        detection = {"Turdus merula": (2.0, 5.0, 0.8, "Blackbird")}
+        with tempfile.TemporaryDirectory() as directory:
+            tracker = self.make_tracker(Path(directory), [], max_clip_seconds=200)
+            # analysed at 0 s, skipped at 5, 10 and 15 s, analysed at 20 s
+            for index in range(5):
+                offset = index * step
+                samples = np.full(window, index / 10, dtype=np.float32)
+                if index in (1, 2, 3):
+                    tracker.fill_gap(samples, offset)
+                else:
+                    tracker.handle_result(detection, samples, offset, start + timedelta(seconds=offset / SAMPLE_RATE))
+            clip = np.concatenate(tracker.active["Turdus merula"].samples)
+
+        # 0-30 s without a jump: as long as the time it covers, each second from its own window
+        self.assertEqual(len(clip), 30 * SAMPLE_RATE)
+        self.assertAlmostEqual(float(clip[12 * SAMPLE_RATE]), 0.1, places=5)  # 10-15 s came from the 5 s window
+        self.assertEqual(tracker.active["Turdus merula"].missing_windows, 0)
+
+    def test_a_busy_birdnet_in_the_live_loop_still_gives_a_whole_clip(self) -> None:
+        rate, window_frames, frame = 1000, 4, 1000  # 4 s windows, a new one every 2 s
+        def detect(window):
+            time.sleep(0.05)  # BirdNET slower than this microphone: most windows are skipped
+            return {"Turdus merula": (0.0, 4.0, 0.9, "Blackbird")}, window
+
+        def frames():
+            for second in range(16):
+                yield np.full(frame, second / 100, dtype=np.float32)
+
+        with tempfile.TemporaryDirectory() as directory:
+            tracker = LiveDetectionTracker(sample_rate=rate, detections_dir=Path(directory), species_names=FakeCatalog(),
+                                           record_observation=lambda *args: None, export_kwargs={},
+                                           pre_roll_seconds=0, min_clip_seconds=0, max_clip_seconds=200)
+            exported: list[Path] = []
+            run_sliding_window_loop(frames(), sample_rate=rate, slice_frames=window_frames, detect_window=detect,
+                                    tracker=tracker, on_exported=exported.extend, max_queued=1)
+            rate_read, clip = wavfile.read(exported[0])
+
+        # the bird all along: every second of the stream is in the clip once, in order
+        seconds = [round(float(clip[i * rate]) / 32767 * 100) for i in range(len(clip) // rate)]
+        self.assertEqual(seconds, list(range(16)))
+
     def test_a_failing_bookkeeping_never_costs_the_clip(self) -> None:
         # the live table used to be printed inside record_observation: when it failed (an empty
         # observation on Supabase) the clip of the new species was never opened
@@ -287,6 +333,25 @@ class LiveTrackerTests(unittest.TestCase):
         self.assertIn("_20260901_", wav_files[0].name)
 
 
+class LiveTableTests(unittest.TestCase):
+    def test_a_new_species_redraws_the_table_without_waiting_on_supabase(self) -> None:
+        asked = []
+
+        class Rest:
+            def get(self, table, params):
+                asked.append(params["day"])
+                return [{"scientific_name": "Turdus merula", "last_heard": "2026-11-03T07:00:00+00:00"}]
+
+        with patch.object(cli, "_remote_client", return_value=Rest()), \
+                patch.dict(cli._LAST_REMOTE, {"day": None, "rows": None}):
+            first = cli.remote_daily_rows("2026-11-03")  # the refresher, every minute
+            again = cli.remote_daily_rows("2026-11-03", cached=True)  # a detection, in the audio loop
+            cli.remote_daily_rows("2026-11-04", cached=True)  # after midnight: nothing to reuse
+
+        self.assertEqual(first, again)
+        self.assertEqual(asked, ["eq.2026-11-03", "eq.2026-11-04"])
+
+
 class SpeciesNamesTests(unittest.TestCase):
     def test_names_come_from_supabase_and_survive_offline_restarts(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -333,6 +398,24 @@ class SpeciesNamesTests(unittest.TestCase):
             self.assertIsNone(SpeciesNames(Path(directory) / "names.json").lookup("it", "Turdus merula"))
 
         self.assertEqual((built[0]["max_retries"], built[0]["timeout"]), (0, 4.0))
+
+    def test_after_an_unreachable_wikipedia_the_live_does_not_wait_again_for_a_while(self) -> None:
+        asked = []
+
+        class NoAnswer:
+            def __init__(self, **kwargs) -> None:
+                pass
+
+            def page(self, name):
+                asked.append(name)
+                raise TimeoutError("no answer")
+
+        with tempfile.TemporaryDirectory() as directory, patch("wikipediaapi.Wikipedia", NoAnswer):
+            names = SpeciesNames(Path(directory) / "names.json")
+            names.ensure("Sylvia atricapilla", "Eurasian Blackcap")  # it, de: the first fails
+            names.ensure("Sylvia atricapilla", "Eurasian Blackcap")  # a new clip of it, minutes later
+
+        self.assertEqual(asked, ["Sylvia atricapilla"])  # one wait, not one per language and clip
 
     def test_localized_names_are_cleaned(self) -> None:
         self.assertEqual(SpeciesNames._clean_localized_name("rondone, "), "Rondone")

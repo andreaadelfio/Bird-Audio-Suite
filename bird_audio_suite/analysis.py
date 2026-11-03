@@ -3,9 +3,9 @@
 BirdNET on the whole clip as it is saved, 3 s chunks every 0.5 s. From the same run:
   * confidence: the best score of the clip's species (clip_conf, max_obs_conf, likely/unsure);
   * segments: every passage where it hears that species from 0.6 (the bands, coloured by their own
-    score: 0.6-0.8 unsure, from 0.8 likely; the best band is the clip's confidence when it is at
-    least 0.6), so a clip found at 0.65 shows whether the bird reaches 0.8 elsewhere, and one at
-    0.8 whether it comes back more faintly;
+    score: likely from config.LIKELY_CONFIDENCE, unsure below; the best band is the clip's
+    confidence when it is at least 0.6), so a clip found at 0.65 shows whether the bird is likely
+    elsewhere, and a likely one whether it comes back more faintly;
   * candidates: the (up to three) species heard from 0.6, the clip's included.
 Below 0.6 nothing is shown: not trustworthy. Only the clip's confidence keeps its value even when
 lower, because a 0.45 says that the saved audio does not confirm the species.
@@ -23,7 +23,7 @@ from .audio import birdnet_candidates, detection_segments
 
 ANALYSIS_OVERLAP_SECONDS = 2.5  # a chunk every 0.5 s: BirdNET's score depends a lot on where a call falls
 ANALYSIS_MIN_CONFIDENCE = 0.05  # only for the clip's own best score (see above)
-BAND_MIN_CONFIDENCE = 0.6  # bands and candidates: the live's threshold, below it nothing is trusted
+BAND_MIN_CONFIDENCE = 0.6  # bands and candidates: below it nothing is trusted
 
 _detector = None
 

@@ -105,6 +105,9 @@ class LoopTimingTests(unittest.TestCase):
                 self.windows.append(start_sample)
                 return []
 
+            def fill_gap(self, samples, start_sample):
+                self.windows.append(("skipped", start_sample))
+
             def flush(self):
                 return []
 
@@ -127,7 +130,10 @@ class LoopTimingTests(unittest.TestCase):
                                 on_skip=lambda: skips.append(1), max_queued=1)
         # 9 windows: the first being analysed, one waiting, the other 7 skipped
         self.assertEqual(len(skips), 7)
-        self.assertEqual(tracker.windows, [0, 200])
+        analysed = [start for start in tracker.windows if not isinstance(start, tuple)]
+        self.assertEqual(analysed, [0, 200])
+        # the skipped ones reach the tracker too, in their turn, for their audio
+        self.assertEqual(tracker.windows[2:], [("skipped", start) for start in range(400, 1800, 200)])
 
 
 if __name__ == "__main__":

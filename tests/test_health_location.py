@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import json
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from bird_audio_suite import geolocation
 from bird_audio_suite.geolocation import ResolvedLocation, resolve_location
-from bird_audio_suite.health import HeartbeatWriter, find_problems, update_state
+from bird_audio_suite.health import HeartbeatWriter, find_disk_problems, find_problems, resolution_message, update_state
 
 
 NOW = 1_000_000.0
@@ -63,6 +64,16 @@ class AlertStateTests(unittest.TestCase):
         state, alerts, resolved = update_state(state, {})
         self.assertEqual(resolved, ["stale"])
         self.assertEqual(state, {"counts": {}, "notified": []})
+
+    def test_a_problem_over_is_said_also_while_another_goes_on(self) -> None:
+        self.assertIsNone(resolution_message([], {"stuck": "offline"}))
+        self.assertEqual(resolution_message(["silent"], {"stuck": "offline"}), "Risolto: il microfono sente di nuovo.")
+        self.assertTrue(resolution_message(["silent"], {}).startswith("Tutto di nuovo a posto"))
+
+    def test_a_disk_almost_full_is_said_before_clips_are_lost(self) -> None:
+        usage = lambda free: (lambda path: types.SimpleNamespace(free=free))
+        self.assertEqual(find_disk_problems(Path("."), usage(50 * 1024 ** 3)), {})
+        self.assertIn("300 MB liberi", find_disk_problems(Path("."), usage(300 * 1024 ** 2))["disk"])
 
     def test_a_single_bad_check_is_forgotten(self) -> None:
         state, _, _ = update_state({}, {"stale": "no audio"})

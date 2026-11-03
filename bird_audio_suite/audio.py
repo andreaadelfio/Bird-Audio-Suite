@@ -275,8 +275,9 @@ def replace_durably(partial: Path, final: Path) -> None:
 
 @contextmanager
 def detections_lock(detections_dir: Path, blocking: bool = True):
-    """Exclusive lock on the transit folder, so two uploaders (the live service and the `sync`
-    timer) never send the same clip at once. Non-blocking: yields False if it is taken."""
+    """Exclusive lock on the transit folder, so two uploaders (the uploader service and a `sync`
+    or `batch --export-clips` run by hand) never send the same clip at once. Non-blocking: yields
+    False if it is taken."""
     detections_dir = Path(detections_dir)
     detections_dir.mkdir(parents=True, exist_ok=True)
     with (detections_dir / ".lock").open("a") as handle:

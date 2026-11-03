@@ -152,6 +152,17 @@ class LiveDetectionTracker:
 
         return exported
 
+    def fill_gap(self, samples: np.ndarray, window_start_sample: int) -> None:
+        """A window BirdNET skipped (it was behind): its audio still goes into the open clips, so
+        a clip has no hole where nothing was analysed. Nothing is decided on it: no clip opens or
+        closes, and it does not count as a window without the species."""
+        window_end_sample = window_start_sample + int(len(samples))
+        for active in self.active.values():
+            append_from = max(0, active.last_end_sample - window_start_sample)
+            if append_from < len(samples):
+                active.append(samples[append_from:])
+                active.last_end_sample = window_end_sample
+
     def flush(self) -> list[Path]:
         """Export every clip still open (on shutdown)."""
         exported: list[Path] = []
@@ -224,18 +235,27 @@ def run_sliding_window_loop(
     the memory and the delay would otherwise grow without end. Windows overlap by half, so a
     skipped window between two analysed ones leaves no audio unheard. The live passes
     MAX_QUEUED_WINDOWS; None waits for every window (a recording read faster than real time).
+    A skipped window still goes through the queue, in its turn, without BirdNET: its audio fills
+    the open clips (``tracker.fill_gap``), which would otherwise jump where windows were skipped.
     """
     slice_frames = max(1, int(slice_frames))
     slide_step_frames = max(1, slice_frames // 2)
     task_queue: queue.Queue = queue.Queue()
     result_queue: queue.Queue = queue.Queue()
+    waiting = [0]  # windows queued for BirdNET (skipped ones pass through at once: not counted)
+    waiting_lock = threading.Lock()
 
     def worker() -> None:
         while True:
             item = task_queue.get()
             if item is None:
                 break
-            window, playback_window, window_start_sample, window_start_time = item
+            window, playback_window, window_start_sample, window_start_time, skipped = item
+            if skipped:
+                result_queue.put(("skipped", window, window_start_sample))
+                continue
+            with waiting_lock:
+                waiting[0] -= 1
             try:
                 started = time.perf_counter()
                 if playback_window is None:
@@ -261,6 +281,9 @@ def run_sliding_window_loop(
             try:
                 if isinstance(result, Exception):
                     raise result
+                if result[0] == "skipped":
+                    tracker.fill_gap(result[1], result[2])
+                    continue
                 exported = tracker.handle_result(*result)
                 if exported and on_exported:
                     on_exported(exported)
@@ -304,11 +327,13 @@ def run_sliding_window_loop(
             # The last frame has just been captured: date the window from its end.
             window_start_time = now() - timedelta(seconds=window.size / float(sample_rate))
             frames_since_last_window = 0
-            if max_queued is not None and task_queue.qsize() >= max_queued:
-                if on_skip:
-                    on_skip()
-                continue
-            task_queue.put((window, playback_window, window_start_sample, window_start_time))
+            with waiting_lock:
+                skipped = max_queued is not None and waiting[0] >= max_queued
+                if not skipped:
+                    waiting[0] += 1
+            if skipped and on_skip:
+                on_skip()
+            task_queue.put((window, playback_window, window_start_sample, window_start_time, skipped))
     finally:
         task_queue.put(None)
         worker_thread.join(timeout=shutdown_timeout)
