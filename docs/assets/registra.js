@@ -258,13 +258,19 @@ export function setupRecorder({ client, nameOf, say, confidenceClass }) {
   const panel = $("record-panel");
   const toggle = $("record-toggle");
   const startButton = $("record-start");
+  const sendButton = $("record-save");
   const stateLabel = $("record-state");
+  const progress = $("record-progress");
   const timeLabel = $("record-time");
   const level = $("record-level");
-  const now = $("record-now");
+  const micSelect = $("record-mic");
+  const micName = $("record-mic-name");
   const list = $("record-species");
+  const empty = $("record-empty");
   const done = $("record-done");
+  const audio = $("record-audio");
   const placeBox = $("record-place");
+  const test = new URLSearchParams(location.search).get("prova-audio"); // un file al posto del microfono
 
   let worker = null;
   let ready = null; // promessa: BirdNET caricato
@@ -273,36 +279,60 @@ export function setupRecorder({ client, nameOf, say, confidenceClass }) {
   let wakeLock = null;
   const waiting = new Map(); // finestra -> [inizio, fine] in secondi
 
-  try {
-    placeBox.checked = localStorage.getItem("recordPlace") === "1";
-  } catch {
-    // niente memoria nel browser: resta spenta
+  const remember = (key, value) => {
+    try {
+      if (value) localStorage.setItem(key, value);
+      else localStorage.removeItem(key);
+    } catch {
+      // niente memoria nel browser: vale per ora
+    }
+  };
+  const remembered = (key) => {
+    try {
+      return localStorage.getItem(key) || "";
+    } catch {
+      return "";
+    }
+  };
+  placeBox.checked = remembered("recordPlace") === "1";
+
+  // in che fase siamo: la dice l'etichetta in alto e decide quali bottoni si vedono (styles.css)
+  function setPhase(phase, text) {
+    panel.dataset.phase = phase;
+    stateLabel.textContent = text;
+    startButton.disabled = phase === "loading" || phase === "error";
+    toggle.classList.toggle("recording", phase === "recording");
   }
+
+  // ------------------------------------------------ BirdNET
 
   function loadBirdnet() {
     if (ready) return ready;
-    stateLabel.textContent = "carico BirdNET…";
-    startButton.disabled = true;
+    setPhase("loading", "Preparo BirdNET…");
     ready = new Promise((resolve, reject) => {
       worker = new Worker("./assets/birdnet-worker.js?v=1");
       worker.onmessage = ({ data }) => {
-        if (data.type === "progress") stateLabel.textContent = `carico BirdNET… ${Math.round(data.fraction * 100)}%`;
+        if (data.type === "progress") {
+          setPhase("loading", `Scarico BirdNET… ${Math.round(data.fraction * 100)}%`);
+          progress.firstElementChild.style.width = `${Math.round(data.fraction * 100)}%`;
+        }
         if (data.type === "ready") {
-          stateLabel.textContent = "pronto";
+          setPhase("ready", "Pronto");
           stateLabel.title = `BirdNET V2.4 nel browser (${data.backend})`;
-          startButton.disabled = false;
           resolve();
           if (placeBox.checked) usePlace();
         }
-        if (data.type === "place") {
-          stateLabel.textContent = data.count == null ? "pronto" : `pronto · ${data.count} specie possibili qui in questa settimana`;
+        if (data.type === "place" && panel.dataset.phase === "ready") {
+          setPhase("ready", data.count == null ? "Pronto" : `Pronto · ${data.count} specie possibili qui`);
         }
         if (data.type === "result") onResult(data);
         if (data.type === "error") {
           if (waiting.has(data.id)) onResult({ id: data.id, species: [] });
           else {
-            stateLabel.textContent = "BirdNET non si carica";
+            setPhase("error", "BirdNET non si carica: tocca di nuovo il microfono in alto per riprovare");
             say(`BirdNET non si carica: ${data.message}`, true);
+            worker.terminate();
+            ready = null;
             reject(new Error(data.message));
           }
         }
@@ -322,11 +352,7 @@ export function setupRecorder({ client, nameOf, say, confidenceClass }) {
   }
 
   placeBox.addEventListener("change", () => {
-    try {
-      localStorage.setItem("recordPlace", placeBox.checked ? "1" : "");
-    } catch {
-      // non ricordata: vale per ora
-    }
+    remember("recordPlace", placeBox.checked ? "1" : "");
     if (placeBox.checked) usePlace();
     else {
       place = {};
@@ -334,22 +360,71 @@ export function setupRecorder({ client, nameOf, say, confidenceClass }) {
     }
   });
 
+  // ------------------------------------------------ microfoni
+
+  // i microfoni del dispositivo; i nomi veri arrivano solo dopo il primo permesso (si rileggono dopo)
+  async function listMics() {
+    if (test) {
+      micSelect.innerHTML = '<option value="">File di prova</option>';
+      micName.textContent = "File di prova";
+      return;
+    }
+    if (!navigator.mediaDevices?.enumerateDevices) return;
+    const inputs = (await navigator.mediaDevices.enumerateDevices())
+      .filter((device) => device.kind === "audioinput" && device.deviceId && !["default", "communications"].includes(device.deviceId));
+    const chosen = remembered("recordMic");
+    micSelect.innerHTML = '<option value="">Microfono predefinito</option>' + inputs.map((device, index) =>
+      `<option value="${escapeHtml(device.deviceId)}">${escapeHtml(device.label || `Microfono ${index + 1}`)}</option>`).join("");
+    micSelect.value = inputs.some((device) => device.deviceId === chosen) ? chosen : "";
+    micSelect.disabled = !inputs.length || rec?.running;
+    micName.textContent = micSelect.selectedOptions[0]?.textContent || "";
+  }
+
+  micSelect.addEventListener("change", () => {
+    remember("recordMic", micSelect.value);
+    micName.textContent = micSelect.selectedOptions[0]?.textContent || "";
+  });
+  navigator.mediaDevices?.addEventListener?.("devicechange", () => listMics().catch(() => {}));
+
+  // il microfono scelto (o quello predefinito); se quello ricordato non c'è più, lo dice e usa il predefinito
+  async function openMic() {
+    const chosen = micSelect.value || remembered("recordMic");
+    // l'audio com'è: niente filtri pensati per la voce, che tolgono proprio gli uccelli
+    const audioSettings = { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1 };
+    try {
+      return await navigator.mediaDevices.getUserMedia({
+        audio: chosen ? { ...audioSettings, deviceId: { exact: chosen } } : audioSettings,
+      });
+    } catch (error) {
+      if (!chosen || !["OverconstrainedError", "NotFoundError"].includes(error.name)) throw error;
+      remember("recordMic", "");
+      say("Il microfono scelto non c'è più: uso quello predefinito.", true);
+      return navigator.mediaDevices.getUserMedia({ audio: audioSettings });
+    }
+  }
+
+  // ------------------------------------------------ apri, registra, ferma
+
   toggle.addEventListener("click", () => {
     const open = panel.classList.toggle("hidden") === false;
     toggle.setAttribute("aria-expanded", String(open));
-    if (open) loadBirdnet().catch(() => {});
+    document.body.classList.toggle("record-open", open);
+    if (open) {
+      listMics().catch(() => {});
+      loadBirdnet().catch(() => {});
+    }
   });
 
   startButton.addEventListener("click", () => (rec?.running ? stop() : start()).catch((error) => {
-    say(`Registra: ${error.message}`, true);
+    const denied = error.name === "NotAllowedError";
+    say(denied ? "Il microfono non è permesso: concedilo nelle impostazioni del sito." : `Registra: ${error.message}`, true);
     if (rec?.running) stop();
+    else setPhase("ready", "Pronto");
   }));
-
-  // ------------------------------------------------ registrazione
 
   async function start() {
     await loadBirdnet();
-    discard();
+    clearRecording();
     let context;
     try {
       context = new AudioContext({ sampleRate: BIRDNET_RATE }); // il browser porta il microfono a 48 kHz
@@ -358,8 +433,6 @@ export function setupRecorder({ client, nameOf, say, confidenceClass }) {
     }
     await context.audioWorklet.addModule("./assets/registra-worklet.js?v=1");
     const node = new AudioWorkletNode(context, "raccoglitore");
-    // prova: ?prova-audio=<file> usa un file al posto del microfono (test, e per provare senza uccelli)
-    const test = new URLSearchParams(location.search).get("prova-audio");
     let stream = null;
     let source;
     if (test) {
@@ -367,10 +440,9 @@ export function setupRecorder({ client, nameOf, say, confidenceClass }) {
       source = new AudioBufferSourceNode(context, { buffer });
       source.onended = () => { if (rec?.running) stop(); };
     } else {
-      stream = await navigator.mediaDevices.getUserMedia({
-        // l'audio com'è: niente filtri pensati per la voce, che tolgono proprio gli uccelli
-        audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1 },
-      });
+      stream = await openMic();
+      listMics().catch(() => {}); // ora con i nomi veri
+      micName.textContent = stream.getAudioTracks()[0]?.label || micName.textContent;
       source = context.createMediaStreamSource(stream);
       stream.getAudioTracks()[0].addEventListener("ended", () => {
         if (rec?.running) {
@@ -384,17 +456,15 @@ export function setupRecorder({ client, nameOf, say, confidenceClass }) {
     rec = {
       running: true, context, node, source, stream, rate: context.sampleRate,
       chunks: [], length: 0, recent: [], recentLength: 0, marks: [], lastWindowEnd: 0, busy: false,
-      detections: new Map(), startedAt: new Date(), windows: 0, slow: 0,
+      detections: new Map(), startedAt: new Date(), windows: 0, slow: 0, latestEnd: -1,
     };
     node.port.onmessage = ({ data }) => onSamples(data);
     if (test) source.start();
     await keepAwake();
+    micSelect.disabled = true;
     startButton.textContent = "■ Ferma";
-    startButton.classList.add("recording");
-    toggle.classList.add("recording");
-    now.textContent = "Ascolto…";
-    list.innerHTML = "";
-    done.classList.add("hidden");
+    setPhase("recording", "Registra");
+    drawList();
   }
 
   function onSamples(block) {
@@ -454,49 +524,13 @@ export function setupRecorder({ client, nameOf, say, confidenceClass }) {
     rec.busy = false;
     if (seconds > STEP_SECONDS) rec.slow += 1;
     addWindow(rec.detections, species, span[0], span[1], nameOf);
-    const heard = species.filter(([, confidence]) => confidence >= SHOW_CONFIDENCE);
+    rec.latestEnd = span[1];
     if (!rec.running) {
       finishTail();
-      summary();
-    } else {
-      now.innerHTML = heard.length
-        ? `Ora: ${heard.slice(0, 3).map(([label, confidence]) => {
-          const [scientific, english] = label.split("_");
-          return `<b>${escapeHtml(nameOf(scientific, english))}</b> ${confidence.toFixed(2)}`;
-        }).join(" · ")}`
-        : "Ascolto… nessun uccello in questi 3 secondi";
+      if (!rec.busy) setPhase("done", rec.detections.size ? "Scegli cosa mandare" : "Nessun uccello riconosciuto");
     }
     drawList();
   }
-
-  const CHOICES = [["", "Non mandare"], ["pending", "Da rivedere"], ["confirmed", "✓ Confermata"]];
-
-  // ogni specie: confidenza, i tratti in cui BirdNET la sente (dall'inizio della registrazione) e,
-  // a registrazione finita, la scelta: niente (non parte nulla), da rivedere o confermata
-  function drawList() {
-    const rows = [...rec.detections.values()].sort((a, b) => b.best - a.best);
-    list.innerHTML = rows.map((row) => {
-      const spans = mergeSpans(row.windows).map(([from, to]) => `${minutesSeconds(from)}–${minutesSeconds(to)}`);
-      const choice = rec.running ? "" : `<span class="segmented record-choice" role="group" aria-label="${escapeHtml(row.display)}">
-        ${CHOICES.map(([value, label]) => `<button type="button" data-choice="${value}" data-species="${escapeHtml(row.scientific)}"
-          class="${row.choice === value ? "on" : ""}" aria-pressed="${row.choice === value}">${label}</button>`).join("")}</span>`;
-      return `<li><span><b>${escapeHtml(row.display)}</b> <i>${escapeHtml(row.scientific)}</i>
-        <span class="conf-${confidenceClass(row.best)}">${row.best.toFixed(2)}</span></span>
-        <small>${spans.join(", ")} · dalle ${clock.format(heardAt(row.first))}</small>${choice}</li>`;
-    }).join("");
-    const chosen = rows.filter((row) => row.choice).length;
-    const send = $("record-save");
-    send.textContent = chosen ? `Manda su Supabase (${chosen})` : "Manda su Supabase";
-    send.disabled = !chosen;
-  }
-
-  list.addEventListener("click", (event) => {
-    const button = event.target.closest("[data-choice]");
-    const found = button && rec?.detections.get(button.dataset.species);
-    if (!found) return;
-    found.choice = button.dataset.choice;
-    drawList();
-  });
 
   // l'ora vera di un punto della registrazione (secondi dall'inizio)
   function heardAt(seconds) {
@@ -522,9 +556,9 @@ export function setupRecorder({ client, nameOf, say, confidenceClass }) {
     rec.stream?.getTracks().forEach((track) => track.stop());
     rec.context.close();
     releaseAwake();
+    level.style.width = "0";
+    micSelect.disabled = false;
     startButton.textContent = "● Registra";
-    startButton.classList.remove("recording");
-    toggle.classList.remove("recording");
     // tutta la registrazione, da riascoltare e scaricare
     rec.samples = new Float32Array(rec.length);
     let offset = 0;
@@ -533,16 +567,17 @@ export function setupRecorder({ client, nameOf, say, confidenceClass }) {
       offset += chunk.length;
     }
     rec.chunks = [];
-    const url = URL.createObjectURL(new Blob([wavBytes(rec.samples, rec.rate)], { type: "audio/wav" }));
-    rec.url = url;
-    $("record-audio").src = url;
+    rec.url = URL.createObjectURL(new Blob([wavBytes(rec.samples, rec.rate)], { type: "audio/wav" }));
+    audio.src = rec.url;
     const download = $("record-download");
-    download.href = url;
+    download.href = rec.url;
     download.download = `registrazione_${fileStamp(rec.startedAt)}.wav`;
-    finishTail();
-    summary();
-    drawList(); // ora con le scelte
     done.classList.remove("hidden");
+    finishTail();
+    setPhase("done", rec.busy ? "Analizzo l'ultimo pezzo…"
+      : rec.detections.size ? "Scegli cosa mandare" : "Nessun uccello riconosciuto");
+    if (rec.slow > rec.windows / 3) say("Questo dispositivo è lento per BirdNET: alcuni pezzi non sono stati ascoltati.");
+    drawList();
     return Promise.resolve();
   }
 
@@ -554,39 +589,94 @@ export function setupRecorder({ client, nameOf, say, confidenceClass }) {
     analyseLatest();
   }
 
-  function summary() {
-    const count = rec.detections.size;
-    now.textContent = `${minutesSeconds(rec.length / rec.rate)} registrati, ${rec.windows} `
-      + `${rec.windows === 1 ? "finestra analizzata" : "finestre analizzate"}`
-      + (count ? `: ${count} specie. Scegli per ognuna se è confermata o da rivedere: le altre non partono.`
-        : ": nessun uccello riconosciuto.")
-      + (rec.slow > rec.windows / 3 ? " (Questo dispositivo è lento per BirdNET: ha saltato delle finestre.)" : "")
-      + (rec.busy ? " Analizzo l'ultimo pezzo…" : "");
+  // ------------------------------------------------ l'elenco delle specie
+
+  // mentre registra: la più recente in alto, evidenziata se BirdNET la sente adesso; alla fine:
+  // la più sicura in alto, con i tratti (un tocco li riascolta) e la scelta, confermata o da rivedere
+  function drawList() {
+    const rows = [...(rec?.detections.values() || [])]
+      .sort(rec?.running ? (a, b) => b.last - a.last || b.best - a.best : (a, b) => b.best - a.best);
+    empty.textContent = !rec ? "Premi Registra: BirdNET ascolta con te e qui compaiono gli uccelli che sente."
+      : rows.length ? "" : rec.running ? "In ascolto… gli uccelli compaiono qui appena BirdNET li sente."
+        : "Nessun uccello riconosciuto. Puoi riascoltarla o scaricarla.";
+    list.innerHTML = rows.map((row) => {
+      const percent = Math.round(row.best * 100);
+      const now = rec.running && row.last === rec.latestEnd;
+      const heard = `${row.windows.length} ${row.windows.length === 1 ? "volta" : "volte"} · ultima alle ${clock.format(heardAt(row.last))}`;
+      const spans = mergeSpans(row.windows).map(([from, to]) =>
+        `<button type="button" class="record-span" data-seek="${from}">${minutesSeconds(from)}–${minutesSeconds(to)}</button>`).join("");
+      const choices = rec.running ? "" : `<div class="record-choice">
+          <button type="button" data-choice="confirmed" data-species="${escapeHtml(row.scientific)}" aria-pressed="${row.choice === "confirmed"}"
+            class="${row.choice === "confirmed" ? "on" : ""}">✓ Confermata</button>
+          <button type="button" data-choice="pending" data-species="${escapeHtml(row.scientific)}" aria-pressed="${row.choice === "pending"}"
+            class="${row.choice === "pending" ? "on" : ""}">Da rivedere</button>
+        </div>`;
+      return `<li class="record-row${now ? " now" : ""}${row.choice ? " chosen" : ""}">
+          <div class="record-row-head">
+            <span class="record-names"><b>${escapeHtml(row.display)}</b> <i>${escapeHtml(row.scientific)}</i></span>
+            <span class="record-conf conf-${confidenceClass(row.best)}" title="Confidenza di BirdNET">
+              <span class="record-conf-bar"><span style="width:${percent}%"></span></span>${percent}%</span>
+          </div>
+          <small>${now ? '<span class="record-live">adesso</span> · ' : ""}${heard}</small>
+          ${rec.running ? "" : `<small class="record-spans">Riascolta: ${spans}</small>`}
+          ${choices}
+        </li>`;
+    }).join("");
+    const chosen = rows.filter((row) => row.choice).length;
+    sendButton.textContent = chosen ? `Manda ${chosen} su Supabase` : "Scegli prima le specie";
+    sendButton.disabled = !chosen;
   }
+
+  list.addEventListener("click", (event) => {
+    const seek = event.target.closest("[data-seek]");
+    if (seek) {
+      audio.currentTime = Number(seek.dataset.seek);
+      audio.play().catch(() => {});
+      return;
+    }
+    const button = event.target.closest("[data-choice]");
+    const found = button && rec?.detections.get(button.dataset.species);
+    if (!found) return;
+    // un tocco sceglie, un secondo tocco sulla stessa toglie (non si manda)
+    found.choice = found.choice === button.dataset.choice ? "" : button.dataset.choice;
+    drawList();
+  });
 
   // ------------------------------------------------ mandare su Supabase (o tenere sul telefono)
 
   // le scelte fatte: prima sul telefono (IndexedDB, così non si perdono neanche chiudendo l'app),
   // poi su Supabase; senza rete restano lì e partono quando torna
-  $("record-save").addEventListener("click", async () => {
+  sendButton.addEventListener("click", async () => {
     const chosen = [...(rec?.detections.values() || [])].filter((row) => row.choice);
     if (!chosen.length) return;
-    const button = $("record-save");
-    button.disabled = true;
+    sendButton.disabled = true;
     try {
       for (const detection of chosen) {
-        const item = clipFor(detection, rec.detections, rec.samples, rec.rate, heardAt, detection.choice, place);
-        await queue.put(item);
+        await queue.put(clipFor(detection, rec.detections, rec.samples, rec.rate, heardAt, detection.choice, place));
       }
     } catch (error) {
       say(`Non salvata sul telefono: ${error.message}. Scarica il WAV per non perderla.`, true);
-      button.disabled = false;
+      sendButton.disabled = false;
       return;
     }
-    discard();
-    now.textContent = "";
+    clearRecording();
     await sendWaiting(chosen.length);
   });
+
+  $("record-discard").addEventListener("click", () => {
+    if (rec?.detections.size && !window.confirm("Scartare la registrazione? Non è stata mandata.")) return;
+    clearRecording();
+  });
+
+  function clearRecording() {
+    if (rec?.url) URL.revokeObjectURL(rec.url);
+    if (rec && !rec.running) rec = null;
+    done.classList.add("hidden");
+    audio.removeAttribute("src");
+    timeLabel.textContent = "0:00";
+    if (ready && panel.dataset.phase !== "loading" && panel.dataset.phase !== "error") setPhase("ready", "Pronto");
+    drawList();
+  }
 
   // manda quello che aspetta sul telefono; chosen: quante ne hai appena scelte (per il messaggio)
   let sending = false;
@@ -613,11 +703,10 @@ export function setupRecorder({ client, nameOf, say, confidenceClass }) {
       const left = (await queue.all()).length;
       showWaiting(left);
       if (sent && !left) {
-        say(`Mandate ${sent} su Supabase: sono tra le Osservazioni. MP3 e spettrogramma li aggiunge il PC `
-          + "(entro un minuto se è acceso), intanto si ascolta il WAV.");
+        say(`${sent === 1 ? "Mandata" : `Mandate ${sent}`} su Supabase: ${sent === 1 ? "è" : "sono"} tra le Osservazioni.`);
       } else if (left && (chosen || failure)) {
-        say(`${left} ${left === 1 ? "clip resta" : "clip restano"} sul telefono: ${failure ? errorText(failure) : "nessuna rete"}. `
-          + "Partono da sole appena c'è rete.", Boolean(failure));
+        say(`${left} ${left === 1 ? "clip resta" : "clip restano"} sul telefono (${failure ? errorText(failure) : "nessuna rete"}): `
+          + "partono da sole appena c'è rete.", Boolean(failure));
       }
     } catch (error) {
       say(`Registra: ${error.message}`, true);
@@ -631,8 +720,7 @@ export function setupRecorder({ client, nameOf, say, confidenceClass }) {
   }
 
   function showWaiting(left) {
-    const label = $("record-waiting");
-    label.textContent = left ? `${left} ${left === 1 ? "clip" : "clip"} sul telefono, in attesa di rete` : "";
+    $("record-waiting").textContent = left ? `${left} in attesa di rete` : "";
   }
 
   window.addEventListener("online", () => sendWaiting());
@@ -640,20 +728,6 @@ export function setupRecorder({ client, nameOf, say, confidenceClass }) {
     showWaiting(items.length);
     if (items.length) sendWaiting();
   }).catch(() => {});
-
-  $("record-discard").addEventListener("click", () => {
-    if (rec?.detections.size && !window.confirm("Scartare la registrazione? Non è stata salvata.")) return;
-    discard();
-    now.textContent = "";
-  });
-
-  function discard() {
-    if (rec?.url) URL.revokeObjectURL(rec.url);
-    if (rec && !rec.running) rec = null;
-    list.innerHTML = "";
-    done.classList.add("hidden");
-    $("record-audio").removeAttribute("src");
-  }
 
   // ------------------------------------------------ schermo acceso, app in secondo piano
 
@@ -680,4 +754,6 @@ export function setupRecorder({ client, nameOf, say, confidenceClass }) {
     const missing = last ? (Date.now() - last[1]) / 1000 : 0;
     if (missing > 2) say(`Mentre l'app era in secondo piano il microfono si è fermato: mancano circa ${Math.round(missing)} s.`, true);
   });
+
+  drawList();
 }

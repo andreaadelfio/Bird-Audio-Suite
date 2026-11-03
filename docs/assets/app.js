@@ -2,7 +2,7 @@
 // Data: Supabase schema `birds` (see supabase/birds_schema.sql), open to the publishable key.
 // The site changes only the review columns; everything else is written by `bird_audio_cli.py sync`.
 
-import { setupRecorder } from "./registra.js?v=3";
+import { setupRecorder } from "./registra.js?v=4";
 
 const config = window.APP_CONFIG || {};
 const PAGE_SIZE = 25;

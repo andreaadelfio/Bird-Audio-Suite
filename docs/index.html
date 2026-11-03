@@ -16,7 +16,7 @@
     <link rel="manifest" href="./manifest.webmanifest">
     <link rel="icon" type="image/png" sizes="64x64" href="./assets/favicon-64.png">
     <link rel="apple-touch-icon" href="./assets/apple-touch-icon.png">
-    <link rel="stylesheet" href="./assets/styles.css?v=79">
+    <link rel="stylesheet" href="./assets/styles.css?v=81">
   </head>
   <body>
     <div class="page-shell">
@@ -59,30 +59,44 @@
         </div>
       </header>
 
-      <section id="record-panel" class="record-panel hidden" aria-label="Registra">
-        <h2>Registra <span id="record-state" class="inat-state"></span> <small id="record-waiting" class="record-waiting"></small></h2>
-        <div class="record-controls">
-          <button id="record-start" class="primary record-start" type="button" disabled>● Registra</button>
-          <span id="record-time" class="record-time">0:00</span>
-          <span class="record-meter" aria-hidden="true"><span id="record-level"></span></span>
-          <label class="inline-label"><input id="record-place" type="checkbox"> usa la mia posizione</label>
+      <!-- Registra (assets/registra.js): BirdNET ascolta con te, nel browser -->
+      <section id="record-panel" class="record-panel hidden" aria-label="Registra" data-phase="loading">
+        <div class="record-head">
+          <h2>Registra</h2>
+          <span id="record-state" class="record-state" role="status"></span>
+          <small id="record-waiting" class="record-waiting"></small>
         </div>
-        <p id="record-now" class="record-now" aria-live="polite"></p>
+        <div id="record-progress" class="record-progress" aria-hidden="true"><span></span></div>
+        <div class="record-options">
+          <label class="record-option">Microfono
+            <select id="record-mic"><option value="">Microfono predefinito</option></select>
+          </label>
+          <label class="record-option"><input id="record-place" type="checkbox"> Solo le specie di qui (posizione)</label>
+        </div>
+        <p id="record-empty" class="record-empty"></p>
         <ol id="record-species" class="record-species"></ol>
         <div id="record-done" class="record-done hidden">
           <audio id="record-audio" controls preload="metadata"></audio>
-          <div class="inat-row">
-            <button id="record-save" class="primary" type="button" disabled>Manda su Supabase</button>
-            <a id="record-download" class="species-link" href="#">Scarica il WAV</a>
-            <button id="record-discard" type="button">Scarta</button>
+          <a id="record-download" class="species-link" href="#">Scarica la registrazione (WAV)</a>
+        </div>
+        <div class="record-bar">
+          <button id="record-start" class="record-button" type="button" disabled>● Registra</button>
+          <button id="record-save" class="record-button primary" type="button" disabled>Scegli prima le specie</button>
+          <button id="record-discard" class="record-discard" type="button">Scarta</button>
+          <div class="record-meta">
+            <span id="record-time" class="record-time">0:00</span>
+            <span class="record-meter" aria-hidden="true"><span id="record-level"></span></span>
+            <span id="record-mic-name" class="record-mic-name"></span>
           </div>
         </div>
-        <p class="hint">BirdNET gira qui, nel browser (la prima volta scarica ~50 MB, ~30 in più con la posizione;
-          poi restano sul dispositivo e funziona anche senza rete). Tieni l'app aperta: lo schermo resta acceso da solo. Se passi a
-          un'altra app o spegni lo schermo, Android può fermare il microfono: la registrazione riprende
-          quando torni, senza il pezzo mancante. Alla fine scegli per ogni specie "confermata" o "da rivedere": vanno
-          subito tra le Osservazioni (senza rete restano sul telefono e partono quando torna); MP3 e spettrogramma li
-          aggiunge il PC quando è acceso.</p>
+        <details class="record-help">
+          <summary>Come funziona</summary>
+          <p>BirdNET gira qui, nel browser: la prima volta scarica circa 50 MB (30 in più con la posizione), poi
+            funziona anche senza rete. Lo schermo resta acceso da solo; se cambi app o lo spegni, Android può fermare
+            il microfono e la registrazione riprende quando torni. Alla fine scegli per ogni uccello "Confermata" o
+            "Da rivedere" e mandalo: va tra le Osservazioni (senza rete parte appena torna). Gli altri non partono.
+            MP3 e spettrogramma li aggiunge il PC quando è acceso.</p>
+        </details>
       </section>
 
       <section id="inat-panel" class="inat-panel hidden" aria-label="iNaturalist">
@@ -164,6 +178,6 @@
     <!-- the iNaturalist widget of andreaadelfio.github.io (repository inat-widget), for the Report -->
     <script defer src="https://andreaadelfio.github.io/inat-widget/inat-widget-custom.js"></script>
     <script src="./assets/config.js?v=52"></script>
-    <script type="module" src="./assets/app.js?v=106"></script>
+    <script type="module" src="./assets/app.js?v=107"></script>
   </body>
 </html>

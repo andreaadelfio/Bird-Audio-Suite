@@ -185,38 +185,82 @@ label { color: var(--ink-soft); font-size: 0.85rem; }
 /* ---------------------------------------------------------------- Registra (registra.js) */
 
 .record-panel {
+  display: grid;
+  gap: 0.6rem;
   margin-bottom: 0.6rem;
   padding: 0.7rem 0.9rem;
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--radius);
 }
-.record-panel h2 { margin: 0 0 0.5rem; font-size: 1rem; color: var(--accent-deep); }
-.record-panel .hint { margin: 0.5rem 0 0; color: var(--ink-soft); font-size: 0.8rem; }
-.record-controls { display: flex; flex-wrap: wrap; gap: var(--gap); align-items: center; }
-.record-start { min-width: 8rem; }
-.record-start.recording, .icon-button.recording { background: var(--negative); border-color: var(--negative); color: #fff; }
-.icon-button.recording svg { fill: #fff; }
-.record-time { font-variant-numeric: tabular-nums; font-weight: 600; min-width: 3rem; }
-/* quanto è forte il microfono: si vede subito se sente qualcosa */
-.record-meter { width: 5rem; height: 0.4rem; border-radius: 999px; background: var(--sunken); overflow: hidden; }
-.record-meter span { display: block; height: 100%; width: 0; background: var(--accent); transition: width 0.08s; }
-.record-now { min-height: 1.3em; margin: 0.5rem 0 0.3rem; }
-.record-species { margin: 0; padding: 0; list-style: none; }
+.record-head { display: flex; flex-wrap: wrap; align-items: center; gap: 0.3rem 0.6rem; }
+.record-head h2 { margin: 0; font-size: 1rem; color: var(--accent-deep); }
+/* in che fase è: un'etichetta sola, colorata come il resto del sito */
+.record-state { padding: 0.1rem 0.6rem; border-radius: 999px; font-size: 0.85rem; font-weight: 600;
+  background: var(--sunken); color: var(--ink-soft); }
+[data-phase="ready"] .record-state { color: var(--positive); }
+[data-phase="recording"] .record-state { background: var(--negative); color: #fff; }
+[data-phase="recording"] .record-state::before { content: "● "; animation: working 0.8s ease-in-out infinite alternate; }
+[data-phase="done"] .record-state { color: var(--unsure); }
+[data-phase="error"] .record-state { color: var(--negative); }
+.record-waiting { color: var(--unsure); font-weight: 600; }
+.record-waiting:empty { display: none; }
+.record-progress { height: 0.35rem; border-radius: 999px; background: var(--sunken); overflow: hidden; }
+.record-progress span { display: block; height: 100%; width: 0; background: var(--accent); transition: width 0.2s; }
+.record-panel:not([data-phase="loading"]) .record-progress { display: none; }
+.record-options { display: flex; flex-wrap: wrap; gap: 0.4rem 1.2rem; align-items: center; font-size: 0.9rem; color: var(--ink-soft); }
+.record-option { display: inline-flex; gap: 0.4rem; align-items: center; }
+.record-option select { max-width: 16rem; }
+.record-option input { min-height: 0; width: 1.1rem; height: 1.1rem; margin: 0; }
+.record-empty { margin: 0; color: var(--ink-soft); }
+.record-empty:empty { display: none; }
+
+/* le specie: nome italiano grande, scientifico piccolo, confidenza come barra */
+.record-species { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 22rem), 1fr)); gap: 0.4rem;
+  margin: 0; padding: 0; list-style: none; }
 .record-species:empty { display: none; }
-.record-species li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 0.4rem; margin: 0.25rem 0; }
-.record-species li > span { font-weight: 600; font-variant-numeric: tabular-nums; }
-.record-species small { color: var(--ink-soft); }
-.record-species .conf-likely { color: var(--likely); }
-.record-species .conf-unsure { color: var(--unsure); }
-.record-done { margin-top: 0.5rem; display: grid; gap: 0.5rem; }
-.record-waiting { margin-left: 0.3rem; color: var(--unsure); font-weight: 600; }
-.record-species li > small { flex-basis: 100%; }
-.record-choice { flex-basis: 100%; margin: 0.15rem 0 0.35rem; }
-.record-choice button { flex: 1; }
+.record-row { display: grid; gap: 0.2rem; padding: 0.5rem 0.6rem; border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--bg); }
+.record-row.now { border-color: var(--accent); }
+.record-row.chosen { border-left: 4px solid var(--accent); }
+.record-row-head { display: flex; align-items: baseline; justify-content: space-between; gap: 0.6rem; }
+.record-names b { font-size: 1.05rem; }
+.record-names i { margin-left: 0.3rem; color: var(--ink-soft); font-size: 0.85rem; }
+.record-conf { display: inline-flex; align-items: center; gap: 0.4rem; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.record-conf-bar { width: 3.5rem; height: 0.35rem; border-radius: 999px; background: var(--sunken); overflow: hidden; }
+.record-conf-bar span { display: block; height: 100%; background: currentColor; }
+.record-conf.conf-likely { color: var(--likely); }
+.record-conf.conf-unsure { color: var(--unsure); }
+.record-row small { color: var(--ink-soft); }
+.record-live { color: var(--accent-deep); font-weight: 600; }
+.record-spans { display: flex; flex-wrap: wrap; gap: 0.3rem; align-items: center; }
+.record-span { min-height: 0; padding: 0 0.45rem; font-size: 0.8rem; border-radius: 999px; }
+.record-choice { display: flex; gap: 0.4rem; margin-top: 0.2rem; }
+.record-choice button { flex: 1; max-width: 12rem; }
+.record-choice button.on { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.record-done { display: grid; gap: 0.4rem; justify-items: start; }
 .record-done audio { width: 100%; }
 
-/* ---------------------------------------------------------------- iNaturalist panel */
+/* il bottone grande e, accanto, durata, livello e microfono; sul telefono in fondo allo schermo */
+.record-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.8rem; }
+.record-button { min-width: 11rem; min-height: 2.8rem; font-size: 1.05rem; font-weight: 600; border-radius: 999px; }
+#record-start { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+[data-phase="recording"] #record-start { background: var(--negative); border-color: var(--negative); color: #fff; }
+.record-panel:not([data-phase="done"]) :is(#record-save, #record-discard) { display: none; }
+[data-phase="done"] #record-start { display: none; }
+.record-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 0.3rem 0.6rem; color: var(--ink-soft); font-size: 0.85rem; }
+.record-time { font-variant-numeric: tabular-nums; font-weight: 600; color: var(--ink); }
+.record-panel:not([data-phase="recording"]) :is(.record-time, .record-meter) { display: none; }
+.record-meter { width: 5rem; height: 0.35rem; border-radius: 999px; background: var(--sunken); overflow: hidden; }
+.record-meter span { display: block; height: 100%; width: 0; background: var(--accent); transition: width 0.08s; }
+.record-mic-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 14rem; }
+.record-help { font-size: 0.85rem; color: var(--ink-soft); }
+.record-help summary { cursor: pointer; }
+.record-help p { margin: 0.3rem 0 0; }
+.icon-button.recording { background: var(--negative); border-color: var(--negative); }
+.icon-button.recording svg { fill: #fff; }
+
+/* ---------------------------------------------------------------- iNaturalist panel *//* ---------------------------------------------------------------- iNaturalist panel */
 
 .inat-panel {
   display: grid;
@@ -970,4 +1014,26 @@ body.selecting .status-line:not(:empty) { bottom: calc(4.8rem + env(safe-area-in
    the pulse of a button at work stays, it only fades */
 @media (prefers-reduced-motion: reduce) {
   .observation, .top-bar, .status-line, .link-here { transition: none; animation: none; }
+}
+
+/* Registra sul telefono: il bottone grande in fondo allo schermo, sotto il pollice (come Seleziona) */
+@media (max-width: 720px) {
+  .record-bar {
+    position: fixed;
+    left: 50%;
+    bottom: max(0.6rem, env(safe-area-inset-bottom));
+    z-index: 21;
+    width: calc(100% - 1rem);
+    padding: 0.55rem 0.6rem;
+    border: 1px solid var(--accent);
+    border-radius: var(--radius);
+    background: color-mix(in srgb, var(--accent) 12%, var(--surface));
+    box-shadow: 0 4px 18px rgba(0, 0, 0, 0.18);
+    transform: translateX(-50%);
+  }
+  .record-meta { order: -1; flex-basis: 100%; justify-content: center; }
+  .record-button { flex: 1; min-width: 0; }
+  #record-discard { min-height: 2.8rem; }
+  body.record-open #content { padding-bottom: 7rem; }
+  body.record-open .status-line:not(:empty) { bottom: calc(7.5rem + env(safe-area-inset-bottom)); }
 }
