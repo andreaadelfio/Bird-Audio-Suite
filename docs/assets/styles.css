@@ -205,13 +205,15 @@ label { color: var(--ink-soft); font-size: 0.85rem; }
 .record-species { margin: 0; padding: 0; list-style: none; }
 .record-species:empty { display: none; }
 .record-species li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 0.4rem; margin: 0.25rem 0; }
-.record-species label { display: inline-flex; flex-wrap: wrap; gap: 0 0.4rem; align-items: center; }
-.record-species input { min-height: 0; width: 1.2rem; height: 1.2rem; margin: 0; }
 .record-species li > span { font-weight: 600; font-variant-numeric: tabular-nums; }
 .record-species small { color: var(--ink-soft); }
 .record-species .conf-likely { color: var(--likely); }
 .record-species .conf-unsure { color: var(--unsure); }
 .record-done { margin-top: 0.5rem; display: grid; gap: 0.5rem; }
+.record-waiting { margin-left: 0.3rem; color: var(--unsure); font-weight: 600; }
+.record-species li > small { flex-basis: 100%; }
+.record-choice { flex-basis: 100%; margin: 0.15rem 0 0.35rem; }
+.record-choice button { flex: 1; }
 .record-done audio { width: 100%; }
 
 /* ---------------------------------------------------------------- iNaturalist panel */

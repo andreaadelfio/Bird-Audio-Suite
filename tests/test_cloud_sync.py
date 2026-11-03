@@ -292,34 +292,80 @@ class FailedClipTests(unittest.TestCase):
 
 
 class InboxTests(unittest.TestCase):
-    def test_recordings_made_on_the_site_go_through_the_transit_folder_like_the_live_ones(self) -> None:
+    def test_a_clip_recorded_on_the_site_gets_mp3_spectrogram_analysis_and_perch_here(self) -> None:
         from bird_audio_suite.cloud import LocalMediaStorage
 
+        name = "Merlo_20261103_071500_0.912.wav"
+
+        class Rest(FakeRest):
+            updates: list = []
+
+            def get(self, table, params):
+                assert (table, params["id"]) == ("clips", f"eq.{name}")
+                return [{"id": name, "media_path": "20261103/merlo_20261103_071500_0-912", "confidence": 0.912,
+                         "recorded_at": "2026-11-03T07:15:00+01:00", "latitude": 52.5, "longitude": 13.4,
+                         "observations": {"scientific_name": "Turdus merula"}}]
+
+            def update(self, table, filters, values):
+                self.updates.append((table, filters, values))
+
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            media, folder = root / "media", root / "detections"
-            inbox = media / "inbox"
-            inbox.mkdir(parents=True)
-            name = "Merlo_20261103_071500_0.912"
-            soundfile.write(inbox / f"{name}.wav", np.zeros(SAMPLE_RATE * 2, dtype=np.float32), SAMPLE_RATE)
-            (inbox / f"{name}.json").write_text(json.dumps({
-                "id": f"{name}.wav", "scientific_name": "Turdus merula", "english_name": "Eurasian Blackbird",
-                "recorded_at": "2026-11-03T07:15:00+01:00", "confidence": 0.912, "duration_s": 2.0,
-                "place_name": "", "latitude": 52.5, "longitude": 13.4, "segments": [[0.0, 2.0, 0.912]]}))
-            (inbox / "Pettirosso_20261103_071600_0.800.wav").write_bytes(b"RIFF")  # its JSON still on the way
-            (inbox / "..json").write_text("{}")  # not a plain name: never followed
-            storage = LocalMediaStorage(media)
-            box = outbox(folder, FakeRest(), storage)
+            media = Path(directory) / "media"
+            (media / "inbox").mkdir(parents=True)
+            soundfile.write(media / "inbox" / name, np.zeros(SAMPLE_RATE * 2, dtype=np.float32), SAMPLE_RATE)
+            (media / "inbox" / "Pettirosso_x.wav").write_bytes(b"RIFF")  # deleted from the Cestino meanwhile
+            rest = Rest(deleted=["Pettirosso_x.wav"])
+            box = outbox(Path(directory) / "detections", rest, LocalMediaStorage(media))
+            self.assertEqual(box.complete_site_clips(), 1)
+            files = sorted(str(path.relative_to(media)) for path in media.rglob("*") if path.is_file())
 
-            self.assertEqual(box.pull_inbox(), 1)
-            moved = sorted(path.name for path in folder.iterdir())
-            left = sorted(path.name for path in inbox.iterdir())
-            report = box.push()
+        self.assertEqual(files, ["20261103/merlo_20261103_071500_0-912-spectrogram.jpg",
+                                 "20261103/merlo_20261103_071500_0-912.mp3"])  # both WAVs gone from inbox/
+        table, filters, values = rest.updates[0]
+        self.assertEqual((table, filters, values["confidence"], values["perch"]),
+                         ("clips", {"id": f"eq.{name}"}, 0.812, [["Turdus merula", 0.88]]))  # the PC's analysis
 
-        self.assertEqual(moved, [f"{name}.json", f"{name}.wav"])  # no .part left behind
-        self.assertEqual(left, ["..json", "Pettirosso_20261103_071600_0.800.wav"])
-        self.assertEqual((report.sent, report.errors), (1, []))
+    def test_without_the_phones_position_the_browsers_numbers_stay(self) -> None:
+        from bird_audio_suite.cloud import LocalMediaStorage
 
+        class Rest(FakeRest):
+            updates: list = []
+
+            def get(self, table, params):
+                return [{"id": "Merlo_1.wav", "media_path": "20261103/merlo_1", "confidence": 0.91, "latitude": None,
+                         "longitude": None, "recorded_at": "2026-11-03T07:15:00+01:00",
+                         "observations": {"scientific_name": "Turdus merula"}}]
+
+            def update(self, table, filters, values):
+                self.updates.append(values)
+
+        with tempfile.TemporaryDirectory() as directory:
+            media = Path(directory) / "media"
+            (media / "inbox").mkdir(parents=True)
+            soundfile.write(media / "inbox" / "Merlo_1.wav", np.zeros(SAMPLE_RATE, dtype=np.float32), SAMPLE_RATE)
+            rest = Rest()
+            box = outbox(Path(directory) / "detections", rest, LocalMediaStorage(media))
+            box.double_check = lambda item: None  # no place: Perch cannot say either
+            self.assertEqual(box.complete_site_clips(), 1)
+            made = sorted(path.name for path in (media / "20261103").iterdir())
+
+        self.assertEqual(made, ["merlo_1-spectrogram.jpg", "merlo_1.mp3"])
+        self.assertEqual(rest.updates, [])  # confidence, bands and candidates: the browser's
+
+    def test_a_wav_whose_row_is_not_there_yet_waits(self) -> None:
+        from bird_audio_suite.cloud import LocalMediaStorage
+
+        class Rest(FakeRest):
+            def get(self, table, params):
+                return []
+
+        with tempfile.TemporaryDirectory() as directory:
+            media = Path(directory) / "media"
+            (media / "inbox").mkdir(parents=True)
+            (media / "inbox" / "Merlo_1.wav").write_bytes(b"RIFF")
+            box = outbox(Path(directory) / "detections", Rest(), LocalMediaStorage(media))
+            self.assertEqual(box.complete_site_clips(), 0)
+            self.assertTrue((media / "inbox" / "Merlo_1.wav").exists())
 
     def test_the_inbox_is_listed_with_the_storage_api(self) -> None:
         class Session:

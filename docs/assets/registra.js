@@ -1,20 +1,24 @@
 // Registra: dal sito (browser del PC o app sul telefono) si registra con il microfono e, mentre
 // registra, BirdNET (birdnet-worker.js, nel browser) ascolta finestre di 3 s e mostra le specie in
-// diretta. Alla fine la registrazione si riascolta (e si può scaricare); le specie spuntate
-// diventano clip come quelle del live (WAV + JSON) nella cartella inbox/ del bucket: il servizio
-// di invio del PC le porta in detections/ e le manda come le altre (MP3, spettrogramma, analisi
-// di BirdNET e Perch, osservazione da rivedere).
+// diretta. Alla fine la registrazione si riascolta (e si può scaricare) e per ogni specie scegli:
+// confermata, da rivedere, o niente (il default: se non scegli nulla non parte nulla). Le scelte
+// vanno subito su Supabase come le clip del live: la riga della specie, l'osservazione (con lo stato
+// scelto) e la clip (confidenza, bande e candidate di BirdNET del browser), con lo stesso media_path.
+// Il file audio va nel bucket come WAV, in inbox/: MP3 e spettrogramma (pesanti per un telefono)
+// li fa il servizio di invio del PC, entro un minuto se è acceso, con l'analisi completa e Perch,
+// poi toglie il WAV; intanto il sito suona il WAV. Senza rete la scelta resta sul telefono
+// (IndexedDB) e parte appena la rete torna.
 
 export const BIRDNET_RATE = 48000;
 const WINDOW_SECONDS = 3;
 const STEP_SECONDS = 1.5; // una finestra nuova ogni 1.5 s, se BirdNET ha finito la precedente
 const SHOW_CONFIDENCE = 0.25; // da qui una specie compare nell'elenco
-const KEEP_CONFIDENCE = 0.7; // da qui è già spuntata per essere tenuta (sotto, la spunti tu)
+const BAND_CONFIDENCE = 0.6; // bande e specie candidate da qui, come l'analisi del PC (analysis.py)
 const MAX_SECONDS = 10 * 60; // poi si ferma da sola (la memoria del telefono)
 const PRE_ROLL_SECONDS = 3; // come il live: la clip parte 3 s prima della prima detection...
 const MIN_CLIP_SECONDS = 10; // ...e dura almeno 10 s
 const BUCKET = "bird-audio";
-const INBOX = "inbox";
+const INBOX = "inbox"; // i WAV in attesa del PC (MP3 e spettrogramma)
 
 // ---------------------------------------------------------------- calcoli (senza pagina: testati)
 
@@ -100,31 +104,70 @@ export function clipRange(first, last, duration) {
   return [start, end];
 }
 
-// la clip di una specie: il nome dei file e il JSON che il PC si aspetta (lo stesso del live,
-// audio.export_detection_clips). heardAt(secondi) -> Date: l'ora vera di quel punto.
-export function clipFor(detection, samples, rate, heardAt, place = {}) {
+// come slugify_public_id del PC: senza accenti, minuscolo, il resto "-"
+export function slugify(name) {
+  return String(name).normalize("NFKD").replace(/[^\x00-\x7f]/g, "").toLowerCase()
+    .replace(/[^a-z0-9_]+/g, "-").replace(/^-+|-+$/g, "");
+}
+
+// dove stanno i file di una clip nel bucket, senza estensione: <AAAAMMGG>/<slug> (cloud.media_path_for)
+export function mediaPathFor(clipId, date) {
+  return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}/${slugify(clipId.replace(/\.wav$/i, ""))}`;
+}
+
+// tratti che si toccano o si sovrappongono diventano uno, con la confidenza più alta (merge_segments)
+export function mergeSpans(spans, gap = 0.05) {
+  const merged = [];
+  for (const [from, to, confidence] of [...spans].sort((a, b) => a[0] - b[0])) {
+    const last = merged[merged.length - 1];
+    if (last && from <= last[1] + gap) {
+      last[1] = Math.max(last[1], to);
+      last[2] = Math.max(last[2], confidence);
+    } else {
+      merged.push([from, to, confidence]);
+    }
+  }
+  return merged;
+}
+
+const round = (value, digits) => Number(value.toFixed(digits));
+
+// la clip di una specie, come la scrive il PC: l'audio (WAV), l'osservazione e la riga di
+// birds.clips. detections: tutte le specie della registrazione (per le candidate);
+// heardAt(secondi) -> Date: l'ora vera di quel punto; status: "confirmed" o "pending".
+export function clipFor(detection, detections, samples, rate, heardAt, status, place = {}) {
   const duration = samples.length / rate;
   const [start, end] = clipRange(detection.first, detection.last, duration);
   const begins = heardAt(start);
-  const name = `${safeFileName(detection.display)}_${fileStamp(begins)}_${detection.best.toFixed(3)}`;
-  const sidecar = {
-    id: `${name}.wav`,
-    scientific_name: detection.scientific,
-    english_name: detection.english,
-    recorded_at: isoWithOffset(begins),
-    confidence: Number(detection.best.toFixed(3)),
-    duration_s: Number((end - start).toFixed(2)),
-    place_name: "",
-    latitude: place.latitude ?? null,
-    longitude: place.longitude ?? null,
-    // dove BirdNET l'ha sentita, in secondi dall'inizio della clip (sul PC le ricalcola l'analisi)
-    segments: detection.windows
-      .filter(([from, to]) => to > start && from < end)
-      .map(([from, to, confidence]) => [Number((Math.max(from, start) - start).toFixed(2)),
-        Number((Math.min(to, end) - start).toFixed(2)), Number(confidence.toFixed(3))]),
-    source: "sito",
+  const id = `${safeFileName(detection.display)}_${fileStamp(begins)}_${detection.best.toFixed(3)}.wav`;
+  const inside = (windows) => windows.filter(([from, to]) => to > start && from < end);
+  // le altre specie probabili nello stesso pezzo, la sua compresa: [scientifico, inglese, confidenza]
+  const candidates = [...detections.values()]
+    .map((row) => [row.scientific, row.english, Math.max(0, ...inside(row.windows).map((w) => w[2]))])
+    .filter(([, , confidence]) => confidence >= BAND_CONFIDENCE)
+    .sort((a, b) => b[2] - a[2]).slice(0, 3)
+    .map(([scientific, english, confidence]) => [scientific, english, round(confidence, 3)]);
+  return {
+    id,
+    wav: wavBytes(samples.subarray(Math.round(start * rate), Math.round(end * rate)), rate),
+    observation: { day: isoWithOffset(begins).slice(0, 10), scientific_name: detection.scientific, status },
+    clip: {
+      id,
+      recorded_at: isoWithOffset(begins),
+      confidence: round(detection.best, 3),
+      live_confidence: round(detection.best, 3), // il PC rifà l'analisi sul file e aggiorna confidence
+      duration_s: round(end - start, 2),
+      place_name: "",
+      latitude: place.latitude ?? null,
+      longitude: place.longitude ?? null,
+      media_path: mediaPathFor(id, begins),
+      // dove BirdNET la sente da 0.6, in secondi dall'inizio della clip
+      segments: mergeSpans(inside(detection.windows).filter((w) => w[2] >= BAND_CONFIDENCE))
+        .map(([from, to, confidence]) => [round(Math.max(from, start) - start, 2), round(Math.min(to, end) - start, 2),
+          round(confidence, 3)]),
+      candidates,
+    },
   };
-  return { name, wav: wavBytes(samples.subarray(Math.round(start * rate), Math.round(end * rate)), rate), sidecar };
 }
 
 // una finestra analizzata: ogni specie sentita si aggiunge (o aggiorna) all'elenco della registrazione
@@ -134,16 +177,67 @@ export function addWindow(detections, species, from, to, nameOf) {
     const [scientific, english = ""] = label.split("_");
     const found = detections.get(scientific) || {
       scientific, english, display: nameOf(scientific, english), best: 0, first: from, last: to, windows: [],
-      keep: false,
+      choice: "", // "" (non si manda), "pending" (da rivedere) o "confirmed": la scegli tu alla fine
     };
     found.best = Math.max(found.best, confidence);
     found.last = Math.max(found.last, to);
     found.windows.push([from, to, confidence]);
-    found.keep = found.keep || confidence >= KEEP_CONFIDENCE;
     detections.set(scientific, found);
   }
   return detections;
 }
+
+// ---------------------------------------------------------------- Supabase e telefono
+
+// una clip scelta su Supabase, come le scrive il PC: il WAV nel bucket (inbox/, finché il PC non fa
+// MP3 e spettrogramma), la specie se manca, l'osservazione con lo stato scelto, la riga della clip.
+// Rifarla non duplica: se la clip c'è già, è fatta.
+export async function sendClip(supabase, item) {
+  const { data: there, error: lookError } = await supabase.from("clips").select("id").eq("id", item.id);
+  if (lookError) throw lookError;
+  if (there.length) return;
+  const { error: fileError } = await supabase.storage.from(BUCKET)
+    .upload(`${INBOX}/${item.id}`, item.wav, { contentType: "audio/wav", upsert: true });
+  if (fileError) throw fileError;
+  // la specie, se è la prima volta (i nomi e i link li aggiunge il PC entro l'ora)
+  const { error: speciesError } = await supabase.from("species")
+    .upsert({ scientific_name: item.observation.scientific_name }, { onConflict: "scientific_name", ignoreDuplicates: true });
+  if (speciesError) throw speciesError;
+  const { data: observation, error: observationError } = await supabase.from("observations")
+    .insert({ ...item.observation, reviewed_at: item.observation.status === "confirmed" ? new Date().toISOString() : null })
+    .select("id").single();
+  if (observationError) throw observationError;
+  const { error: clipError } = await supabase.from("clips").insert({ ...item.clip, observation_id: observation.id });
+  if (clipError) {
+    await supabase.from("observations").delete().eq("id", observation.id); // non resta vuota
+    throw clipError;
+  }
+}
+
+// le clip scelte e non ancora su Supabase, sul telefono (IndexedDB): ci restano anche chiudendo l'app
+function openQueue() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open("bird-audio-suite", 1);
+    request.onupgradeneeded = () => request.result.createObjectStore("registra", { keyPath: "id" });
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+function inQueue(mode, work) {
+  return openQueue().then((db) => new Promise((resolve, reject) => {
+    const transaction = db.transaction("registra", mode);
+    const request = work(transaction.objectStore("registra"));
+    transaction.oncomplete = () => resolve(request?.result);
+    transaction.onerror = () => reject(transaction.error);
+  }));
+}
+
+export const queue = {
+  put: (item) => inQueue("readwrite", (store) => store.put(item)),
+  remove: (id) => inQueue("readwrite", (store) => store.delete(id)),
+  all: () => inQueue("readonly", (store) => store.getAll()),
+};
 
 // ---------------------------------------------------------------- la pagina
 
@@ -375,19 +469,33 @@ export function setupRecorder({ client, nameOf, say, confidenceClass }) {
     drawList();
   }
 
+  const CHOICES = [["", "Non mandare"], ["pending", "Da rivedere"], ["confirmed", "✓ Confermata"]];
+
+  // ogni specie: confidenza, i tratti in cui BirdNET la sente (dall'inizio della registrazione) e,
+  // a registrazione finita, la scelta: niente (non parte nulla), da rivedere o confermata
   function drawList() {
     const rows = [...rec.detections.values()].sort((a, b) => b.best - a.best);
-    list.innerHTML = rows.map((row) => `
-      <li><label><input type="checkbox" data-keep="${escapeHtml(row.scientific)}"${row.keep ? " checked" : ""}>
-        <b>${escapeHtml(row.display)}</b> <i>${escapeHtml(row.scientific)}</i></label>
-        <span class="conf-${confidenceClass(row.best)}">${row.best.toFixed(2)}</span>
-        <small>${clock.format(heardAt(row.first))} · ${row.windows.length} ${row.windows.length === 1 ? "volta" : "volte"}</small></li>`).join("");
+    list.innerHTML = rows.map((row) => {
+      const spans = mergeSpans(row.windows).map(([from, to]) => `${minutesSeconds(from)}–${minutesSeconds(to)}`);
+      const choice = rec.running ? "" : `<span class="segmented record-choice" role="group" aria-label="${escapeHtml(row.display)}">
+        ${CHOICES.map(([value, label]) => `<button type="button" data-choice="${value}" data-species="${escapeHtml(row.scientific)}"
+          class="${row.choice === value ? "on" : ""}" aria-pressed="${row.choice === value}">${label}</button>`).join("")}</span>`;
+      return `<li><span><b>${escapeHtml(row.display)}</b> <i>${escapeHtml(row.scientific)}</i>
+        <span class="conf-${confidenceClass(row.best)}">${row.best.toFixed(2)}</span></span>
+        <small>${spans.join(", ")} · dalle ${clock.format(heardAt(row.first))}</small>${choice}</li>`;
+    }).join("");
+    const chosen = rows.filter((row) => row.choice).length;
+    const send = $("record-save");
+    send.textContent = chosen ? `Manda su Supabase (${chosen})` : "Manda su Supabase";
+    send.disabled = !chosen;
   }
 
-  list.addEventListener("change", (event) => {
-    const box = event.target.closest("[data-keep]");
-    const found = box && rec?.detections.get(box.dataset.keep);
-    if (found) found.keep = box.checked;
+  list.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-choice]");
+    const found = button && rec?.detections.get(button.dataset.species);
+    if (!found) return;
+    found.choice = button.dataset.choice;
+    drawList();
   });
 
   // l'ora vera di un punto della registrazione (secondi dall'inizio)
@@ -433,6 +541,7 @@ export function setupRecorder({ client, nameOf, say, confidenceClass }) {
     download.download = `registrazione_${fileStamp(rec.startedAt)}.wav`;
     finishTail();
     summary();
+    drawList(); // ora con le scelte
     done.classList.remove("hidden");
     return Promise.resolve();
   }
@@ -449,46 +558,88 @@ export function setupRecorder({ client, nameOf, say, confidenceClass }) {
     const count = rec.detections.size;
     now.textContent = `${minutesSeconds(rec.length / rec.rate)} registrati, ${rec.windows} `
       + `${rec.windows === 1 ? "finestra analizzata" : "finestre analizzate"}`
-      + (count ? `: ${count} specie. Spunta quelle da tenere.` : ": nessun uccello riconosciuto.")
+      + (count ? `: ${count} specie. Scegli per ognuna se è confermata o da rivedere: le altre non partono.`
+        : ": nessun uccello riconosciuto.")
       + (rec.slow > rec.windows / 3 ? " (Questo dispositivo è lento per BirdNET: ha saltato delle finestre.)" : "")
       + (rec.busy ? " Analizzo l'ultimo pezzo…" : "");
-    $("record-save").disabled = !count;
   }
 
-  // ------------------------------------------------ tenere o scartare
+  // ------------------------------------------------ mandare su Supabase (o tenere sul telefono)
 
+  // le scelte fatte: prima sul telefono (IndexedDB, così non si perdono neanche chiudendo l'app),
+  // poi su Supabase; senza rete restano lì e partono quando torna
   $("record-save").addEventListener("click", async () => {
-    const kept = [...(rec?.detections.values() || [])].filter((row) => row.keep);
-    if (!kept.length) {
-      say("Nessuna specie spuntata.");
-      return;
-    }
-    const supabase = client();
-    if (!supabase) {
-      say("Senza connessione a Supabase: scarica il WAV, oppure riprova quando c'è rete.", true);
-      return;
-    }
+    const chosen = [...(rec?.detections.values() || [])].filter((row) => row.choice);
+    if (!chosen.length) return;
     const button = $("record-save");
     button.disabled = true;
     try {
-      for (const [index, detection] of kept.entries()) {
-        say(`Salvo ${index + 1} di ${kept.length}: ${detection.display}…`);
-        const clip = clipFor(detection, rec.samples, rec.rate, heardAt, place);
-        // prima il WAV, poi il JSON: il PC prende una clip solo quando c'è il JSON (è completa)
-        for (const [file, body, type] of [[`${clip.name}.wav`, clip.wav, "audio/wav"],
-          [`${clip.name}.json`, new TextEncoder().encode(JSON.stringify(clip.sidecar)), "application/json"]]) {
-          const { error } = await supabase.storage.from(BUCKET).upload(`${INBOX}/${file}`, body, { contentType: type, upsert: true });
-          if (error) throw error;
+      for (const detection of chosen) {
+        const item = clipFor(detection, rec.detections, rec.samples, rec.rate, heardAt, detection.choice, place);
+        await queue.put(item);
+      }
+    } catch (error) {
+      say(`Non salvata sul telefono: ${error.message}. Scarica il WAV per non perderla.`, true);
+      button.disabled = false;
+      return;
+    }
+    discard();
+    now.textContent = "";
+    await sendWaiting(chosen.length);
+  });
+
+  // manda quello che aspetta sul telefono; chosen: quante ne hai appena scelte (per il messaggio)
+  let sending = false;
+  async function sendWaiting(chosen = 0) {
+    const supabase = client();
+    if (sending) return;
+    sending = true;
+    let sent = 0;
+    let failure = null;
+    try {
+      const items = await queue.all();
+      for (const item of items) {
+        if (!supabase || !navigator.onLine) break;
+        say(`Mando ${sent + 1} di ${items.length}: ${item.observation.scientific_name}…`);
+        try {
+          await sendClip(supabase, item);
+          await queue.remove(item.id);
+          sent += 1;
+        } catch (error) {
+          failure = error;
+          break; // rete caduta a metà: le altre aspettano con lei
         }
       }
-      say(`Tenute ${kept.length} ${kept.length === 1 ? "clip" : "clip"}: il PC le porta tra le Osservazioni da rivedere `
-        + "(entro un minuto, se è acceso; altrimenti appena si accende).");
-      discard();
+      const left = (await queue.all()).length;
+      showWaiting(left);
+      if (sent && !left) {
+        say(`Mandate ${sent} su Supabase: sono tra le Osservazioni. MP3 e spettrogramma li aggiunge il PC `
+          + "(entro un minuto se è acceso), intanto si ascolta il WAV.");
+      } else if (left && (chosen || failure)) {
+        say(`${left} ${left === 1 ? "clip resta" : "clip restano"} sul telefono: ${failure ? errorText(failure) : "nessuna rete"}. `
+          + "Partono da sole appena c'è rete.", Boolean(failure));
+      }
     } catch (error) {
-      say(`Non salvata: ${error.message}. La registrazione resta qui: riprova o scaricala.`, true);
-      button.disabled = false;
+      say(`Registra: ${error.message}`, true);
+    } finally {
+      sending = false;
     }
-  });
+  }
+
+  function errorText(error) {
+    return /failed to fetch|network|load failed/i.test(error.message) ? "nessuna rete" : error.message;
+  }
+
+  function showWaiting(left) {
+    const label = $("record-waiting");
+    label.textContent = left ? `${left} ${left === 1 ? "clip" : "clip"} sul telefono, in attesa di rete` : "";
+  }
+
+  window.addEventListener("online", () => sendWaiting());
+  queue.all().then((items) => {
+    showWaiting(items.length);
+    if (items.length) sendWaiting();
+  }).catch(() => {});
 
   $("record-discard").addEventListener("click", () => {
     if (rec?.detections.size && !window.confirm("Scartare la registrazione? Non è stata salvata.")) return;

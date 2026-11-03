@@ -29,7 +29,7 @@ class FakeOutbox:
             raise RuntimeError("offline")
         self.published += 1
 
-    def pull_inbox(self):
+    def complete_site_clips(self):
         if self.offline:
             raise RuntimeError("offline")
         return 0

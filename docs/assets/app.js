@@ -2,7 +2,7 @@
 // Data: Supabase schema `birds` (see supabase/birds_schema.sql), open to the publishable key.
 // The site changes only the review columns; everything else is written by `bird_audio_cli.py sync`.
 
-import { setupRecorder } from "./registra.js?v=2";
+import { setupRecorder } from "./registra.js?v=3";
 
 const config = window.APP_CONFIG || {};
 const PAGE_SIZE = 25;
@@ -29,6 +29,21 @@ const MEDIA_BASE = config.mediaBaseUrl || `${config.supabaseUrl}/storage/v1/obje
 function mediaUrls(mediaPath) {
   const base = `${MEDIA_BASE}/${String(mediaPath || "").split("/").map(encodeURIComponent).join("/")}`;
   return { audio: `${base}.mp3`, spectrogram: `${base}-spectrogram.jpg` };
+}
+
+// a clip recorded on the site (Registra) is a WAV in inbox/ until the PC makes its MP3 and
+// spectrogram (within a minute when it is on): played, cut and sent to iNaturalist from there
+function inboxUrl(clipId) {
+  return `${MEDIA_BASE}/inbox/${encodeURIComponent(clipId)}`;
+}
+
+// the audio of a clip: its MP3, or the WAV still in inbox/; { response, extension }
+async function clipAudio(clip) {
+  const mp3 = await fetch(mediaUrls(clip.media_path).audio);
+  if (mp3.ok) return { response: mp3, extension: ".mp3" };
+  const wav = await fetch(inboxUrl(clip.id));
+  if (wav.ok) return { response: wav, extension: ".wav" };
+  throw new Error(`audio non scaricabile (${mp3.status})`);
 }
 
 // everything about an observation that is computed from its clips, never stored
@@ -1028,7 +1043,16 @@ async function saveTrim(figure, start, end) {
 // browser's "no supported sources"
 content.addEventListener("error", (event) => {
   if (event.target.matches?.(".spectrogram")) event.target.closest(".spectrogram-box").classList.add("no-image");
-  if (event.target.matches?.("audio") && event.target.getAttribute("src")) {
+  const audio = event.target.matches?.("audio") ? event.target : null;
+  const figure = audio?.closest(".clip");
+  if (audio && figure && audio.getAttribute("src")?.endsWith(".mp3") && !audio.dataset.inbox) {
+    // recorded on the site, its MP3 not made yet by the PC: the WAV in inbox/
+    audio.dataset.inbox = "1";
+    audio.src = inboxUrl(figure.dataset.clip);
+    audio.play().catch(playFailed);
+    return;
+  }
+  if (audio && audio.getAttribute("src")) {
     setStatus("Audio non disponibile: nessuna connessione, o il file non è più su Supabase.", true);
   }
 }, true);
@@ -1145,7 +1169,7 @@ function denoiseInWorker(samples, rate, segments, options) {
 async function denoisedUrl(clip, level) {
   const key = `${clip.id}|${level}`;
   if (!denoisedUrls.has(key)) {
-    const { samples, rate } = await decodeMono(mediaUrls(clip.media_path).audio);
+    const { samples, rate } = await decodeMono(clip);
     const cleaned = await denoiseInWorker(samples, rate, clipSegments(clip), DENOISE_LEVELS[level].options);
     denoisedUrls.set(key, URL.createObjectURL(wavBlob(cleaned, rate)));
   }
@@ -1171,7 +1195,8 @@ async function cycleDenoise(figure, button) {
   const audio = figure.querySelector("audio");
   button.classList.add("working");
   try {
-    swapSource(audio, level ? await denoisedUrl(found.clip, level) : mediaUrls(found.clip.media_path).audio);
+    const original = audio.dataset.inbox ? inboxUrl(found.clip.id) : mediaUrls(found.clip.media_path).audio;
+    swapSource(audio, level ? await denoisedUrl(found.clip, level) : original);
     player.denoise = level;
     button.classList.toggle("on", level > 0);
     button.classList.toggle("strong", level === 2);
@@ -1895,7 +1920,7 @@ async function removeFiles(clips) {
   }
   const stillUsed = new Set(sharing.filter((row) => !ids.includes(row.id) && !row.media_deleted_at).map((row) => row.media_path));
   const paths = config.mediaBaseUrl ? [] : clips.filter((clip) => !stillUsed.has(clip.media_path))
-    .flatMap((clip) => [`${clip.media_path}.mp3`, `${clip.media_path}-spectrogram.jpg`]);
+    .flatMap((clip) => [`${clip.media_path}.mp3`, `${clip.media_path}-spectrogram.jpg`, `inbox/${clip.id}`]);
   for (const part of chunks(paths, 100)) {
     const { error: removeError } = await state.client.storage.from(BUCKET).remove(part);
     if (removeError) throw removeError;
@@ -2083,9 +2108,8 @@ async function resolveTaxonId(scientificName) {
 
 // the trimmed part of a clip as a 16-bit mono WAV, built in the browser from its MP3
 // a clip's MP3 as mono samples at 48 kHz (from the browser cache once it has been played)
-async function decodeMono(url) {
-  const response = await fetch(url);
-  if (!response.ok) throw new Error(`audio non scaricabile (${response.status})`);
+async function decodeMono(clip) {
+  const { response } = await clipAudio(clip);
   const decoded = await new OfflineAudioContext(1, 1, 48000).decodeAudioData(await response.arrayBuffer());
   return { samples: decoded.getChannelData(0), rate: decoded.sampleRate };
 }
@@ -2115,8 +2139,8 @@ function wavBlob(samples, rate) {
 }
 
 // the trimmed part of a clip as a WAV, built in the browser from its MP3
-async function trimmedWav(url, start, end) {
-  const { samples, rate } = await decodeMono(url);
+async function trimmedWav(clip, start, end) {
+  const { samples, rate } = await decodeMono(clip);
   return wavBlob(samples.subarray(Math.floor(start * rate), Math.min(samples.length, Math.ceil(end * rate))), rate);
 }
 
@@ -2181,12 +2205,11 @@ async function uploadObservationToInat(observation, onProgress = () => {}) {
     form.append("observation_sound[observation_id]", String(observation.inat_observation_id));
     if (isTrimmed(clip)) {
       // only the part kept on the site
-      const wav = await trimmedWav(mediaUrls(clip.media_path).audio, Number(clip.trim_start_s), Number(clip.trim_end_s));
+      const wav = await trimmedWav(clip, Number(clip.trim_start_s), Number(clip.trim_end_s));
       form.append("file", wav, clip.id);
     } else {
-      const audio = await fetch(mediaUrls(clip.media_path).audio);
-      if (!audio.ok) throw new Error(`audio non scaricabile (${audio.status})`);
-      form.append("file", await audio.blob(), clip.id.replace(/\.wav$/i, ".mp3"));
+      const { response, extension } = await clipAudio(clip);
+      form.append("file", await response.blob(), clip.id.replace(/\.wav$/i, extension));
     }
     const sound = await inatRequest("/observation_sounds", { method: "POST", body: form });
     const soundId = Array.isArray(sound) ? sound[0]?.id : sound?.id;

@@ -41,8 +41,8 @@ from .species_links import species_codes
 DEFAULT_CLOUD_CONFIG = Path.home() / ".config" / "bird-audio-suite" / "cloud.env"
 DEFAULT_CACHE_DIR = Path.home() / ".cache" / "bird-audio-suite"
 STORAGE_BUCKET = "bird-audio"
-# recordings made on the site (Registra, phone or browser): WAV + JSON like the live's, left in this
-# folder of the bucket; the uploader moves them into detections/ and sends them like the others
+# recordings made on the site (Registra, phone or browser): their rows are written by the site, their
+# audio waits here as a WAV until the uploader makes MP3 and spectrogram (Outbox.complete_site_clips)
 INBOX = "inbox"
 SAFE_NAME = re.compile(r"^[^/\\.][^/\\]*$")  # a plain file name, nothing that climbs out of the folder
 SCHEMA = "birds"
@@ -613,30 +613,60 @@ class Outbox:
         item.wav.unlink(missing_ok=True)
         item.sidecar.unlink(missing_ok=True)
 
-    def pull_inbox(self) -> int:
-        """Recordings made on the site (Registra): from the bucket's inbox/ into the transit folder,
-        where push() sends them like the live's clips (MP3, spectrogram, analysis, observation).
-        A clip is complete when its JSON is there (the site uploads it last); each file is written
-        aside and renamed, and leaves the inbox only once both are here. Returns how many."""
+    def complete_site_clips(self) -> int:
+        """Clips recorded on the site (Registra): the browser writes their rows (observation with
+        the status you chose, clip with its BirdNET numbers) and leaves the audio as a WAV in the
+        bucket's inbox/, named as the clip. Here they get what the PC does for the live's: MP3 and
+        spectrogram at their media_path, BirdNET's analysis of the file and Perch; then the WAV
+        goes. One deleted from the Cestino meanwhile only loses its WAV. Returns how many."""
         self._connect()
-        names = set(self.storage.list(INBOX))
-        self.folder.mkdir(parents=True, exist_ok=True)
-        pulled = 0
-        for name in sorted(names):
-            wav_name = name[:-5] + ".wav"
-            if not name.endswith(".json") or wav_name not in names or not SAFE_NAME.match(name):
+        names = [name for name in self.storage.list(INBOX) if name.endswith(".wav") and SAFE_NAME.match(name)]
+        if not names:
+            return 0
+        deleted = self.rest.existing_ids("deleted_clips", names)
+        done = 0
+        for name in names:
+            path = f"{INBOX}/{name}"
+            if name in deleted:
+                self.storage.remove([path])
                 continue
-            data = json.loads(self.storage.read_bytes(f"{INBOX}/{name}"))
-            if data.get("id") != wav_name or not data.get("scientific_name") or not data.get("recorded_at"):
-                continue  # not one of ours: left where it is
-            for file_name, content in ((wav_name, self.storage.read_bytes(f"{INBOX}/{wav_name}")),
-                                       (name, json.dumps(data, ensure_ascii=False).encode("utf-8"))):
-                partial = self.folder / (file_name + ".part")
-                partial.write_bytes(content)
-                partial.replace(self.folder / file_name)
-            self.storage.remove([f"{INBOX}/{wav_name}", f"{INBOX}/{name}"])
-            pulled += 1
-        return pulled
+            rows = self.rest.get("clips", {"select": "id,media_path,recorded_at,latitude,longitude,confidence,"
+                                                     "observations(scientific_name)", "id": f"eq.{name}"})
+            if not rows:
+                continue  # its row comes right after the file: the next round
+            clip = rows[0]
+            with tempfile.TemporaryDirectory() as work:
+                wav = Path(work) / "clip.wav"
+                wav.write_bytes(self.storage.read_bytes(path))
+                self.storage.upload(self.encode(wav, Path(work) / "clip.mp3"), f"{clip['media_path']}.mp3")
+                self.storage.upload(self.render(wav, Path(work) / "spectrogram.jpg"), f"{clip['media_path']}-spectrogram.jpg")
+                item = OutboxItem(wav, wav.with_suffix(".json"), {
+                    "id": name, "scientific_name": clip["observations"]["scientific_name"],
+                    "recorded_at": clip["recorded_at"], "latitude": clip["latitude"], "longitude": clip["longitude"],
+                    "confidence": clip["confidence"]})
+                changes = {}
+                # BirdNET on the file, like the live's clips (the browser's score stays in live_confidence);
+                # only where the phone gave its position: without, the analysis here would filter the
+                # species by config.py's place, the browser did not filter, and its numbers stay
+                if clip["latitude"] is not None and clip["longitude"] is not None:
+                    try:
+                        analysis = self.analyse(item)
+                        changes.update(confidence=analysis["confidence"], segments=analysis["segments"],
+                                       candidates=analysis["candidates"])
+                    except Exception as exc:
+                        print(f"{datetime.now():%H:%M:%S} - {name}: analisi BirdNET non riuscita ({exc!r}), "
+                              "restano i numeri del sito")
+                try:
+                    perch_heard = self.double_check(item)
+                    if perch_heard is not None:
+                        changes["perch"] = perch_heard
+                except Exception as exc:  # the hourly fill_perch adds it later
+                    print(f"{datetime.now():%H:%M:%S} - {name}: Perch non riuscito ({exc!r})")
+            if changes:
+                self.rest.update("clips", {"id": f"eq.{name}"}, changes)
+            self.storage.remove([path])
+            done += 1
+        return done
 
     def publish_settings(self) -> None:
         """The config.py values the site needs too (the "likely" threshold), into

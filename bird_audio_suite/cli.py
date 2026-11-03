@@ -1928,9 +1928,9 @@ def run_sync(args: argparse.Namespace) -> int:
         return 0
     outbox = make_outbox()
     try:
-        pulled = outbox.pull_inbox()  # the site's recordings (Registra) first: they go out with the rest
-        if pulled:
-            print(f"Dal sito (Registra): {pulled} clip in {args.detections_dir}")
+        completed = outbox.complete_site_clips()  # the site's recordings (Registra): MP3, spectrogram, analysis
+        if completed:
+            print(f"Dal sito (Registra): completate {completed} clip")
     except Exception as exc:
         print(f"  registrazioni del sito non lette: {exc}")
     report = outbox.push(limit=args.limit)

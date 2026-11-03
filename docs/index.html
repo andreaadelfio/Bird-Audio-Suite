@@ -16,7 +16,7 @@
     <link rel="manifest" href="./manifest.webmanifest">
     <link rel="icon" type="image/png" sizes="64x64" href="./assets/favicon-64.png">
     <link rel="apple-touch-icon" href="./assets/apple-touch-icon.png">
-    <link rel="stylesheet" href="./assets/styles.css?v=78">
+    <link rel="stylesheet" href="./assets/styles.css?v=79">
   </head>
   <body>
     <div class="page-shell">
@@ -60,7 +60,7 @@
       </header>
 
       <section id="record-panel" class="record-panel hidden" aria-label="Registra">
-        <h2>Registra <span id="record-state" class="inat-state"></span></h2>
+        <h2>Registra <span id="record-state" class="inat-state"></span> <small id="record-waiting" class="record-waiting"></small></h2>
         <div class="record-controls">
           <button id="record-start" class="primary record-start" type="button" disabled>● Registra</button>
           <span id="record-time" class="record-time">0:00</span>
@@ -72,7 +72,7 @@
         <div id="record-done" class="record-done hidden">
           <audio id="record-audio" controls preload="metadata"></audio>
           <div class="inat-row">
-            <button id="record-save" class="primary" type="button">Tieni le spuntate</button>
+            <button id="record-save" class="primary" type="button" disabled>Manda su Supabase</button>
             <a id="record-download" class="species-link" href="#">Scarica il WAV</a>
             <button id="record-discard" type="button">Scarta</button>
           </div>
@@ -80,7 +80,9 @@
         <p class="hint">BirdNET gira qui, nel browser (la prima volta scarica ~50 MB, ~30 in più con la posizione;
           poi restano sul dispositivo e funziona anche senza rete). Tieni l'app aperta: lo schermo resta acceso da solo. Se passi a
           un'altra app o spegni lo schermo, Android può fermare il microfono: la registrazione riprende
-          quando torni, senza il pezzo mancante. Le specie tenute arrivano tra le Osservazioni tramite il PC.</p>
+          quando torni, senza il pezzo mancante. Alla fine scegli per ogni specie "confermata" o "da rivedere": vanno
+          subito tra le Osservazioni (senza rete restano sul telefono e partono quando torna); MP3 e spettrogramma li
+          aggiunge il PC quando è acceso.</p>
       </section>
 
       <section id="inat-panel" class="inat-panel hidden" aria-label="iNaturalist">
@@ -162,6 +164,6 @@
     <!-- the iNaturalist widget of andreaadelfio.github.io (repository inat-widget), for the Report -->
     <script defer src="https://andreaadelfio.github.io/inat-widget/inat-widget-custom.js"></script>
     <script src="./assets/config.js?v=52"></script>
-    <script type="module" src="./assets/app.js?v=105"></script>
+    <script type="module" src="./assets/app.js?v=106"></script>
   </body>
 </html>
