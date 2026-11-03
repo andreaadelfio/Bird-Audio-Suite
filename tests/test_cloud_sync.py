@@ -291,6 +291,52 @@ class FailedClipTests(unittest.TestCase):
         self.assertIn("Perch non riuscito", printed.getvalue())
 
 
+class InboxTests(unittest.TestCase):
+    def test_recordings_made_on_the_site_go_through_the_transit_folder_like_the_live_ones(self) -> None:
+        from bird_audio_suite.cloud import LocalMediaStorage
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            media, folder = root / "media", root / "detections"
+            inbox = media / "inbox"
+            inbox.mkdir(parents=True)
+            name = "Merlo_20261103_071500_0.912"
+            soundfile.write(inbox / f"{name}.wav", np.zeros(SAMPLE_RATE * 2, dtype=np.float32), SAMPLE_RATE)
+            (inbox / f"{name}.json").write_text(json.dumps({
+                "id": f"{name}.wav", "scientific_name": "Turdus merula", "english_name": "Eurasian Blackbird",
+                "recorded_at": "2026-11-03T07:15:00+01:00", "confidence": 0.912, "duration_s": 2.0,
+                "place_name": "", "latitude": 52.5, "longitude": 13.4, "segments": [[0.0, 2.0, 0.912]]}))
+            (inbox / "Pettirosso_20261103_071600_0.800.wav").write_bytes(b"RIFF")  # its JSON still on the way
+            (inbox / "..json").write_text("{}")  # not a plain name: never followed
+            storage = LocalMediaStorage(media)
+            box = outbox(folder, FakeRest(), storage)
+
+            self.assertEqual(box.pull_inbox(), 1)
+            moved = sorted(path.name for path in folder.iterdir())
+            left = sorted(path.name for path in inbox.iterdir())
+            report = box.push()
+
+        self.assertEqual(moved, [f"{name}.json", f"{name}.wav"])  # no .part left behind
+        self.assertEqual(left, ["..json", "Pettirosso_20261103_071600_0.800.wav"])
+        self.assertEqual((report.sent, report.errors), (1, []))
+
+
+    def test_the_inbox_is_listed_with_the_storage_api(self) -> None:
+        class Session:
+            headers: dict = {}
+            sent = None
+
+            def post(self, url, json=None, timeout=None):
+                Session.sent = (url, json)
+                return types.SimpleNamespace(status_code=200, text="", json=lambda: [
+                    {"name": "Merlo_1.wav", "id": "7f"}, {"name": "vecchie", "id": None}])
+
+        storage = SupabaseStorage(CloudConfig(supabase_url="https://abc.supabase.co", supabase_key="k"), session=Session())
+        self.assertEqual(storage.list("inbox"), ["Merlo_1.wav"])  # a subfolder (no id) is not a file
+        self.assertEqual(Session.sent, ("https://abc.supabase.co/storage/v1/object/list/bird-audio",
+                                        {"prefix": "inbox", "limit": 1000, "offset": 0}))
+
+
 class ObservationVisitTests(unittest.TestCase):
     def test_clips_within_ten_minutes_are_one_observation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

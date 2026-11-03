@@ -16,7 +16,7 @@
     <link rel="manifest" href="./manifest.webmanifest">
     <link rel="icon" type="image/png" sizes="64x64" href="./assets/favicon-64.png">
     <link rel="apple-touch-icon" href="./assets/apple-touch-icon.png">
-    <link rel="stylesheet" href="./assets/styles.css?v=75">
+    <link rel="stylesheet" href="./assets/styles.css?v=78">
   </head>
   <body>
     <div class="page-shell">
@@ -43,6 +43,12 @@
               <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0 0 14 8v8a4.5 4.5 0 0 0 2.5-4zM14 3.2v2.1a7 7 0 0 1 0 13.4v2.1a9 9 0 0 0 0-17.6z"/>
             </svg>
           </button>
+          <button id="record-toggle" class="icon-button" type="button" title="Registra: BirdNET ascolta con te, in diretta"
+            aria-label="Registra" aria-expanded="false" aria-controls="record-panel">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z"/>
+            </svg>
+          </button>
           <button id="inat-toggle" class="pill-button" type="button" title="Collega iNaturalist e carica le confermate"
             aria-expanded="false" aria-controls="inat-panel">iNat</button>
           <button id="refresh" class="icon-button" type="button" title="Ricarica" aria-label="Ricarica">
@@ -52,6 +58,30 @@
           </button>
         </div>
       </header>
+
+      <section id="record-panel" class="record-panel hidden" aria-label="Registra">
+        <h2>Registra <span id="record-state" class="inat-state"></span></h2>
+        <div class="record-controls">
+          <button id="record-start" class="primary record-start" type="button" disabled>● Registra</button>
+          <span id="record-time" class="record-time">0:00</span>
+          <span class="record-meter" aria-hidden="true"><span id="record-level"></span></span>
+          <label class="inline-label"><input id="record-place" type="checkbox"> usa la mia posizione</label>
+        </div>
+        <p id="record-now" class="record-now" aria-live="polite"></p>
+        <ol id="record-species" class="record-species"></ol>
+        <div id="record-done" class="record-done hidden">
+          <audio id="record-audio" controls preload="metadata"></audio>
+          <div class="inat-row">
+            <button id="record-save" class="primary" type="button">Tieni le spuntate</button>
+            <a id="record-download" class="species-link" href="#">Scarica il WAV</a>
+            <button id="record-discard" type="button">Scarta</button>
+          </div>
+        </div>
+        <p class="hint">BirdNET gira qui, nel browser (la prima volta scarica ~50 MB, ~30 in più con la posizione;
+          poi restano sul dispositivo e funziona anche senza rete). Tieni l'app aperta: lo schermo resta acceso da solo. Se passi a
+          un'altra app o spegni lo schermo, Android può fermare il microfono: la registrazione riprende
+          quando torni, senza il pezzo mancante. Le specie tenute arrivano tra le Osservazioni tramite il PC.</p>
+      </section>
 
       <section id="inat-panel" class="inat-panel hidden" aria-label="iNaturalist">
         <div class="inat-connect">
@@ -132,6 +162,6 @@
     <!-- the iNaturalist widget of andreaadelfio.github.io (repository inat-widget), for the Report -->
     <script defer src="https://andreaadelfio.github.io/inat-widget/inat-widget-custom.js"></script>
     <script src="./assets/config.js?v=52"></script>
-    <script type="module" src="./assets/app.js?v=103"></script>
+    <script type="module" src="./assets/app.js?v=105"></script>
   </body>
 </html>

@@ -182,6 +182,38 @@ label { color: var(--ink-soft); font-size: 0.85rem; }
 .volume-value { min-width: 3.6rem; font-weight: 600; font-variant-numeric: tabular-nums; }
 #volume-toggle { display: none; }
 
+/* ---------------------------------------------------------------- Registra (registra.js) */
+
+.record-panel {
+  margin-bottom: 0.6rem;
+  padding: 0.7rem 0.9rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+.record-panel h2 { margin: 0 0 0.5rem; font-size: 1rem; color: var(--accent-deep); }
+.record-panel .hint { margin: 0.5rem 0 0; color: var(--ink-soft); font-size: 0.8rem; }
+.record-controls { display: flex; flex-wrap: wrap; gap: var(--gap); align-items: center; }
+.record-start { min-width: 8rem; }
+.record-start.recording, .icon-button.recording { background: var(--negative); border-color: var(--negative); color: #fff; }
+.icon-button.recording svg { fill: #fff; }
+.record-time { font-variant-numeric: tabular-nums; font-weight: 600; min-width: 3rem; }
+/* quanto è forte il microfono: si vede subito se sente qualcosa */
+.record-meter { width: 5rem; height: 0.4rem; border-radius: 999px; background: var(--sunken); overflow: hidden; }
+.record-meter span { display: block; height: 100%; width: 0; background: var(--accent); transition: width 0.08s; }
+.record-now { min-height: 1.3em; margin: 0.5rem 0 0.3rem; }
+.record-species { margin: 0; padding: 0; list-style: none; }
+.record-species:empty { display: none; }
+.record-species li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 0.4rem; margin: 0.25rem 0; }
+.record-species label { display: inline-flex; flex-wrap: wrap; gap: 0 0.4rem; align-items: center; }
+.record-species input { min-height: 0; width: 1.2rem; height: 1.2rem; margin: 0; }
+.record-species li > span { font-weight: 600; font-variant-numeric: tabular-nums; }
+.record-species small { color: var(--ink-soft); }
+.record-species .conf-likely { color: var(--likely); }
+.record-species .conf-unsure { color: var(--unsure); }
+.record-done { margin-top: 0.5rem; display: grid; gap: 0.5rem; }
+.record-done audio { width: 100%; }
+
 /* ---------------------------------------------------------------- iNaturalist panel */
 
 .inat-panel {

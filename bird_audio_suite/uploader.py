@@ -5,7 +5,9 @@ MP3, spectrogram (seconds and 100+ MB for a long clip) and the upload, happens h
 process with low CPU and disk priority (systemd unit bird-audio-suite-sync): nothing of it can
 slow the listening down, not even through Python's GIL.
 
-It looks at the folder every few seconds, so a clip is on Supabase moments after it closes;
+Every minute it also brings in the recordings made on the site (Registra: WAV + JSON in the bucket's
+inbox/, Outbox.pull_inbox), which then go like the live's. It looks at the folder every few
+seconds, so a clip is on Supabase moments after it closes;
 what failed (offline) is tried again every minute (the log says it once, and when it is over).
 Once an hour it also tidies up (Outbox.tidy: files of observations on iNaturalist that the site
 could not remove after the upload, empty observations, iNaturalist's species, names of new
@@ -146,6 +148,8 @@ def run_uploader(
     last_signature = None
     last_error = ""  # logged once, not every minute while it lasts (a night offline)
     last_push = -retry_seconds
+    last_pull = -retry_seconds  # the site's recordings (Registra), looked for once a minute
+    pull_error = ""
     last_purge = -purge_every_seconds
     settings_due, settings_tried, settings_failed = True, -retry_seconds, False
     while not should_stop():
@@ -162,6 +166,16 @@ def run_uploader(
                 if not settings_failed:
                     log(f"{datetime.now():%H:%M:%S} - soglie per il sito non inviate: {exc!r}")
                 settings_failed = True
+        if clock() - last_pull >= retry_seconds:
+            last_pull = clock()
+            try:
+                pulled, pull_error = outbox.pull_inbox(), ""
+                if pulled:
+                    log(f"{datetime.now():%H:%M:%S} - dal sito (Registra): {pulled} clip in detections/")
+            except Exception as exc:  # offline: the next minute (said once, like the push errors)
+                if same_error(repr(exc)) != pull_error:
+                    log(f"{datetime.now():%H:%M:%S} - registrazioni del sito non lette: {exc!r}")
+                pull_error = same_error(repr(exc))
         signature = folder_signature(detections_dir)
         # push when the folder changed, and every retry_seconds anyway (failed clips, fresh status)
         if signature != last_signature or clock() - last_push >= retry_seconds:

@@ -29,6 +29,11 @@ class FakeOutbox:
             raise RuntimeError("offline")
         self.published += 1
 
+    def pull_inbox(self):
+        if self.offline:
+            raise RuntimeError("offline")
+        return 0
+
     def tidy(self):
         self.purges += 1
         return {"purged": 0, "emptied": 0}, (["emptied: ConnectionError()"] if self.tidy_fails else [])

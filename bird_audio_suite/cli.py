@@ -1926,7 +1926,14 @@ def run_sync(args: argparse.Namespace) -> int:
         print(f"{datetime.now():%H:%M:%S} - Invio a Supabase: guardo {args.detections_dir}")
         run_uploader(Path(args.detections_dir), make_outbox)
         return 0
-    report = make_outbox().push(limit=args.limit)
+    outbox = make_outbox()
+    try:
+        pulled = outbox.pull_inbox()  # the site's recordings (Registra) first: they go out with the rest
+        if pulled:
+            print(f"Dal sito (Registra): {pulled} clip in {args.detections_dir}")
+    except Exception as exc:
+        print(f"  registrazioni del sito non lette: {exc}")
+    report = outbox.push(limit=args.limit)
     if report.busy:
         print("Un altro invio e' in corso (il servizio di invio): riprovo dopo.")
         return 0

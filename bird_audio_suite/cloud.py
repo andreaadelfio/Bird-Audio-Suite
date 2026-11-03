@@ -41,6 +41,10 @@ from .species_links import species_codes
 DEFAULT_CLOUD_CONFIG = Path.home() / ".config" / "bird-audio-suite" / "cloud.env"
 DEFAULT_CACHE_DIR = Path.home() / ".cache" / "bird-audio-suite"
 STORAGE_BUCKET = "bird-audio"
+# recordings made on the site (Registra, phone or browser): WAV + JSON like the live's, left in this
+# folder of the bucket; the uploader moves them into detections/ and sends them like the others
+INBOX = "inbox"
+SAFE_NAME = re.compile(r"^[^/\\.][^/\\]*$")  # a plain file name, nothing that climbs out of the folder
 SCHEMA = "birds"
 INAT_OBSERVATIONS_URL = "https://api.inaturalist.org/v1/observations"
 SPECIES_RANK_LEVEL = 10  # iNaturalist's rank_level of a species (subspecies 5, genus 20)
@@ -251,6 +255,14 @@ class SupabaseStorage:
         response.raise_for_status()
         return response.content
 
+    def list(self, folder: str) -> list[str]:
+        """Names of the files in a folder of the bucket."""
+        response = self.session.post(f"{self.base}/object/list/{self.bucket}", timeout=60,
+                                     json={"prefix": folder, "limit": 1000, "offset": 0})
+        if response.status_code >= 400:
+            raise RuntimeError(f"Supabase Storage list failed ({response.status_code}): {response.text[:300]}")
+        return [item["name"] for item in response.json() if item.get("id")]  # without id: a subfolder
+
     def remove(self, object_paths: list[str]) -> None:
         """Delete files (missing ones are not an error)."""
         if not object_paths:
@@ -277,6 +289,10 @@ class LocalMediaStorage:
 
     def read_bytes(self, object_path: str) -> bytes:
         return (self.folder / object_path).read_bytes()
+
+    def list(self, folder: str) -> list[str]:
+        path = self.folder / folder
+        return sorted(entry.name for entry in path.iterdir() if entry.is_file()) if path.is_dir() else []
 
     def remove(self, object_paths: list[str]) -> None:
         for object_path in object_paths:
@@ -596,6 +612,31 @@ class Outbox:
     def _remove(item: OutboxItem) -> None:
         item.wav.unlink(missing_ok=True)
         item.sidecar.unlink(missing_ok=True)
+
+    def pull_inbox(self) -> int:
+        """Recordings made on the site (Registra): from the bucket's inbox/ into the transit folder,
+        where push() sends them like the live's clips (MP3, spectrogram, analysis, observation).
+        A clip is complete when its JSON is there (the site uploads it last); each file is written
+        aside and renamed, and leaves the inbox only once both are here. Returns how many."""
+        self._connect()
+        names = set(self.storage.list(INBOX))
+        self.folder.mkdir(parents=True, exist_ok=True)
+        pulled = 0
+        for name in sorted(names):
+            wav_name = name[:-5] + ".wav"
+            if not name.endswith(".json") or wav_name not in names or not SAFE_NAME.match(name):
+                continue
+            data = json.loads(self.storage.read_bytes(f"{INBOX}/{name}"))
+            if data.get("id") != wav_name or not data.get("scientific_name") or not data.get("recorded_at"):
+                continue  # not one of ours: left where it is
+            for file_name, content in ((wav_name, self.storage.read_bytes(f"{INBOX}/{wav_name}")),
+                                       (name, json.dumps(data, ensure_ascii=False).encode("utf-8"))):
+                partial = self.folder / (file_name + ".part")
+                partial.write_bytes(content)
+                partial.replace(self.folder / file_name)
+            self.storage.remove([f"{INBOX}/{wav_name}", f"{INBOX}/{name}"])
+            pulled += 1
+        return pulled
 
     def publish_settings(self) -> None:
         """The config.py values the site needs too (the "likely" threshold), into

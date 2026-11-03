@@ -27,6 +27,7 @@ import sys
 import tarfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -211,10 +212,49 @@ class Handler(SimpleHTTPRequestHandler):
         return super().do_GET()
 
     def do_POST(self) -> None:
+        if self.path.startswith("/storage/v1/"):
+            return self.storage()
         self.proxy() if self.path.startswith("/rest/v1/") else self.send_error(405)
 
     do_PATCH = do_POST
     do_DELETE = do_POST
+
+    def storage(self) -> None:
+        """The few Storage calls the site makes (Registra uploads into inbox/), on the local media
+        folder: upload a file, list a folder, delete files. The bucket name is ignored."""
+        length = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(length) if length else b""
+        path = urllib.parse.unquote(self.path.split("?", 1)[0])[len("/storage/v1/object/"):]
+
+        def inside(relative: str) -> Path:
+            target = (MEDIA_DIR / relative).resolve()
+            if MEDIA_DIR.resolve() not in target.parents:
+                raise ValueError(relative)
+            return target
+
+        try:
+            if self.command == "POST" and path.startswith("list/"):
+                folder = inside(json.loads(body or b"{}").get("prefix", "") + "/x").parent
+                answer = [{"name": entry.name, "id": entry.name} for entry in sorted(folder.glob("*")) if entry.is_file()]
+            elif self.command == "POST":
+                target = inside(path.split("/", 1)[1])
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(body)
+                answer = {"Key": path}
+            elif self.command == "DELETE":
+                for prefix in json.loads(body or b"{}").get("prefixes", []):
+                    inside(prefix).unlink(missing_ok=True)
+                answer = []
+            else:
+                return self.send_error(405)
+        except (ValueError, IndexError):
+            return self.send_error(400)
+        payload = json.dumps(answer).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
 
     def do_HEAD(self) -> None:
         # supabase-js counts rows with HEAD (select(..., { head: true }))

@@ -2,6 +2,8 @@
 // Data: Supabase schema `birds` (see supabase/birds_schema.sql), open to the publishable key.
 // The site changes only the review columns; everything else is written by `bird_audio_cli.py sync`.
 
+import { setupRecorder } from "./registra.js?v=2";
+
 const config = window.APP_CONFIG || {};
 const PAGE_SIZE = 25;
 const VISIBLE_CLIPS = 3; // the rest of a long observation stays folded
@@ -2760,6 +2762,14 @@ if ("serviceWorker" in navigator && window.isSecureContext) {
     console.warn("Service worker non registrato", error);
   });
 }
+
+// Registra (registra.js): also offline, where it records and analyses; saving needs Supabase
+setupRecorder({
+  client: () => state.client,
+  nameOf: (scientific, english) => state.species.get(scientific)?.italian_name || english || scientific,
+  say: setStatus,
+  confidenceClass,
+});
 
 // opened offline (the app on the phone): the page comes from its cache, Supabase's library from
 // the internet does not. Said, and the page reloads by itself when the connection is back.
