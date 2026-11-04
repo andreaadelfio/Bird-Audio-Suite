@@ -2,7 +2,7 @@
 // Data: Supabase schema `birds` (see supabase/birds_schema.sql), open to the publishable key.
 // The site changes only the review columns; everything else is written by `bird_audio_cli.py sync`.
 
-import { setupRecorder } from "./registra.js?v=4";
+import { setupRecorder } from "./registra.js?v=5";
 
 const config = window.APP_CONFIG || {};
 const PAGE_SIZE = 25;
@@ -459,11 +459,13 @@ function clipHtml(clip, { folded = false, canUnlink = true, onInat = false } = {
     </figure>`;
 }
 
-function observationMeta(observation, facts, extra = "") {
+// withDay: false in the Osservazioni list, where the day is already in the heading above the cards
+function observationMeta(observation, facts, extra = "", withDay = true) {
   const first = facts.firstHeard ? hourFormat.format(new Date(facts.firstHeard)) : "";
   const last = facts.clips.length > 1 && facts.lastHeard ? hourFormat.format(new Date(facts.lastHeard)) : "";
   const hours = last && last !== first ? `${first}–${last}` : first;
-  return `<p class="meta"><span>${formatDay(observation.day)} ${hours}</span>
+  const when = withDay ? `${formatDay(observation.day)} ${hours}` : hours;
+  return `<p class="meta">${when ? `<span>${when}</span>` : ""}
     ${facts.place ? `<span class="place">${escapeHtml(placeLabel(facts.place))}</span>` : ""}
     ${facts.byHandOnly ? '<span>max_obs_conf <b class="by-hand">a mano</b></span>'
       : `<span>max_obs_conf <b class="conf-${confidenceClass(facts.maxConfidence)}">${facts.maxConfidence.toFixed(3)}</b>
@@ -531,7 +533,7 @@ function observationHtml(observation) {
   return `
     <article class="observation status-${observation.status} ${confidenceClass(facts.maxConfidence)}${facts.clips.some((clip) => !clip.media_deleted_at) ? "" : " no-clips"}${state.selection.observations.has(observation.id) ? " selected" : ""}" data-id="${observation.id}">
       ${speciesHeaderHtml(observation, statusShownByFilter ? "" : STATUS_LABELS[observation.status] || observation.status, observation.status, true)}
-      ${observationMeta(observation, facts)}
+      ${observationMeta(observation, facts, "", state.view !== "observations")}
       <div class="fix${corrected ? "" : " hidden"}">
         <span>${onInat ? "Su iNaturalist" : "Specie corretta"}</span>
         <input data-field="corrected" list="species-list" placeholder="nome scientifico o italiano" aria-label="Specie corretta" value="${escapeHtml(corrected)}"
@@ -759,8 +761,10 @@ function removeCard(card) {
   const wasInside = card.getBoundingClientRect().top < barBottom && card.getBoundingClientRect().bottom > barBottom;
   const hadFocus = card.contains(document.activeElement); // the keyboard goes on with the next one
   setTimeout(() => {
-    const next = card.nextElementSibling;
+    let next = card.nextElementSibling; // the next card, past the heading of its day
+    while (next && !next.classList.contains("observation")) next = next.nextElementSibling;
     card.remove();
+    dropEmptyDays();
     // the last one gone: drawn again, to say the list is empty (and what comes next)
     if (state.view === "observations" && !content.querySelector(".observation")) return render();
     if (!next?.classList.contains("observation")) return;
@@ -1042,7 +1046,13 @@ async function saveTrim(figure, start, end) {
 // image; the bands and the audio still work. Audio that does not load: said in words, not the
 // browser's "no supported sources"
 content.addEventListener("error", (event) => {
-  if (event.target.matches?.(".spectrogram")) event.target.closest(".spectrogram-box").classList.add("no-image");
+  if (event.target.matches?.(".spectrogram")) {
+    const box = event.target.closest(".spectrogram-box");
+    box.classList.add("no-image");
+    // recorded on the site and its WAV still in inbox/: not lost, the PC has yet to make it
+    fetch(inboxUrl(box.closest(".clip").dataset.clip), { method: "HEAD" })
+      .then((response) => box.classList.toggle("from-site", response.ok)).catch(() => {});
+  }
   const audio = event.target.matches?.("audio") ? event.target : null;
   const figure = audio?.closest(".clip");
   if (audio && figure && audio.getAttribute("src")?.endsWith(".mp3") && !audio.dataset.inbox) {
@@ -1753,6 +1763,30 @@ function emptyListHtml(onInat, toUpload = 0) {
     <button type="button" class="species-link" data-clear-filters>Mostra tutte</button></p>`;
 }
 
+// The list goes by day, newest first: one heading per day ("Oggi", "Ieri", "dom 1 nov"), so the
+// cards say only the hour. A page loaded later goes on under the last heading when it is the same day.
+function dayHeading(isoDay) {
+  const ago = Math.round((new Date(`${localDay(new Date().toISOString())}T12:00:00`) - new Date(`${isoDay}T12:00:00`)) / 86400000);
+  const label = ago === 0 ? "Oggi" : ago === 1 ? "Ieri" : formatDay(isoDay);
+  return `<h2 class="day-head" data-day="${escapeHtml(isoDay)}">${label}${ago <= 1 ? ` <small>${formatDay(isoDay)}</small>` : ""}</h2>`;
+}
+
+function listHtml(rows) {
+  let day = [...content.querySelectorAll(".day-head")].pop()?.dataset.day;
+  return rows.map((row) => {
+    const heading = row.day !== day ? dayHeading(row.day) : "";
+    day = row.day;
+    return heading + observationHtml(row);
+  }).join("");
+}
+
+// a heading left with no card under it goes too
+function dropEmptyDays() {
+  content.querySelectorAll(".day-head").forEach((head) => {
+    if (!head.nextElementSibling?.classList.contains("observation")) head.remove();
+  });
+}
+
 // A page is painted when its data arrives: a slower answer to an older request (another tab
 // tapped meanwhile, a filter still being typed on a slow phone) must not cover a newer one.
 // Each repaint takes a number; "load more" belongs to the list it extends.
@@ -1771,7 +1805,7 @@ async function renderObservations(append = false) {
     state.observations = new Map();
   }
   rows.forEach((row) => state.observations.set(row.id, row));
-  content.insertAdjacentHTML("beforeend", rows.map(observationHtml).join(""));
+  content.insertAdjacentHTML("beforeend", listHtml(rows));
   state.offset += rows.length;
   $("#more").classList.toggle("hidden", rows.length < PAGE_SIZE);
   if (!content.children.length) {

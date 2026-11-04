@@ -127,6 +127,9 @@ label { color: var(--ink-soft); font-size: 0.85rem; }
 .icon-button.working svg { animation: working 0.8s ease-in-out infinite alternate; }
 .pill-button { padding: 0 0.8rem; border-radius: 999px; color: var(--accent-deep); font-weight: 600; }
 .pill-button[aria-expanded="true"] { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+/* volume and Registra open look pressed, like iNat: the button that closes them again */
+.icon-button[aria-expanded="true"] { background: var(--accent); border-color: var(--accent); }
+.icon-button[aria-expanded="true"] svg { fill: var(--on-accent); }
 
 .count:not(:empty) {
   display: inline-block;
@@ -307,6 +310,11 @@ label { color: var(--ink-soft); font-size: 0.85rem; }
 #content { transition: opacity 0.15s; }
 #content.busy { opacity: 0.45; pointer-events: none; }
 
+/* one heading per day over its cards (the cards then say only the hour) */
+.day-head { margin: 1.1rem 0 0.45rem; font-size: 1rem; font-weight: 700; }
+.day-head:first-child, .on-inat-note + .day-head { margin-top: 0.2rem; }
+.day-head small { margin-left: 0.35em; color: var(--ink-soft); font-size: 0.85rem; font-weight: 400; }
+
 /* on iNaturalist with no clip left to play: just the observation's facts, full width */
 .observation.no-clips {
   grid-template-columns: minmax(0, 1fr);
@@ -478,6 +486,8 @@ button.inat { border-color: var(--uploaded); color: var(--uploaded); }
   font-size: 0.75rem;
   pointer-events: none;
 }
+
+.no-image.from-site::before { content: "spettrogramma in arrivo: lo fa il PC quando è acceso"; }
 
 /* where BirdNET heard the species, from 0.6: green when likely (>= 0.8), amber when unsure (0.6-0.8);
    the stronger, the more visible. Tap one to hear just that part */
@@ -903,6 +913,9 @@ button.denoise.strong { background: var(--accent-deep); border-color: var(--acce
 
   .more, .show-clips { width: 100%; }
   .report-table .species-link { padding: 0.35rem 0; } /* a taller target for a finger, same look */
+  /* the name gets the room: scientific name on its own line, numbers in narrow columns */
+  .report-table th, .report-table td { padding: 0.3rem 0.4rem; }
+  .report-table td:first-child small { display: block; margin-top: -0.2rem; }
   .more-filters > summary, .inat-uploads > summary { padding: 0.45rem 0; }
   .report-grid { grid-template-columns: minmax(0, 1fr); }
   .tiles { grid-template-columns: repeat(3, 1fr); }

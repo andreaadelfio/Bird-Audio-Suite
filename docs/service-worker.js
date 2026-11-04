@@ -1,7 +1,7 @@
 // Service worker (come in MyFinance e Listino Prezzi): serve per installare il sito come app.
 // Prima la rete, così si vede sempre l'ultima versione; senza rete si apre almeno
 // l'interfaccia salvata. Dati, audio e spettrogrammi (Supabase) non passano di qui.
-const CACHE_NAME = "birds-shell-v6"; // v6: Registra (registra.js, i suoi worker), novembre 2026
+const CACHE_NAME = "birds-shell-v7"; // v7: giorni nella lista, Report più leggibile, scorciatoia Registra
 // BirdNET (modelli, ~80 MB) e TensorFlow.js: una volta scaricati restano, anche quando cambia il
 // sito (cache a parte, mai svuotata da un aggiornamento); a un modello nuovo si cambia il percorso
 const MODELS_CACHE = "birds-models-v1";

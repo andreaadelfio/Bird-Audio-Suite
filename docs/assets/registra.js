@@ -414,6 +414,8 @@ export function setupRecorder({ client, nameOf, say, confidenceClass }) {
       loadBirdnet().catch(() => {});
     }
   });
+  // ./?registra (la scorciatoia "Registra" dell'icona dell'app, pressione lunga): il pannello già aperto
+  if (new URLSearchParams(location.search).has("registra")) toggle.click();
 
   startButton.addEventListener("click", () => (rec?.running ? stop() : start()).catch((error) => {
     const denied = error.name === "NotAllowedError";
