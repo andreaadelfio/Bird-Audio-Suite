@@ -5,9 +5,10 @@ MP3, spectrogram (seconds and 100+ MB for a long clip) and the upload, happens h
 process with low CPU and disk priority (systemd unit bird-audio-suite-sync): nothing of it can
 slow the listening down, not even through Python's GIL.
 
-Every minute it also completes the recordings made on the site (Registra: rows written by the
-site, a WAV in the bucket's inbox/): MP3, spectrogram, analysis and Perch, as for the live's
-(Outbox.complete_site_clips). It looks at the folder every few
+Every five minutes it also completes the recordings made on the site (Registra: rows written by
+the site, a WAV in the bucket's inbox/): MP3, spectrogram, analysis and Perch, as for the live's
+(Outbox.complete_site_clips); not every minute, since each look is a listing of the bucket on
+Supabase, all day long, and the site plays the WAV meanwhile. It looks at the folder every few
 seconds, so a clip is on Supabase moments after it closes;
 what failed (offline) is tried again every minute (the log says it once, and when it is over).
 Once an hour it also tidies up (Outbox.tidy: files of observations on iNaturalist that the site
@@ -32,6 +33,7 @@ from .health import UPLOADER_STATUS_FILE as STATUS_FILE
 
 POLL_SECONDS = 3.0
 RETRY_SECONDS = 60.0
+SITE_CLIPS_SECONDS = 300.0  # the site's recordings (Registra), looked for in the bucket
 NAMES_REFRESH_SECONDS = 3600.0
 PURGE_EVERY_SECONDS = 3600.0
 TIDY_RETRY_SECONDS = 600.0  # a housekeeping step failed (offline at boot, iNaturalist down)
@@ -125,6 +127,7 @@ def run_uploader(
     *,
     poll_seconds: float = POLL_SECONDS,
     retry_seconds: float = RETRY_SECONDS,
+    site_clips_seconds: float = SITE_CLIPS_SECONDS,
     names_refresh_seconds: float = NAMES_REFRESH_SECONDS,
     purge_every_seconds: float = PURGE_EVERY_SECONDS,
     tidy_retry_seconds: float = TIDY_RETRY_SECONDS,
@@ -149,7 +152,7 @@ def run_uploader(
     last_signature = None
     last_error = ""  # logged once, not every minute while it lasts (a night offline)
     last_push = -retry_seconds
-    last_pull = -retry_seconds  # the site's recordings (Registra), looked for once a minute
+    last_pull = -site_clips_seconds  # the site's recordings (Registra), looked for every five minutes
     pull_error = ""
     last_purge = -purge_every_seconds
     settings_due, settings_tried, settings_failed = True, -retry_seconds, False
@@ -167,13 +170,13 @@ def run_uploader(
                 if not settings_failed:
                     log(f"{datetime.now():%H:%M:%S} - soglie per il sito non inviate: {exc!r}")
                 settings_failed = True
-        if clock() - last_pull >= retry_seconds:
+        if clock() - last_pull >= site_clips_seconds:
             last_pull = clock()
             try:
                 completed, pull_error = outbox.complete_site_clips(), ""
                 if completed:
                     log(f"{datetime.now():%H:%M:%S} - dal sito (Registra): MP3 e spettrogramma per {completed} clip")
-            except Exception as exc:  # offline: the next minute (said once, like the push errors)
+            except Exception as exc:  # offline: the next look (said once, like the push errors)
                 if same_error(repr(exc)) != pull_error:
                     log(f"{datetime.now():%H:%M:%S} - registrazioni del sito non lette: {exc!r}")
                 pull_error = same_error(repr(exc))

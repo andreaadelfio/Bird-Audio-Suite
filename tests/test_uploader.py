@@ -20,7 +20,7 @@ class FakeOutbox:
 
     def __init__(self, folder: Path) -> None:
         self.folder, self.pushes, self.offline, self.busy = folder, 0, False, False
-        self.purges = self.published = 0
+        self.purges = self.published = self.site_looks = 0
         self.tidy_fails = False
         self.during_push = lambda: None  # e.g. time passing while a long backlog goes
 
@@ -30,6 +30,7 @@ class FakeOutbox:
         self.published += 1
 
     def complete_site_clips(self):
+        self.site_looks += 1
         if self.offline:
             raise RuntimeError("offline")
         return 0
@@ -95,6 +96,13 @@ class UploaderLoopTests(unittest.TestCase):
             outbox = FakeOutbox(Path(directory))
             self.run_loop(Path(directory), outbox, [lambda: None] * 30, watcher=watcher)  # 90 s
         self.assertEqual(outbox.published, 2)  # at start, and once after the change (not every poll)
+
+    def test_the_sites_recordings_are_looked_for_every_five_minutes_not_every_poll(self) -> None:
+        # each look lists the bucket on Supabase: 288 a day, not 1440
+        with tempfile.TemporaryDirectory() as directory:
+            outbox = FakeOutbox(Path(directory))
+            self.run_loop(Path(directory), outbox, [lambda: None] * 220)  # 11 minutes
+        self.assertEqual(outbox.site_looks, 3)  # at start, after 5 and after 10 minutes
 
     def test_a_new_clip_is_sent_within_a_poll_and_nothing_is_redone_while_idle(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

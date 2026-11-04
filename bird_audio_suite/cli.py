@@ -72,6 +72,9 @@ BIRDNET_SAMPLE_RATE = 48000
 AUDIO_STALL_TIMEOUT_SECONDS = 30.0
 LIVE_MAX_CLIP_SECONDS = 120.0
 TABLE_REFRESH_SECONDS = 60.0
+# Supabase is read for the table at most this often (and right after each new clip): daily_summary
+# aggregates the whole history at every read, and the table runs all day in the service's log
+TABLE_REMOTE_SECONDS = 300.0
 # bands on the spectrogram: where BirdNET hears the clip's species, also weakly, so you see the
 # whole visit; the site colours them likely (>= 0.8) or unsure. The same threshold as the analysis
 # of the saved clip (analysis.py), which replaces these bands once the clip is on Supabase
@@ -1442,21 +1445,27 @@ def push_outbox(detections_dir: Path, species_names: SpeciesNames, limit: int | 
 
 
 def start_table_refresher(detections_dir: Path, species_names: SpeciesNames):
-    """Reprint today's table every minute (reviews made on the site, the uploader's progress)
-    and shortly after each new clip. Only a light Supabase read: sending the clips is the
-    uploader's job, in its own process (uploader.py), so it never slows the listening down."""
+    """Reprint today's table every minute (the uploader's progress) and shortly after each new
+    clip. Supabase is read again after each new clip and otherwise every TABLE_REMOTE_SECONDS
+    (reviews made on the site): sending the clips is the uploader's job, in its own process
+    (uploader.py), so it never slows the listening down."""
     wake = threading.Event()
     stop = threading.Event()
 
     def work() -> None:
+        last_read = None
         while not stop.is_set():
-            if wake.wait(TABLE_REFRESH_SECONDS):
+            new_clip = wake.wait(TABLE_REFRESH_SECONDS)
+            if new_clip:
                 wake.clear()
                 stop.wait(10)  # give the uploader a moment: the new clip shows as sent
             if stop.is_set():
                 break
+            fresh = new_clip or last_read is None or time.monotonic() - last_read >= TABLE_REMOTE_SECONDS
             try:
-                print_daily_detection_summary(detections_dir, species_names)
+                print_daily_detection_summary(detections_dir, species_names, cached=not fresh)
+                if fresh:
+                    last_read = time.monotonic()
             except Exception as exc:
                 print(f"{datetime.now():%H:%M:%S} - Tabella non aggiornata: {exc!r}")
 
