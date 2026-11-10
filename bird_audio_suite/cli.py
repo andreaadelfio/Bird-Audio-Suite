@@ -4,7 +4,6 @@ import argparse
 import json
 import os
 import queue
-import shlex
 import signal
 import subprocess
 import sys
@@ -381,14 +380,6 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def prompt_text(message: str, default: str | None = None) -> str:
-    suffix = f" [{default}]" if default else ""
-    raw = input(f"{message}{suffix}: ").strip()
-    if raw:
-        return raw
-    return default or ""
-
-
 def get_default_live_args() -> argparse.Namespace:
     return argparse.Namespace(
         command="live",
@@ -415,59 +406,6 @@ def get_default_live_args() -> argparse.Namespace:
 
 def clean_path_string(value: str) -> str:
     return value.strip().strip("\"'")
-
-
-def parse_interactive_file_list(raw: str) -> list[str]:
-    raw = raw.strip()
-    if not raw:
-        return []
-
-    if "," in raw:
-        return [clean_path_string(part) for part in raw.split(",") if clean_path_string(part)]
-
-    try:
-        parts = shlex.split(raw, posix=False)
-    except ValueError:
-        parts = [raw]
-
-    cleaned = [clean_path_string(part) for part in parts if clean_path_string(part)]
-
-    if len(cleaned) > 1:
-        candidate = clean_path_string(raw)
-        if Path(candidate).suffix.lower() == ".wav":
-            return [candidate]
-
-    return cleaned
-
-
-def prompt_bool(message: str, default: bool = False) -> bool:
-    default_label = "Y/n" if default else "y/N"
-    raw = input(f"{message} [{default_label}]: ").strip().lower()
-    if not raw:
-        return default
-    return raw in {"y", "yes", "s", "si"}
-
-
-def prompt_float(message: str, default: float) -> float:
-    while True:
-        raw = input(f"{message} [{default}]: ").strip()
-        if not raw:
-            return default
-        try:
-            return float(raw)
-        except ValueError:
-            print("Inserisci un numero valido.")
-
-
-def prompt_int(message: str, default: int) -> int:
-    while True:
-        raw = input(f"{message} [{default}]: ").strip()
-        if not raw:
-            return default
-        try:
-            return int(raw)
-        except ValueError:
-            print("Inserisci un intero valido.")
 
 
 def get_available_audio_devices() -> list[str]:
@@ -786,133 +724,6 @@ def select_sounddevice_index(
     save_sounddevice_state(selected_device, selected_measurement, state_path)
     print(f"Selezionato e salvato il device {selected_device['index']}.")
     return int(selected_device["index"])
-
-
-def interactive_args() -> argparse.Namespace:
-    print("Bird Audio Suite - modalita' interattiva")
-    print("Scegli una modalita':")
-    print("  1. batch")
-    print("  2. live")
-    print("  3. denoise")
-
-    selection = ""
-    while selection not in {"1", "2", "3", "batch", "live", "denoise"}:
-        selection = input("Modalita' [1]: ").strip().lower() or "1"
-
-    if selection in {"1", "batch"}:
-        files_raw = prompt_text(
-            "File WAV separati da virgola o spazio (vuoto = tutti i .wav nella cartella corrente)",
-            "",
-        )
-        file_list = parse_interactive_file_list(files_raw)
-
-        directory_raw = prompt_text("Cartella da scandire opzionale", "")
-        directory = Path(clean_path_string(directory_raw)).expanduser() if directory_raw else None
-
-        use_denoise = prompt_bool("Applica denoise prima della detection", False)
-        noise_ref = None
-        high_pass_hz = DEFAULT_HIGH_PASS_HZ
-        noise_reduction_factor = DEFAULT_NOISE_REDUCTION_FACTOR
-        if use_denoise:
-            noise_ref = (lambda raw: Path(clean_path_string(raw)).expanduser() if clean_path_string(raw) else None)(
-                prompt_text("File WAV di rumore opzionale", "")
-            )
-            high_pass_hz = prompt_float("Filtro high-pass (Hz)", DEFAULT_HIGH_PASS_HZ)
-            noise_reduction_factor = prompt_float(
-                "Intensita' riduzione rumore",
-                DEFAULT_NOISE_REDUCTION_FACTOR,
-            )
-
-        return argparse.Namespace(
-            command="batch",
-            files=file_list or None,
-            directory=directory,
-            recursive=prompt_bool("Ricerca ricorsiva nelle sottocartelle", False),
-            lat=prompt_float("Latitudine", DEFAULT_LATITUDE),
-            lon=prompt_float("Longitudine", DEFAULT_LONGITUDE),
-            min_confidence=prompt_float("Confidenza minima BirdNET", DEFAULT_BATCH_MIN_CONFIDENCE),
-            denoise=use_denoise,
-            noise_ref=noise_ref,
-            high_pass_hz=high_pass_hz,
-            noise_reduction_factor=noise_reduction_factor,
-            export_clips=prompt_bool("Esporta clip per specie rilevata", True),
-            clip_span=DEFAULT_BATCH_CLIP_SPAN,
-                detections_dir=DEFAULT_DETECTIONS_DIR,
-        )
-
-    if selection in {"2", "live"}:
-        backend = (
-            prompt_text(
-                "Backend live (sounddevice/pvrecorder/auto)",
-                DEFAULT_LIVE_BACKEND,
-            ).strip().lower()
-            or DEFAULT_LIVE_BACKEND
-        )
-        if backend not in {"sounddevice", "pvrecorder", "auto"}:
-            backend = DEFAULT_LIVE_BACKEND
-        devices = print_available_audio_devices("sounddevice" if backend == "auto" else backend)
-        if devices and backend in {"sounddevice", "auto"}:
-            suggested_device = choose_preferred_sounddevice_index(devices)
-        elif backend == "pvrecorder":
-            suggested_device = DEFAULT_LIVE_DEVICE_INDEX
-        elif devices:
-            suggested_device = 0
-        else:
-            suggested_device = DEFAULT_LIVE_DEVICE_INDEX
-        use_denoise = prompt_bool("Applica denoise live", False)
-        noise_ref = None
-        high_pass_hz = DEFAULT_HIGH_PASS_HZ
-        noise_reduction_factor = DEFAULT_NOISE_REDUCTION_FACTOR
-        if use_denoise:
-            noise_ref = (lambda raw: Path(clean_path_string(raw)).expanduser() if clean_path_string(raw) else None)(
-                prompt_text("File WAV di rumore opzionale", "")
-            )
-            high_pass_hz = prompt_float("Filtro high-pass (Hz)", DEFAULT_HIGH_PASS_HZ)
-            noise_reduction_factor = prompt_float(
-                "Intensita' riduzione rumore",
-                DEFAULT_NOISE_REDUCTION_FACTOR,
-            )
-
-        return argparse.Namespace(
-            command="live",
-            backend=backend,
-            lat=prompt_float("Latitudine", DEFAULT_LATITUDE),
-            lon=prompt_float("Longitudine", DEFAULT_LONGITUDE),
-            min_confidence=prompt_float("Confidenza minima BirdNET", DEFAULT_LIVE_MIN_CONFIDENCE),
-            frame_length=prompt_int("Frame length recorder", DEFAULT_FRAME_LENGTH),
-            slice_interval=prompt_int("Intervallo slice (numero frame)", DEFAULT_SLICE_INTERVAL),
-            device_index=prompt_int("Indice dispositivo audio", suggested_device),
-            device_probe_seconds=1.0,
-            list_devices=False,
-            enable_denoise=use_denoise,
-            enable_playback_subtraction=prompt_bool(
-                "Sottrarre l'audio riprodotto dal PC dal microfono",
-                DEFAULT_ENABLE_PLAYBACK_SUBTRACTION,
-            ),
-            playback_suppression_min_confidence=DEFAULT_PLAYBACK_SUPPRESSION_MIN_CONFIDENCE,
-            noise_ref=noise_ref,
-            high_pass_hz=high_pass_hz,
-            noise_reduction_factor=noise_reduction_factor,
-                detections_dir=DEFAULT_DETECTIONS_DIR,
-            verbose=prompt_bool("Mostrare diagnostica live", True),
-            clip_span=DEFAULT_LIVE_CLIP_SPAN,
-        )
-
-    input_path = Path(prompt_text("File WAV da denoisare")).expanduser()
-    output_raw = prompt_text("File output opzionale", "")
-    noise_ref_raw = prompt_text("File WAV di rumore opzionale", "")
-    return argparse.Namespace(
-        command="denoise",
-        input=Path(clean_path_string(str(input_path))).expanduser(),
-        output=Path(clean_path_string(output_raw)).expanduser() if output_raw else None,
-        noise_ref=Path(clean_path_string(noise_ref_raw)).expanduser() if noise_ref_raw else None,
-        high_pass_hz=prompt_float("Filtro high-pass (Hz)", DEFAULT_DENOISE_HIGH_PASS_HZ),
-        noise_reduction_factor=prompt_float(
-            "Intensita' riduzione rumore",
-            DEFAULT_DENOISE_REDUCTION_FACTOR,
-        ),
-        plot=prompt_bool("Mostrare grafico spettrogramma", False),
-    )
 
 
 def is_audio_file(path: Path) -> bool:
