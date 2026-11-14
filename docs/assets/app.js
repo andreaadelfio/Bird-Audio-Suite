@@ -337,6 +337,7 @@ const ICON_UNDO = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12.5 8c
 const ICON_EDIT = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>';
 const ICON_DENOISE = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7.5 5.6 10 7 8.6 4.5 10 2 7.5 3.4 5 2l1.4 2.5L5 7zm12 9.8L17 14l1.4 2.5L17 19l2.5-1.4L22 19l-1.4-2.5L22 14zM22 2l-2.5 1.4L17 2l1.4 2.5L17 7l2.5-1.4L22 7l-1.4-2.5zm-7.63 5.29a1 1 0 0 0-1.41 0L1.29 18.96a1 1 0 0 0 0 1.41l2.34 2.34a1 1 0 0 0 1.41 0L16.7 11.05a1 1 0 0 0 0-1.41l-2.33-2.35zm-1.03 5.49-2.12-2.12 2.44-2.44 2.12 2.12-2.44 2.44z"/></svg>';
 const ICON_MORE = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 10a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"/></svg>';
+const ICON_UPLOAD = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 20h14v-2H5v2zm7-18-7 7h4v6h6v-6h4l-7-7z"/></svg>';
 const ICON_LOOP = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/></svg>';
 const SKIP_SECONDS = 2;
 const BAND_PADDING_SECONDS = 0.5;
@@ -494,7 +495,8 @@ function observationActions(observation) {
     buttons.push('<button type="button" class="primary link-here" data-link-here>Collega qui</button>');
   }
   if (status === "confirmed") {
-    buttons.push('<button type="button" class="inat" data-inat-upload title="Carica su iNaturalist (serve il token, pannello iNat)">↑ iNaturalist</button>');
+    buttons.push(`<button type="button" class="round inat" data-inat-upload title="Carica su iNaturalist (serve il token, pannello iNat)"
+      aria-label="Carica su iNaturalist">${ICON_UPLOAD}</button>`);
   }
   if (observation.inat_observation_id) {
     buttons.push(`<a class="inat-link" href="https://www.inaturalist.org/observations/${Number(observation.inat_observation_id)}"
@@ -666,7 +668,7 @@ content.addEventListener("click", async (event) => {
   if (fixToggle) {
     const fix = card.querySelector(".fix");
     fix.classList.toggle("hidden");
-    if (!fix.classList.contains("hidden")) fix.querySelector("input").focus();
+    if (!fix.classList.contains("hidden") && matchMedia("(pointer: fine)").matches) fix.querySelector("input").focus();
     return;
   }
 
@@ -736,9 +738,11 @@ content.addEventListener("change", async (event) => {
     input.insertAdjacentHTML("afterend", fixExtrasHtml(input.value.trim()));
     const name = input.value.trim();
     // a name never heard here may be a typo: it is what goes to iNaturalist
-    setStatus(!name ? "Correzione tolta."
+    // several clips: the correction is the whole observation's (one that is not the same bird: Stacca)
+    const whole = card.querySelectorAll(".clip").length > 1 ? " Vale per tutte le clip: se una sola è diversa, staccala." : "";
+    setStatus((!name ? "Correzione tolta."
       : state.species.has(name) ? `Specie corretta: ${name}.`
-      : `Specie corretta: ${name} (mai sentita finora: controlla che il nome scientifico sia giusto).`);
+      : `Specie corretta: ${name} (mai sentita finora: controlla che il nome scientifico sia giusto).`) + (name ? whole : ""));
   } catch (error) {
     setStatus(`Errore: ${errorReason(error)}`, true);
   }
@@ -770,10 +774,9 @@ function removeCard(card) {
     if (!next?.classList.contains("observation")) return;
     if (hadFocus) (next.querySelector(".play-button") || next.querySelector("[data-status]"))?.focus({ preventScroll: true });
     if (wasInside) {
-      const smooth = !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-      window.scrollBy({ top: next.getBoundingClientRect().top - barBottom - 8, behavior: smooth ? "smooth" : "auto" });
+      window.scrollBy({ top: next.getBoundingClientRect().top - barBottom - 8 });
     }
-  }, 250);
+  }, 0); // no fading out: it goes at once
 }
 
 // one clip at a time; every playback runs over a range: the kept part (trim), a BirdNET band,
@@ -1321,10 +1324,8 @@ content.addEventListener("click", (event) => {
   fix.classList.remove("hidden");
   const input = fix.querySelector("input");
   input.value = chip.dataset.candidate;
-  input.focus();
-  setStatus(card.querySelectorAll(".clip").length > 1
-    ? "Vale per tutta l'osservazione: se è solo questa clip, prima staccala (catena spezzata). Esci dal campo per salvare."
-    : "Esci dal campo per salvare la correzione.");
+  // saved at once, as when leaving the field: no keyboard opening on the phone for a name already chosen
+  input.dispatchEvent(new Event("change", { bubbles: true }));
 });
 
 // a clip that is not the same bird (or species) as the rest: it becomes an observation of its own
@@ -1892,8 +1893,11 @@ function trashCardHtml(observation, whole) {
       ${speciesHeaderHtml(observation, label, "trash")}
       ${observationMeta(observation, facts, whole ? "" : "<span>il resto dell'osservazione resta</span>")}
       <div class="actions">
-        ${whole ? '<button type="button" class="primary" data-status="pending" title="Rimetti da rivedere">↺ Ripristina</button>' : ""}
-        <button type="button" class="danger" data-delete title="Audio, spettrogrammi e righe spariscono da Supabase">Elimina per sempre</button>
+        <span class="spacer"></span>
+        <button type="button" class="round delete" data-delete title="Elimina per sempre: audio, spettrogrammi e righe spariscono da Supabase"
+          aria-label="Elimina per sempre">${ICON_TRASH}</button>
+        ${whole ? `<button type="button" class="round confirm" data-status="pending" title="Ripristina: torna da rivedere"
+          aria-label="Ripristina">${ICON_UNDO}</button>` : ""}
       </div>
       ${clipsHtml(facts.clips, { canUnlink: false })}
     </article>`;
@@ -1919,7 +1923,8 @@ async function renderTrash() {
     ? `<div class="trash-head">
          <p>${trashSummary(rejected.length, partial.reduce((sum, o) => sum + o.clips.length, 0))}
            Eliminandole, audio e spettrogrammi spariscono da Supabase.</p>
-         <button type="button" class="danger" data-empty-trash>Svuota il cestino (${clipCount} clip)</button>
+         <button type="button" class="round delete" data-empty-trash title="Svuota il cestino: elimina per sempre ${clipCount} clip (chiede conferma)"
+           aria-label="Svuota il cestino">${ICON_TRASH}</button>
        </div>
        ${rejected.map((observation) => trashCardHtml(observation, true)).join("")}
        ${partial.map((observation) => trashCardHtml(observation, false)).join("")}`
