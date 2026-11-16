@@ -32,6 +32,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 from .audio import detections_lock, parse_timestamp_from_name
 from . import config as settings  # read at use: the uploader reloads config.py while running
@@ -87,14 +89,33 @@ def supabase_auth_headers(key: str) -> dict[str, str]:
 
 # ---------------------------------------------------------------- Supabase REST
 
+# (connection, answer) in seconds: a connection that does not open in 5 s is not coming
+SUPABASE_TIMEOUT = (5, 30)
+
+
+def supabase_session() -> requests.Session:
+    """A session that retries once, at once, on a fresh connection, after a connection or read
+    error. After a pause (the night, an hour without clips) the kept-alive connection may be
+    dead without anyone saying so: the request then waits for an answer that never comes, and
+    urllib3 throws that connection away and opens a new one. Only for requests that can be sent
+    twice without harm: reads, upserts, updates, deletes, uploads with x-upsert. Not inserts
+    (observation_for sends its own without retries)."""
+    session = requests.Session()
+    retry = Retry(total=1, connect=1, read=1, status=0, other=0, backoff_factor=0,
+                  allowed_methods={"GET", "HEAD", "POST", "PATCH", "DELETE"})
+    session.mount("https://", HTTPAdapter(max_retries=retry))
+    session.mount("http://", HTTPAdapter(max_retries=retry))
+    return session
+
 
 class SupabaseRest:
-    def __init__(self, config: CloudConfig, session: requests.Session | None = None, timeout: float = 60) -> None:
+    def __init__(self, config: CloudConfig, session: requests.Session | None = None,
+                 timeout: float | tuple[float, float] = SUPABASE_TIMEOUT) -> None:
         if not config.configured:
             raise RuntimeError("SUPABASE_URL e SUPABASE_KEY mancano in cloud.env")
         self.timeout = timeout
         self.base = f"{config.supabase_url}{config.rest_path}"
-        self.session = session or requests.Session()
+        self.session = session or supabase_session()
         self.session.headers.update(
             {
                 **supabase_auth_headers(config.supabase_key),
@@ -174,10 +195,12 @@ class SupabaseRest:
         if near:
             nearest = min(near, key=lambda row: abs(datetime.fromisoformat(row["recorded_at"]) - recorded_at))
             return int(nearest["observation_id"])
-        response = self.session.post(
+        # not through the session: an insert sent twice would leave an empty observation behind;
+        # a connection of its own is never one left dead by a pause
+        response = requests.post(
             f"{self.base}/observations",
             data=json.dumps([{"day": recorded_at.astimezone().date().isoformat(), "scientific_name": scientific_name}]),
-            headers={"Prefer": "return=representation"},
+            headers={**self.session.headers, "Prefer": "return=representation"},
             timeout=self.timeout,
         )
         return int(self._check(response, "observations insert").json()[0]["id"])
@@ -224,7 +247,7 @@ class SupabaseStorage:
             raise RuntimeError("SUPABASE_URL e SUPABASE_KEY mancano in cloud.env")
         self.base = f"{config.supabase_url}/storage/v1"
         self.bucket = bucket
-        self.session = session or requests.Session()
+        self.session = session or supabase_session()
         self.session.headers.update(supabase_auth_headers(config.supabase_key))
 
     def public_url(self, object_path: str) -> str:
@@ -239,7 +262,7 @@ class SupabaseStorage:
                 "x-upsert": "true",
                 "Cache-Control": "max-age=31536000",
             },
-            timeout=120,
+            timeout=(SUPABASE_TIMEOUT[0], 120),
         )
         if response.status_code >= 400:
             raise RuntimeError(f"Supabase Storage upload failed ({response.status_code}): {response.text[:300]}")
@@ -257,7 +280,7 @@ class SupabaseStorage:
 
     def list(self, folder: str) -> list[str]:
         """Names of the files in a folder of the bucket."""
-        response = self.session.post(f"{self.base}/object/list/{self.bucket}", timeout=60,
+        response = self.session.post(f"{self.base}/object/list/{self.bucket}", timeout=SUPABASE_TIMEOUT,
                                      json={"prefix": folder, "limit": 1000, "offset": 0})
         if response.status_code >= 400:
             raise RuntimeError(f"Supabase Storage list failed ({response.status_code}): {response.text[:300]}")
@@ -268,7 +291,7 @@ class SupabaseStorage:
         if not object_paths:
             return
         response = self.session.delete(f"{self.base}/object/{self.bucket}", json={"prefixes": object_paths},
-                                       timeout=60)
+                                       timeout=SUPABASE_TIMEOUT)
         if response.status_code >= 400:
             raise RuntimeError(f"Supabase Storage delete failed ({response.status_code}): {response.text[:300]}")
 
