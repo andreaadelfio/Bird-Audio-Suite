@@ -1419,7 +1419,7 @@ const BULK_ACTIONS = [
   ["pending", "round ghost", ICON_UNDO, "Rimetti da rivedere (le clip scartate tornano nell'osservazione)"],
   ["rejected", "round reject", ICON_CROSS, "Scarta: le osservazioni vanno nel Cestino, le clip anche"],
   ["confirmed", "round confirm", ICON_CHECK, "Conferma le osservazioni"],
-  ["inat", "inat", "↑ iNat", "Carica su iNaturalist le osservazioni confermate"],
+  ["inat", "round inat", ICON_UPLOAD, "Carica su iNaturalist le osservazioni confermate"],
   ["delete", "round danger", ICON_TRASH, "Elimina per sempre (chiede conferma)"],
 ];
 
