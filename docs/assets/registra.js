@@ -418,8 +418,9 @@ export function setupRecorder({ client, nameOf, say, confidenceClass }) {
   if (new URLSearchParams(location.search).has("registra")) toggle.click();
 
   startButton.addEventListener("click", () => (rec?.running ? stop() : start()).catch((error) => {
-    const denied = error.name === "NotAllowedError";
-    say(denied ? "Il microfono non è permesso: concedilo nelle impostazioni del sito." : `Registra: ${error.message}`, true);
+    say(error.name === "NotAllowedError" ? "Il microfono non è permesso: concedilo nelle impostazioni del sito."
+      : error.name === "NotReadableError" ? "Il microfono è occupato da un'altra app: chiudila e riprova."
+      : `Registra: ${errorText(error)}`, true);
     if (rec?.running) stop();
     else setPhase("ready", "Pronto");
   }));
@@ -711,7 +712,7 @@ export function setupRecorder({ client, nameOf, say, confidenceClass }) {
           + "partono da sole appena c'è rete.", Boolean(failure));
       }
     } catch (error) {
-      say(`Registra: ${error.message}`, true);
+      say(`Registra: ${errorText(error)}`, true);
     } finally {
       sending = false;
     }

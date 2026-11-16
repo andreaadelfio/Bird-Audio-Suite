@@ -2,7 +2,7 @@
 // Data: Supabase schema `birds` (see supabase/birds_schema.sql), open to the publishable key.
 // The site changes only the review columns; everything else is written by `bird_audio_cli.py sync`.
 
-import { setupRecorder } from "./registra.js?v=5";
+import { setupRecorder } from "./registra.js?v=6";
 
 const config = window.APP_CONFIG || {};
 const PAGE_SIZE = 25;
@@ -608,7 +608,7 @@ content.addEventListener("click", async (event) => {
       refreshCounts();
     } catch (error) {
       inatButton.disabled = false;
-      setStatus(`iNaturalist: ${error.message}`, true);
+      setStatus(`iNaturalist: ${errorReason(error)}`, true);
     }
     return;
   }
@@ -1072,7 +1072,7 @@ content.addEventListener("error", (event) => {
 
 // play() refused: a file that does not load is said by the error above
 function playFailed(error) {
-  if (error.name !== "NotSupportedError" && error.name !== "AbortError") setStatus(`Audio: ${error.message}`, true);
+  if (error.name !== "NotSupportedError" && error.name !== "AbortError") setStatus("L'audio non è partito: tocca di nuovo ▶.", true);
 }
 
 content.addEventListener("click", async (event) => {
@@ -1237,7 +1237,7 @@ async function exampleSounds(name) {
     const taxon = state.species.get(name)?.inat_taxon_id;
     const query = taxon ? `taxon_id=${Number(taxon)}` : `taxon_name=${encodeURIComponent(name)}`;
     const response = await fetch(`${INAT_API}/observations?${query}&sounds=true&quality_grade=research&order_by=votes&per_page=10`);
-    if (!response.ok) throw new Error(`iNaturalist ${response.status}`);
+    if (!response.ok) throw new Error(`iNaturalist non risponde (${response.status})`);
     const data = await response.json();
     examples.set(name, (data.results || []).flatMap((observation) => (observation.sounds || [])
       .filter((sound) => sound.file_url)
@@ -1283,7 +1283,7 @@ async function playExample(name, button) {
     button.classList.add("on");
     setStatus(`Esempio ${index + 1} di ${sounds.length}: ${sounds[index].attribution} (iNaturalist)`);
   } catch (error) {
-    setStatus(`Esempio non disponibile: ${error.message}`, true);
+    setStatus(`Esempio non disponibile: ${errorReason(error)}`, true);
   } finally {
     button.classList.remove("working");
   }
@@ -1562,7 +1562,7 @@ async function bulkInat() {
       if (leavesFilteredView("uploaded")) removeCard(cardOf(observation));
       else redrawObservation(observation);
     } catch (error) {
-      setStatus(`iNaturalist: ${error.message}`, true);
+      setStatus(`iNaturalist: ${errorReason(error)}`, true);
       if (/token|collega/i.test(error.message)) break; // no point going on without a valid token
     }
   }
@@ -2121,8 +2121,12 @@ async function inatRequest(path, options = {}) {
       renderInatPanel();
       throw new Error("token scaduto o non valido: ricollegati dal pannello iNat");
     }
+    // its own trouble (busy, down): nothing to fix here, only to wait
+    if (response.status === 408 || response.status === 429 || response.status >= 500) {
+      throw new Error("non risponde, riprova fra un minuto");
+    }
     const detail = data?.error?.original?.error || data?.error?.original?.errors?.[0] || data?.error || text.slice(0, 160);
-    throw new Error(`iNaturalist ${response.status}: ${typeof detail === "string" ? detail : JSON.stringify(detail)}`);
+    throw new Error(`rifiuta l'invio (${response.status}): ${typeof detail === "string" ? detail : JSON.stringify(detail)}`);
   }
   return data;
 }
@@ -2132,7 +2136,7 @@ async function resolveTaxonId(scientificName) {
   if (taxonIds.has(name)) return taxonIds.get(name);
   const response = await fetch(`${INAT_API}/taxa?q=${encodeURIComponent(name)}&rank=species,subspecies,genus&per_page=30`);
   // busy (429) or down: say so, not "species not found"
-  if (!response.ok) throw new Error(`iNaturalist ${response.status} cercando "${name}": riprova tra poco`);
+  if (!response.ok) throw new Error(`errore ${response.status} cercando "${name}", riprova tra poco`);
   const data = await response.json();
   // Exact name, or a name iNaturalist lists as a synonym (Corvus monedula -> Coloeus monedula).
   // Never "the first result": for Pica pica it is a Brazilian woodpecker ("pica-pau").
@@ -2227,7 +2231,7 @@ async function uploadObservationToInat(observation, onProgress = () => {}) {
       body: JSON.stringify({ observation: fields }),
     });
     const record = Array.isArray(created) ? created[0] : created?.results?.[0] || created;
-    if (!record?.id) throw new Error("iNaturalist non ha restituito l'id dell'osservazione");
+    if (!record?.id) throw new Error("nessun id per l'osservazione, riprova");
     // saved at once: if the sounds fail, the next attempt reuses this observation
     const { error } = await state.client.from("observations")
       .update({ inat_observation_id: record.id, inat_uuid: record.uuid || null })
@@ -2352,7 +2356,7 @@ $("#inat-upload-all").addEventListener("click", async () => {
     }
     setStatus(`iNaturalist: caricate ${done} di ${data.length}${done ? `; ${later ? UPLOADED_LATER : UPLOADED_MESSAGE}` : ""}.`, done < data.length);
   } catch (error) {
-    setStatus(`iNaturalist: ${error.message}`, true);
+    setStatus(`iNaturalist: ${errorReason(error)}`, true);
   }
   try {
     await refreshCounts();
@@ -2792,7 +2796,7 @@ $("#filter-status").value = storageGet(LIST_STATUS_KEY);
 
 // the first load failed (no network, Supabase down): said in the page, with a way to try again
 function errorReason(error) {
-  return /failed to fetch|network|load failed/i.test(error.message) ? "nessuna connessione, o Supabase non risponde" : error.message;
+  return /failed to fetch|network|load failed/i.test(error.message) ? "nessuna connessione, o il servizio non risponde" : error.message;
 }
 
 function loadErrorHtml(error) {
