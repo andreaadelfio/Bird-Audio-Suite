@@ -373,11 +373,13 @@ export function setupRecorder({ client, nameOf, say, confidenceClass }) {
     const inputs = (await navigator.mediaDevices.enumerateDevices())
       .filter((device) => device.kind === "audioinput" && device.deviceId && !["default", "communications"].includes(device.deviceId));
     const chosen = remembered("recordMic");
-    micSelect.innerHTML = '<option value="">Microfono predefinito</option>' + inputs.map((device, index) =>
+    // prima del primo permesso il browser non dice quali microfoni ci sono: il menu lo spiega
+    const first = inputs.length ? "Microfono predefinito" : "Predefinito (altri dopo il 1° uso)";
+    micSelect.innerHTML = `<option value="">${first}</option>` + inputs.map((device, index) =>
       `<option value="${escapeHtml(device.deviceId)}">${escapeHtml(device.label || `Microfono ${index + 1}`)}</option>`).join("");
     micSelect.value = inputs.some((device) => device.deviceId === chosen) ? chosen : "";
     micSelect.disabled = !inputs.length || rec?.running;
-    micName.textContent = micSelect.selectedOptions[0]?.textContent || "";
+    micName.textContent = inputs.length ? micSelect.selectedOptions[0]?.textContent || "" : "Microfono predefinito";
   }
 
   micSelect.addEventListener("change", () => {
