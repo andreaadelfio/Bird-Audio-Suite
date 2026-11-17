@@ -76,6 +76,14 @@ class DeadConnectionTests(unittest.TestCase):
             self.assertEqual(SupabaseStorage(self.config).list("inbox"), [])
         self.assertEqual(self.server.seen, [("POST", "/storage/v1/object/list/bird-audio")] * 2)
 
+    def test_downloading_a_file_waits_no_longer_than_the_other_requests(self) -> None:
+        # the WAV of a site recording, read by complete_site_clips: it waited 60 s, not 30
+        with mock.patch.object(cloud, "SUPABASE_TIMEOUT", (1, READ_TIMEOUT)):
+            started = time.monotonic()
+            with self.assertRaises(requests.exceptions.RequestException):
+                SupabaseStorage(self.config).read_bytes("inbox/Merlo.wav")
+        self.assertLess(time.monotonic() - started, READ_TIMEOUT * 3)
+
     def test_a_new_observation_is_never_inserted_twice(self) -> None:
         rest = SupabaseRest(self.config, timeout=(1, READ_TIMEOUT))
         self.server.answered.add("GET")  # the nearby clips answer at once: none

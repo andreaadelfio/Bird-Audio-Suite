@@ -269,12 +269,12 @@ class SupabaseStorage:
 
     def exists(self, object_path: str) -> bool:
         try:
-            return requests.head(self.public_url(object_path), timeout=30).status_code == 200
+            return requests.head(self.public_url(object_path), timeout=SUPABASE_TIMEOUT).status_code == 200
         except requests.RequestException:
             return False
 
     def read_bytes(self, object_path: str) -> bytes:
-        response = requests.get(self.public_url(object_path), timeout=60)
+        response = requests.get(self.public_url(object_path), timeout=SUPABASE_TIMEOUT)
         response.raise_for_status()
         return response.content
 
