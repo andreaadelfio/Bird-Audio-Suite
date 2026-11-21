@@ -382,15 +382,15 @@ function clipFacts(clip) {
   const seconds = `${Math.round(clip.duration_s || 0)} s`;
   if (clip.manual) {
     const also = clip.linked_from ? " La stessa registrazione è anche nell'osservazione da cui viene." : "";
-    return `${when} · <b class="by-hand" title="Messa qui a mano: BirdNET l'aveva analizzata per un'altra specie, quindi niente clip_conf né bande.${also}">collegata a mano</b> · ${seconds}`;
+    return `${when} · <b class="by-hand" title="Messa qui a mano: BirdNET l'aveva analizzata per un'altra specie, quindi niente confidenza né bande.${also}">collegata a mano</b> · ${seconds}`;
   }
   const live = clip.live_confidence != null && Math.abs(clip.live_confidence - clip.confidence) >= 0.005
     ? ` title="BirdNET sulla clip salvata; il live aveva dato ${Number(clip.live_confidence).toFixed(3)}"` : "";
   const linked = clip.linked_from ? ' · <span title="La stessa registrazione è anche in un\'altra osservazione">collegata</span>' : "";
   if (clip.segments == null) {
-    return `${when} · clip_conf in analisi… · ${seconds}${linked}`;
+    return `${when} · confidenza in analisi… · ${seconds}${linked}`;
   }
-  return `${when}${linked} · clip_conf <b class="conf-${confidenceClass(clip.confidence)}"${live}>${Number(clip.confidence).toFixed(3)}</b>
+  return `${when}${linked} · conf <b class="conf-${confidenceClass(clip.confidence)}"${live}>${Number(clip.confidence).toFixed(3)}</b>
     · ${seconds}`;
 }
 
@@ -468,8 +468,8 @@ function observationMeta(observation, facts, extra = "", withDay = true) {
   const when = withDay ? `${formatDay(observation.day)} ${hours}` : hours;
   return `<p class="meta">${when ? `<span>${when}</span>` : ""}
     ${facts.place ? `<span class="place">${escapeHtml(placeLabel(facts.place))}</span>` : ""}
-    ${facts.byHandOnly ? '<span>max_obs_conf <b class="by-hand">a mano</b></span>'
-      : `<span>max_obs_conf <b class="conf-${confidenceClass(facts.maxConfidence)}">${facts.maxConfidence.toFixed(3)}</b>
+    ${facts.byHandOnly ? '<span title="Confidenza massima di BirdNET tra le clip">conf. max <b class="by-hand">a mano</b></span>'
+      : `<span title="Confidenza massima di BirdNET tra le clip">conf. max <b class="conf-${confidenceClass(facts.maxConfidence)}">${facts.maxConfidence.toFixed(3)}</b>
       <span class="conf-tag conf-${confidenceClass(facts.maxConfidence)}">${confidenceClass(facts.maxConfidence)}</span></span>`}
     <span>${facts.clips.length} clip</span>${extra}</p>`;
 }
