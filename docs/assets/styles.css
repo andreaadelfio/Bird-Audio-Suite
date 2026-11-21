@@ -65,7 +65,7 @@ button {
   min-height: var(--control);
   padding: 0 0.7rem;
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: 999px; /* pills: every button, as the round actions */
   background: var(--surface);
   cursor: pointer;
   white-space: nowrap;
@@ -83,7 +83,7 @@ button.ghost { border-color: transparent; background: transparent; color: var(--
 button.ghost:hover { background: var(--sunken); }
 
 /* small square-ish buttons inside the clip player */
-button.tool { min-height: 1.75rem; padding: 0 0.45rem; font-size: 0.8rem; border-radius: 6px; }
+button.tool { min-height: 1.75rem; padding: 0 0.45rem; font-size: 0.8rem; border-radius: 999px; }
 button.tool.on, button.pill.on { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 /* the speed: a menu that looks like the buttons next to it, no arrow and a fixed width (the
    player stays on one row, and does not move when the speed changes) */
@@ -96,7 +96,7 @@ select.tool {
   font-size: 0.8rem;
   text-align: center;
   text-align-last: center;
-  border-radius: 6px;
+  border-radius: 999px;
   background: var(--surface);
   cursor: pointer;
 }

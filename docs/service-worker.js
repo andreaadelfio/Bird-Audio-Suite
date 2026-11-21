@@ -1,7 +1,7 @@
 // Service worker (come in MyFinance e Listino Prezzi): serve per installare il sito come app.
 // Prima la rete, così si vede sempre l'ultima versione; senza rete si apre almeno
 // l'interfaccia salvata. Dati, audio e spettrogrammi (Supabase) non passano di qui.
-const CACHE_NAME = "birds-shell-v9"; // v9: errori in italiano, Seleziona senza doppie azioni
+const CACHE_NAME = "birds-shell-v10"; // v10: pulsanti a pillola
 // BirdNET (modelli, ~80 MB) e TensorFlow.js: una volta scaricati restano, anche quando cambia il
 // sito (cache a parte, mai svuotata da un aggiornamento); a un modello nuovo si cambia il percorso
 const MODELS_CACHE = "birds-models-v1";
