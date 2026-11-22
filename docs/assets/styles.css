@@ -291,10 +291,16 @@ label { color: var(--ink-soft); font-size: 0.85rem; }
 .status-pills { display: flex; gap: 0.25rem; }
 .pill { min-height: 1.85rem; border-radius: 999px; padding: 0 0.75rem; }
 
-.more-filters > summary { cursor: pointer; color: var(--accent-deep); font-weight: 600; list-style: none; }
+/* a pill like the filters beside it (only on the phone: on a computer the fields are always there);
+   filled while open */
+.more-filters > summary {
+  display: inline-flex; align-items: center; gap: 0.35rem;
+  min-height: 1.85rem; padding: 0 0.75rem;
+  border: 1px solid var(--line); border-radius: 999px; background: var(--surface);
+  cursor: pointer; list-style: none; white-space: nowrap;
+}
 .more-filters > summary::-webkit-details-marker { display: none; }
-.more-filters > summary::before { content: "▸ "; }
-.more-filters[open] > summary::before { content: "▾ "; }
+.more-filters[open] > summary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 .filter-fields { display: flex; flex-wrap: wrap; align-items: center; gap: var(--gap); }
 .filter-fields input[type="search"] { width: 16rem; }
 
@@ -909,7 +915,7 @@ button.denoise.strong { background: var(--accent-deep); border-color: var(--acce
   /* the name gets the room: scientific name on its own line, numbers in narrow columns */
   .report-table th, .report-table td { padding: 0.3rem 0.4rem; }
   .report-table td:first-child small { display: block; margin-top: -0.2rem; }
-  .more-filters > summary, .inat-uploads > summary { padding: 0.45rem 0; }
+  .inat-uploads > summary { padding: 0.45rem 0; }
   .report-grid { grid-template-columns: minmax(0, 1fr); }
   .tiles { grid-template-columns: repeat(3, 1fr); }
 }
