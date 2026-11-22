@@ -471,7 +471,8 @@ function observationMeta(observation, facts, extra = "", withDay = true) {
     ${facts.byHandOnly ? '<span title="Confidenza massima di BirdNET tra le clip">conf. max <b class="by-hand">a mano</b></span>'
       : `<span title="Confidenza massima di BirdNET tra le clip">conf. max <b class="conf-${confidenceClass(facts.maxConfidence)}">${facts.maxConfidence.toFixed(3)}</b>
       <span class="conf-tag conf-${confidenceClass(facts.maxConfidence)}">${confidenceClass(facts.maxConfidence)}</span></span>`}
-    <span>${facts.clips.length} clip</span>${extra}</p>`;
+    ${facts.clips.length > 1 || facts.clips.every((clip) => clip.media_deleted_at)
+      ? `<span>${facts.clips.length} clip</span>` : ""}${extra}</p>`;
 }
 
 // the clips still with their files: those on iNaturalist lost them after the upload and are not
