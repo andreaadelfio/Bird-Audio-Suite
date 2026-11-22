@@ -2581,7 +2581,6 @@ async function renderReport(days = Number(storageGet("reportDays")) || 7) {
           </div>`).join("")}</div>
       </section>
       <section>
-        <h3>Specie</h3>
         ${speciesRows.length ? `<div class="table-scroll"><table class="report-table species-table">
           <thead><tr>${speciesHeadHtml()}</tr></thead>
           <tbody>${sortedSpecies(speciesRows).map(speciesTable.rowHtml).join("")}</tbody>

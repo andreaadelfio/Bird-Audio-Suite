@@ -699,8 +699,8 @@ button.denoise.strong { background: var(--accent-deep); border-color: var(--acce
 .report-grid > section > h3:first-child { margin-top: 0; }
 
 .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(76px, 1fr)); gap: 0.4rem; }
-.tile { display: grid; padding: 0.45rem 0.6rem; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); }
-.tile b { font-size: 1.3rem; line-height: 1.2; color: var(--accent-deep); }
+.tile { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 0.35rem; padding: 0.35rem 0.6rem; /* number and word on one line */ background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); }
+.tile b { font-size: 1.15rem; line-height: 1.25; color: var(--accent-deep); }
 .tile span { color: var(--ink-soft); font-size: 0.8rem; }
 .new-badge {
   margin-left: 0.3rem;
