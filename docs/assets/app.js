@@ -2424,7 +2424,7 @@ function seasonHtml(uploaded) {
       if (!count) return `<td title="${escapeHtml(name)}, ${MONTH_NAMES[month]}: mai"></td>`;
       const rate = count / total;
       return `<td class="${rate / top >= 0.5 ? "strong" : ""}" style="--share:${Math.round(15 + (rate / top) * 85)}%"
-        title="${escapeHtml(name)}, ${MONTH_NAMES[month]}: ${count} in ${total} giorni">${perDay(rate)}</td>`;
+        title="${escapeHtml(name)}, ${MONTH_NAMES[month]}: ${count} in ${total} ${total === 1 ? "giorno" : "giorni"}">${perDay(rate)}</td>`;
     }).join("");
     return `<tr><th scope="row"><button type="button" class="species-link" data-species="${escapeHtml(row.scientific_name)}"
       data-from="${firstDay}" title="Vedi le sue osservazioni">${escapeHtml(name)}</button></th>${cells}</tr>`;
