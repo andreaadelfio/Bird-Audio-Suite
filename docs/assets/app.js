@@ -1892,7 +1892,8 @@ async function fetchTrash() {
 
 function trashCardHtml(observation, whole) {
   const facts = observationFacts(observation);
-  const label = whole ? "scartata" : `${facts.clips.length} clip scartate`;
+  // the whole page is the bin: "scartata" would repeat it; only the observations kept with some clips out say so
+  const label = whole ? "" : `${facts.clips.length} ${facts.clips.length === 1 ? "clip scartata" : "clip scartate"}`;
   return `
     <article class="observation trash status-rejected" data-id="${observation.id}">
       ${speciesHeaderHtml(observation, label, "trash")}
