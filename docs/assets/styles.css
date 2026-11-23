@@ -1052,3 +1052,12 @@ body.selecting .status-line:not(:empty) { bottom: calc(4.8rem + env(safe-area-in
   body.record-open #content { padding-bottom: 7rem; }
   body.record-open .status-line:not(:empty) { bottom: calc(7.5rem + env(safe-area-inset-bottom)); }
 }
+/* a low screen (keyboard open, small phone): the same bar, thinner; the microphone's name is in the
+   menu of the panel already */
+@media (max-width: 720px) and (max-height: 640px) {
+  .record-bar { gap: 0.3rem 0.6rem; padding: 0.35rem 0.5rem; }
+  .record-button, #record-discard { min-height: 2.3rem; font-size: 0.95rem; }
+  .record-mic-name { display: none; }
+  body.record-open #content { padding-bottom: 5rem; }
+  body.record-open .status-line:not(:empty) { bottom: calc(5.5rem + env(safe-area-inset-bottom)); }
+}
