@@ -788,7 +788,6 @@ button.denoise.strong { background: var(--accent-deep); border-color: var(--acce
   .season-table tbody th { padding-right: 0.25rem; }
   .season-table tbody th { white-space: normal; }
   .season-table tbody th .species-link { display: block; max-width: 6.2rem; font-size: 0.72rem; line-height: 1.15; white-space: normal; }
-  .season-table thead th:first-child small { display: none; }
 }
 
 /* species names in the report open their observations of the period */
