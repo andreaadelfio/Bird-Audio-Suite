@@ -479,6 +479,8 @@ button.round.inat:hover { background: color-mix(in srgb, var(--uploaded) 12%, tr
 }
 
 .spectrogram { display: block; width: 100%; height: 100%; object-fit: fill; pointer-events: none; }
+/* no picture to look at: a lower box, still room for the time, the bands and the words */
+.spectrogram-box.no-image { height: 64px; }
 .no-image .spectrogram { visibility: hidden; }
 .no-image::before {
   content: "spettrogramma non disponibile";
