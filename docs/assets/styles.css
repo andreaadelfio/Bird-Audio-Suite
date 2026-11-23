@@ -744,6 +744,8 @@ button.denoise.strong { background: var(--accent-deep); border-color: var(--acce
 .inat-uploads > summary b { color: var(--uploaded); }
 .inat-uploads > summary small { font-weight: 400; }
 .inat-uploads > [data-inat-widget], .inat-uploads > .empty { margin-top: 0.35rem; }
+/* a line of text where the widget would be, not a big empty box */
+.inat-uploads > .empty { padding: 0.2rem 0; text-align: left; font-size: 0.85rem; }
 /* six small tiles a row: on a wide screen the widget would stretch them to 200 px (the widget
    replaces the box's classes, its data attribute stays) */
 .inat-uploads > [data-inat-widget] { max-width: 45rem; }
@@ -904,6 +906,10 @@ button.denoise.strong { background: var(--accent-deep); border-color: var(--acce
   .species-links a, .example-button { width: 1.75rem; min-height: 1.75rem; height: 1.75rem; }
   .example-button svg { width: 1rem; height: 1rem; }
   .candidate { min-height: 2rem; font-size: 0.8rem; }
+  /* fingers: the species icons (28 px) get a 44 px tap area without growing, an invisible margin
+     above and below (nothing else is that close to them) */
+  .species-links a, .example-button { position: relative; }
+  .species-links a::after, .example-button::after { content: ""; position: absolute; inset: -8px -2px; }
 
   .actions { margin-top: 0.2rem; }
   .actions > button:not(.round) { flex: 1 1 0; }

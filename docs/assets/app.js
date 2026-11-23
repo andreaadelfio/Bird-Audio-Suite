@@ -377,7 +377,8 @@ function findClip(clipId) {
 // clip_conf: BirdNET on the saved clip (the bands come from the same analysis); the live's own
 // score, from other chunks of the stream, in the tooltip. A clip placed by hand in an observation
 // of another species has neither: BirdNET's numbers were for the species it came from.
-function clipFacts(clip) {
+// single: the observation's only clip, whose number is already the card's "conf. max"
+function clipFacts(clip, single = false) {
   const when = timeFormat.format(new Date(clip.recorded_at));
   const seconds = `${Math.round(clip.duration_s || 0)} s`;
   if (clip.manual) {
@@ -390,6 +391,7 @@ function clipFacts(clip) {
   if (clip.segments == null) {
     return `${when} · confidenza in analisi… · ${seconds}${linked}`;
   }
+  if (single) return `${when}${linked} · ${seconds}`;
   return `${when}${linked} · conf <b class="conf-${confidenceClass(clip.confidence)}"${live}>${Number(clip.confidence).toFixed(3)}</b>
     · ${seconds}`;
 }
@@ -404,7 +406,7 @@ function clipReviewLook(wrong) {
 // canUnlink: only when the observation has other clips (a lone clip is already on its own, and
 // can still be linked elsewhere); onInat: its observation is on iNaturalist (the bin then removes
 // only the files)
-function clipHtml(clip, { folded = false, canUnlink = true, onInat = false } = {}) {
+function clipHtml(clip, { folded = false, canUnlink = true, onInat = false, single = false } = {}) {
   const urls = mediaUrls(clip.media_path);
   const duration = Number(clip.duration_s) || 1;
   const segments = clipSegments(clip);
@@ -419,7 +421,7 @@ function clipHtml(clip, { folded = false, canUnlink = true, onInat = false } = {
           <span class="trim-shade" style="left:${percentOf(clip.trim_end_s, duration)};right:0"></span>` : ""}
         <span class="selection hidden"></span>
         <span class="playhead"></span>
-        <span class="clip-info">${clipFacts(clip)}</span>
+        <span class="clip-info">${clipFacts(clip, single)}</span>
         ${selectBox("clip", clip.id, "Seleziona la clip")}
         ${trimmed ? `<button type="button" class="trim-chip" data-player="untrim"
           title="Tagliata (il file resta intero): tocca per togliere il taglio">✂ ${Number(clip.trim_start_s).toFixed(1)}–${Number(clip.trim_end_s).toFixed(1)} ✕</button>` : ""}
@@ -481,7 +483,8 @@ function clipsHtml(allClips, options = {}) {
   const clips = allClips.filter((clip) => !clip.media_deleted_at);
   if (!clips.length) return "";
   return `<div class="obs-clips">
-      <div class="clips">${clips.map((clip, index) => clipHtml(clip, { ...options, folded: index >= VISIBLE_CLIPS })).join("")}</div>
+      <div class="clips">${clips.map((clip, index) => clipHtml(clip, { single: allClips.length === 1, ...options,
+        folded: index >= VISIBLE_CLIPS })).join("")}</div>
       ${clips.length > VISIBLE_CLIPS
         ? `<button type="button" class="show-clips" data-show-clips>Mostra altre ${clips.length - VISIBLE_CLIPS} clip</button>`
         : ""}
@@ -1042,6 +1045,7 @@ async function saveTrim(figure, start, end) {
   const folded = figure.classList.contains("folded");
   figure.querySelector("audio").pause();
   figure.outerHTML = clipHtml(found.clip, { folded, canUnlink: (found.observation?.clips || []).length > 1,
+    single: (found.observation?.clips || []).length === 1,
     onInat: found.observation?.status === "uploaded" });
   setStatus(start == null ? "Taglio tolto." : `Clip tagliata: ${values.trim_start_s}–${values.trim_end_s} s (il file resta intero).`);
 }
@@ -2598,7 +2602,7 @@ async function renderReport(days = Number(storageGet("reportDays")) || 7) {
 // iNaturalist only when the box is opened (lazy, the default)
 function inatWidgetHtml(from) {
   const user = config.inatUser || storageGet(INAT_LOGIN_KEY);
-  if (!user) return '<p class="empty">Collega iNaturalist (iNat in alto) per vedere le osservazioni.</p>';
+  if (!user) return '<p class="empty">Per vederle qui collega iNaturalist (iNat in alto).</p>';
   const dark = matchMedia("(prefers-color-scheme: dark)").matches;
   return `<div class="inat-widget" data-inat-widget data-inat-source="${escapeHtml(user)}" data-inat-source-type="user"
     data-inat-date-from="${from}" data-inat-order-by="observed_on"
