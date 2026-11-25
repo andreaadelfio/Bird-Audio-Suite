@@ -2682,10 +2682,15 @@ async function render() {
     if (state.view === "report") await renderReport();
     else if (state.view === "trash") await renderTrash();
     else await renderObservations();
+    if (token === renderToken) content.dataset.view = state.view;
     if ($("#status-line").textContent === "Carico…") setStatus("");
   } catch (error) {
     setStatus(`Errore: ${errorReason(error)}`, true);
-    if (content.querySelector(".loading")) content.innerHTML = loadErrorHtml(error); // nothing shown yet
+    // nothing shown yet, or the page of another tab under this one (offline, a tap on Report): said
+    // in the page, with Riprova. The same tab keeps what it showed
+    if (token === renderToken && (content.querySelector(".loading") || content.dataset.view !== state.view)) {
+      content.innerHTML = loadErrorHtml(error);
+    }
   } finally {
     clearTimeout(slow);
     if (token === renderToken) content.classList.remove("busy");
