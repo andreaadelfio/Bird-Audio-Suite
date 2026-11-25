@@ -55,10 +55,10 @@ from .config import (
 )
 from . import config as settings  # read at use: config.py is reloaded while running (config_watch)
 from .config_watch import ConfigWatcher
-from .detector import BirdNetDetector
+from .detector import BIRDNET_SAMPLE_RATE, BirdNetDetector
 from .echo import ACTIVE_RMS, PlaybackMonitor, PlaybackSubtractor
 from .geolocation import resolve_location
-from .health import HeartbeatWriter
+from .health import SILENCE_RMS as HEALTH_SILENCE_RMS, HeartbeatWriter
 from .inputgain import SOUND_SERVER_DEVICES, SourceVolumeCompensation
 from .metrics import LiveMetrics
 from .uploader import read_status as read_uploader_status, status_line as uploader_status_line
@@ -67,7 +67,6 @@ from .species import SpeciesNames
 
 
 AUDIO_FILE_SUFFIXES = {".wav", ".flac", ".mp3", ".ogg", ".m4a"}
-BIRDNET_SAMPLE_RATE = 48000
 AUDIO_STALL_TIMEOUT_SECONDS = 30.0
 LIVE_MAX_CLIP_SECONDS = 120.0
 TABLE_REFRESH_SECONDS = 60.0
@@ -680,6 +679,7 @@ def select_sounddevice_index(
 
     state = load_sounddevice_state(state_path)
     saved_device = find_saved_sounddevice(devices, state)
+    saved_measurements: list[dict] = []
     if saved_device is not None:
         print(f"Verifico il device salvato: {saved_device['index']} ({saved_device['name']})")
         saved_measurements = probe_sounddevice_inputs([saved_device], duration_seconds)
@@ -697,6 +697,11 @@ def select_sounddevice_index(
         measurement
         for measurement in measurements
         if measurement["rms"] >= DEFAULT_DEVICE_MIN_RMS
+    ]
+    # a silent room at dawn is just under the threshold too: the saved input, if it gives any signal
+    # (not digital silence), still competes, so a louder raw 16 kHz mic does not take its place
+    valid_measurements += [
+        measurement for measurement in saved_measurements if measurement["rms"] >= HEALTH_SILENCE_RMS
     ]
     # Among inputs with real signal prefer, in order:
     # - full bandwidth: at 16 kHz BirdNET loses everything above 8 kHz;
@@ -718,7 +723,7 @@ def select_sounddevice_index(
 
     selected_device = next(
         device
-        for device in devices_to_probe
+        for device in devices
         if device["index"] == selected_measurement["index"]
     )
     save_sounddevice_state(selected_device, selected_measurement, state_path)

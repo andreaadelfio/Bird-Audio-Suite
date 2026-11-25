@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from bird_audio_suite.detector import Analyzer, FastAnalyzer
+from bird_audio_suite.detector import Analyzer, BirdNetDetector, FastAnalyzer
 
 
 def fake_analyzer(cls, positions: list):
@@ -42,6 +42,30 @@ class FastAnalyzerTests(unittest.TestCase):
         self.assertEqual(list(results[1][0]), ["0-3.0", "1.0-4.0", "2.0-5.0", "3.0-6.0", "4.0-7.0", "5.0-8.0"])
         self.assertEqual(results[1][0]["3.0-6.0"], [])
         self.assertEqual(len(positions), 2)  # both look up the species expected at the place
+
+
+class SampleRateTests(unittest.TestCase):
+    def chunk_lengths(self, rate: int, seconds: float) -> list[int]:
+        """Lengths of the 3 s chunks BirdNET is fed for a live window recorded at this rate."""
+        lengths: list[int] = []
+
+        def analyze_recording(recording) -> None:
+            lengths.extend(len(chunk) for chunk in recording.chunks)
+            recording.detection_list = []
+
+        detector = BirdNetDetector.__new__(BirdNetDetector)
+        detector.analyzer = SimpleNamespace(analyze_recording=analyze_recording, custom_species_list=[])
+        samples = np.zeros(int(rate * seconds), dtype=np.float32)
+        detector.detect_samples(samples, rate, 45.8, 13.5, None, 0.5, overlap=2.0)
+        return lengths
+
+    def test_a_16_khz_microphone_gets_the_chunks_of_a_48_khz_one(self) -> None:
+        # 23 Nov 2026: the live picked a 16 kHz input and BirdNET failed every window for 15 hours
+        # (XNNPack "failed to reshape"): birdnetlib's buffer cuts 3 s at the given rate, the model wants 48 kHz
+        reference = self.chunk_lengths(48000, 9.6)
+        self.assertEqual(set(reference), {144000})
+        self.assertEqual(self.chunk_lengths(16000, 9.6), reference)
+        self.assertEqual(self.chunk_lengths(44100, 9.6), reference)  # before: shorter, read as 48 kHz (9% higher)
 
 
 if __name__ == "__main__":

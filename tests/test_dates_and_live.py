@@ -476,6 +476,42 @@ class DeviceSelectionTests(unittest.TestCase):
 
         self.assertEqual(selected, 16)
 
+    def test_a_quiet_dawn_keeps_the_saved_sound_server_input(self) -> None:
+        # 23 Nov 2026, 05:42: the saved "pulse" heard a silent room just under the threshold and the
+        # live moved to the raw 16 kHz mic (the only input above it), then stayed there
+        devices = [
+            {"index": 5, "name": "sof-hda-dsp: - (hw:0,7)", "samplerate": 16000},
+            {"index": 11, "name": "pulse", "samplerate": 44100},
+            {"index": 16, "name": "default", "samplerate": 44100},
+        ]
+        quiet = cli.DEFAULT_DEVICE_MIN_RMS * 0.9
+        saved = [{"index": 11, "name": "pulse", "rms": quiet, "peak": 0.001, "samplerate": 48000}]
+        others = [
+            {"index": 5, "name": "sof-hda-dsp: - (hw:0,7)", "rms": 0.0008, "peak": 0.0026, "samplerate": 16000},
+            {"index": 16, "name": "default", "rms": quiet, "peak": 0.001, "samplerate": 48000},
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            state_path = Path(directory) / "device.json"
+            state_path.write_text(json.dumps({"index": 11, "name": "pulse", "samplerate": 48000}), encoding="utf-8")
+            with patch.object(cli, "probe_sounddevice_inputs", side_effect=[saved, others]):
+                selected = cli.select_sounddevice_index(devices, state_path=state_path)
+            self.assertEqual(selected, 11)
+            self.assertEqual(json.loads(state_path.read_text(encoding="utf-8"))["name"], "pulse")
+
+    def test_a_saved_input_giving_digital_silence_is_left(self) -> None:
+        devices = [
+            {"index": 5, "name": "sof-hda-dsp: - (hw:0,7)", "samplerate": 16000},
+            {"index": 11, "name": "pulse", "samplerate": 44100},
+        ]
+        dead = [{"index": 11, "name": "pulse", "rms": 0.0, "peak": 0.0, "samplerate": 48000}]
+        others = [{"index": 5, "name": "sof-hda-dsp: - (hw:0,7)", "rms": 0.0008, "peak": 0.0026, "samplerate": 16000}]
+        with tempfile.TemporaryDirectory() as directory:
+            state_path = Path(directory) / "device.json"
+            state_path.write_text(json.dumps({"index": 11, "name": "pulse"}), encoding="utf-8")
+            with patch.object(cli, "probe_sounddevice_inputs", side_effect=[dead, others]):
+                selected = cli.select_sounddevice_index(devices, state_path=state_path)
+        self.assertEqual(selected, 5)
+
 
 class LiveSummaryTests(unittest.TestCase):
     def test_an_observation_without_clips_does_not_break_the_table(self) -> None:

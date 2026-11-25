@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import math
 import sys
 import types
 import warnings
@@ -41,6 +42,8 @@ _use_litert_as_tflite_runtime()
 import numpy as np
 from birdnetlib import Recording, RecordingBuffer
 from birdnetlib.analyzer import Analyzer
+
+BIRDNET_SAMPLE_RATE = 48000
 
 
 class FastAnalyzer(Analyzer):
@@ -115,10 +118,21 @@ class BirdNetDetector:
 
         overlap (s) makes BirdNET's 3 s chunks overlap, so a call cut by a chunk border is still
         heard whole by the next one (slower: 3x the chunks with overlap=2)."""
+        samples = np.asarray(samples, dtype=np.float32)
+        sample_rate = int(sample_rate)
+        if sample_rate != BIRDNET_SAMPLE_RATE:
+            # birdnetlib's buffer cuts 3 s at the rate it is given and feeds the model as is, which
+            # wants 48 kHz: at 16 kHz every chunk fails ("XNNPack ... failed to reshape"), at 44.1 kHz
+            # the song is read 9% higher. Recording (files) resamples by itself.
+            from scipy.signal import resample_poly
+
+            common = math.gcd(BIRDNET_SAMPLE_RATE, sample_rate)
+            samples = resample_poly(samples, BIRDNET_SAMPLE_RATE // common, sample_rate // common).astype(np.float32)
+            sample_rate = BIRDNET_SAMPLE_RATE
         recording = RecordingBuffer(
             self.analyzer,
-            np.asarray(samples, dtype=np.float32),
-            int(sample_rate),
+            samples,
+            sample_rate,
             lat=latitude,
             lon=longitude,
             date=when,
