@@ -2572,7 +2572,9 @@ async function renderReport(days = Number(storageGet("reportDays")) || 7) {
   }
   const speciesRows = [...bySpecies.values()];
   const maxHour = Math.max(1, ...hours);
-  const totalMinutes = Math.round(speciesRows.reduce((sum, row) => sum + row.seconds, 0) / 60);
+  const totalSeconds = speciesRows.reduce((sum, row) => sum + row.seconds, 0);
+  // under half a minute "0 min" would look like no audio at all, beside its observations
+  const audioTile = totalSeconds && totalSeconds < 30 ? [Math.round(totalSeconds), "s di audio"] : [Math.round(totalSeconds / 60), "min di audio"];
   // NEW: heard for the first time ever in this period; meaningless when the period reaches back
   // to the first day of listening (then every species would be new)
   const firstEver = firstListeningDay();
@@ -2607,7 +2609,7 @@ async function renderReport(days = Number(storageGet("reportDays")) || 7) {
         <div class="tiles">
           <div class="tile"><b>${speciesRows.length}</b><span>specie</span></div>
           <div class="tile"><b>${rows.length}</b><span>osservazioni</span></div>
-          <div class="tile"><b>${totalMinutes}</b><span>min di audio</span></div>
+          <div class="tile"><b>${audioTile[0]}</b><span>${audioTile[1]}</span></div>
         </div>
         <h3>Osservazioni per ora</h3>
         <div class="hours">${hours.map((count, hour) => `
