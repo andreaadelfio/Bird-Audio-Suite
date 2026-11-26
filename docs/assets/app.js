@@ -3,6 +3,7 @@
 // The site changes only the review columns; everything else is written by `bird_audio_cli.py sync`.
 
 import { setupRecorder } from "./registra.js?v=7";
+import { observationsCsv } from "./report-csv.js?v=1";
 
 const config = window.APP_CONFIG || {};
 const PAGE_SIZE = 25;
@@ -339,6 +340,7 @@ const ICON_EDIT = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 17.25
 const ICON_DENOISE = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7.5 5.6 10 7 8.6 4.5 10 2 7.5 3.4 5 2l1.4 2.5L5 7zm12 9.8L17 14l1.4 2.5L17 19l2.5-1.4L22 19l-1.4-2.5L22 14zM22 2l-2.5 1.4L17 2l1.4 2.5L17 7l2.5-1.4L22 7l-1.4-2.5zm-7.63 5.29a1 1 0 0 0-1.41 0L1.29 18.96a1 1 0 0 0 0 1.41l2.34 2.34a1 1 0 0 0 1.41 0L16.7 11.05a1 1 0 0 0 0-1.41l-2.33-2.35zm-1.03 5.49-2.12-2.12 2.44-2.44 2.12 2.12-2.44 2.44z"/></svg>';
 const ICON_MORE = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 10a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"/></svg>';
 const ICON_UPLOAD = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 20h14v-2H5v2zm7-18-7 7h4v6h6v-6h4l-7-7z"/></svg>';
+const ICON_DOWNLOAD = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 20h14v-2H5v2zM19 9h-4V3H9v6H5l7 7 7-7z"/></svg>';
 const ICON_LOOP = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/></svg>';
 const SKIP_SECONDS = 2;
 const BAND_PADDING_SECONDS = 0.5;
@@ -2556,6 +2558,7 @@ async function renderReport(days = Number(storageGet("reportDays")) || 7) {
   const firstEver = [...state.species.values()].map((row) => row.first_seen_date).filter(Boolean).sort()[0] || "";
   const firstSeen = (row) => state.species.get(row.scientific_name)?.first_seen_date || "";
   const isNew = (row) => firstEver && from > firstEver && firstSeen(row) >= from;
+  reportShown = { rows, from };
   speciesTable.rows = speciesRows;
   speciesTable.rowHtml = (row) => `
             <tr>
@@ -2570,6 +2573,8 @@ async function renderReport(days = Number(storageGet("reportDays")) || 7) {
       <div class="segmented" role="group" aria-label="Periodo">
         ${[7, 30, 90, 365].map((n) => `<button type="button" data-days="${n}" class="${n === days ? "on" : ""}" aria-pressed="${n === days}">${n === 365 ? "1 anno" : `${n} giorni`}</button>`).join("")}
       </div>
+      ${rows.length ? `<button type="button" class="icon-button report-export" data-export
+        title="Scarica le ${rows.length} osservazioni del periodo (CSV, per Excel o LibreOffice)" aria-label="Scarica le osservazioni del periodo">${ICON_DOWNLOAD}</button>` : ""}
     </div>
     <details class="inat-uploads"${openInat ? " open" : ""}>
       <summary>Su iNaturalist <b>${uploaded.length}</b> <small>caricate in questo periodo</small></summary>
@@ -2632,7 +2637,38 @@ function startInatWidget() {
     <a href="${escapeHtml(url)}" target="_blank" rel="noopener">le tue osservazioni del periodo su iNaturalist</a>.</p>`;
 }
 
+// "Scarica": the observations the report counts, with where they were heard and their link on
+// iNaturalist (read now: one query, only when asked)
+let reportShown = null;
+async function exportReport(button) {
+  const { rows, from } = reportShown;
+  button.classList.add("working");
+  try {
+    const observations = await fetchAll(() => state.client.from("observations")
+      .select("id, inat_observation_id, clips(place_name, latitude, longitude)").gte("day", from).neq("status", "rejected")
+      .order("id"));
+    const details = new Map(observations.map((row) => [row.id, {
+      ...(row.clips.find((clip) => clip.place_name || clip.latitude != null) || {}), inat_observation_id: row.inat_observation_id }]));
+    const url = URL.createObjectURL(new Blob([observationsCsv(rows, details)], { type: "text/csv;charset=utf-8" }));
+    const link = Object.assign(document.createElement("a"), { href: url, download: `uccelli-${from}-${localDay(new Date())}.csv` });
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+    setStatus(`Scaricate ${rows.length} ${rows.length === 1 ? "osservazione" : "osservazioni"}.`);
+  } catch (error) {
+    setStatus(`Errore: ${errorReason(error)}`, true);
+  } finally {
+    button.classList.remove("working");
+  }
+}
+
 content.addEventListener("click", (event) => {
+  const exportButton = event.target.closest("[data-export]");
+  if (exportButton) {
+    exportReport(exportButton);
+    return;
+  }
   const speciesButton = event.target.closest("[data-species]");
   if (speciesButton) {
     showSpeciesObservations(speciesButton.dataset.species, speciesButton.dataset.from);

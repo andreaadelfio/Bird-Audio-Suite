@@ -1,7 +1,7 @@
 // Service worker (come in MyFinance e Listino Prezzi): serve per installare il sito come app.
 // Prima la rete, così si vede sempre l'ultima versione; senza rete si apre almeno
 // l'interfaccia salvata. Dati, audio e spettrogrammi (Supabase) non passano di qui.
-const CACHE_NAME = "birds-shell-v12"; // v12: aree di tocco, una sola confidenza
+const CACHE_NAME = "birds-shell-v13"; // v13: stato del PC, Report scaricabile
 // BirdNET (modelli, ~80 MB) e TensorFlow.js: una volta scaricati restano, anche quando cambia il
 // sito (cache a parte, mai svuotata da un aggiornamento); a un modello nuovo si cambia il percorso
 const MODELS_CACHE = "birds-models-v1";
@@ -11,6 +11,7 @@ const APP_SHELL = [
   "./manifest.webmanifest",
   "./assets/styles.css",
   "./assets/app.js",
+  "./assets/report-csv.js",
   "./assets/denoise-worker.js",
   "./assets/registra.js",
   "./assets/registra-worklet.js",

@@ -717,6 +717,7 @@ button.denoise.strong { background: var(--accent-deep); border-color: var(--acce
 .report-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--gap) 1rem; margin-bottom: 0.6rem; }
 .report-head h2 { margin: 0; font-size: 1.05rem; }
 .segmented { display: flex; gap: 0.2rem; }
+.report-export { margin-left: auto; }
 .segmented button.on { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
 
 .report-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr); gap: 0.8rem; align-items: start; }
