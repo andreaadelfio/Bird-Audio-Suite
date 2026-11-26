@@ -16,7 +16,7 @@
     <link rel="manifest" href="./manifest.webmanifest">
     <link rel="icon" type="image/png" sizes="64x64" href="./assets/favicon-64.png">
     <link rel="apple-touch-icon" href="./assets/apple-touch-icon.png">
-    <link rel="stylesheet" href="./assets/styles.css?v=93">
+    <link rel="stylesheet" href="./assets/styles.css?v=94">
   </head>
   <body>
     <div class="page-shell">
@@ -37,6 +37,13 @@
           <button id="volume-value" type="button" class="tool volume-value" title="Tocca per tornare al 100%">100%</button>
         </div>
         <div class="top-tools">
+          <!-- the PC (uploader.py writes its state every 10 minutes): hidden until it has written one -->
+          <button id="pc-toggle" class="icon-button pc-toggle hidden" type="button" aria-label="Stato del PC"
+            aria-expanded="false" aria-controls="pc-panel">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M20 18a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2H0v2h24v-2h-4zM4 6h16v10H4V6z"/>
+            </svg>
+          </button>
           <button id="volume-toggle" class="icon-button" type="button" aria-label="Volume" aria-expanded="false"
             aria-controls="volume-panel">
             <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -127,6 +134,8 @@
         </div>
       </section>
 
+      <section id="pc-panel" class="pc-panel hidden" aria-label="Il PC" aria-live="polite"></section>
+
       <section id="filters" class="filters hidden" aria-label="Filtri">
         <div class="status-pills" role="group" aria-label="Stato">
           <button type="button" class="pill on" data-filter-status="">Tutte</button>
@@ -178,6 +187,6 @@
     <!-- the iNaturalist widget of andreaadelfio.github.io (repository inat-widget), for the Report -->
     <script defer src="https://andreaadelfio.github.io/inat-widget/inat-widget-custom.js"></script>
     <script src="./assets/config.js?v=52"></script>
-    <script type="module" src="./assets/app.js?v=119"></script>
+    <script type="module" src="./assets/app.js?v=120"></script>
   </body>
 </html>

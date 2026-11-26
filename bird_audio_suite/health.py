@@ -15,7 +15,7 @@ import shutil
 import subprocess
 import time
 from collections import deque
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 SERVICE_NAME = "bird-audio-suite.service"
@@ -77,7 +77,7 @@ class HeartbeatWriter:
 
 def find_problems(now: float, service_state: str, heartbeat: dict | None) -> dict[str, str]:
     if service_state != "active":
-        return {"service": f"Il servizio non è attivo (stato: {service_state})."}
+        return {"service": f"Il servizio live non è attivo (stato: {service_state})."}
     if not heartbeat:
         return {"stale": "Il servizio è attivo ma non ha ancora analizzato audio."}
     age = now - float(heartbeat.get("updated_at", 0))
@@ -159,6 +159,43 @@ def read_json(path: Path) -> dict | None:
         return None
 
 
+def current_problems(now: float, service: str, heartbeat: dict | None, uploader: dict | None,
+                     disk_problems: dict[str, str] | None = None) -> dict[str, str]:
+    """Everything the check looks at: the live, the uploader, the disk."""
+    problems = find_problems(now, service, heartbeat)
+    problems.update(find_upload_problems(now, uploader))
+    problems.update(find_disk_problems() if disk_problems is None else disk_problems)
+    return problems
+
+
+def pc_status(now: float, service: str, heartbeat: dict | None, uploader: dict | None,
+              disk_problems: dict[str, str] | None = None) -> dict:
+    """What the uploader publishes for the site (birds.shared_settings, key "pc_status"): this check's
+    verdict and the facts behind it. Times in UTC ISO; what is not known is None."""
+
+    def iso(seconds) -> str | None:
+        return datetime.fromtimestamp(float(seconds), timezone.utc).isoformat(timespec="seconds") if seconds else None
+
+    beat, sent = heartbeat or {}, uploader or {}
+    level = beat.get("max_rms_recent")
+    return {
+        "at": iso(now),
+        "live": service,
+        "heard_at": iso(beat.get("updated_at")),  # the last window BirdNET analysed
+        "device": beat.get("device"),
+        "place": beat.get("place_name"),
+        "level": round(float(level), 5) if level is not None else None,  # loudest of the last 10 minutes
+        "pending": sent.get("pending"),
+        "sent_at": iso(sent.get("last_sent_at")),
+        # by kind (find_problems' keys): the site words "stale" itself, with the day
+        "problems": current_problems(now, service, heartbeat, uploader, disk_problems),
+    }
+
+
+def describe_pc() -> dict:
+    return pc_status(time.time(), service_state(), read_json(HEARTBEAT_FILE), read_json(UPLOADER_STATUS_FILE))
+
+
 # the app's icon (docs/assets, made by dev/make_icons.py); the system microphone without it
 NOTIFY_ICON = Path(__file__).resolve().parent.parent / "docs" / "assets" / "icon-192.png"
 
@@ -221,9 +258,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     now = time.time()
-    problems = find_problems(now, service_state(), read_json(HEARTBEAT_FILE))
-    problems.update(find_upload_problems(now, read_json(UPLOADER_STATUS_FILE)))
-    problems.update(find_disk_problems())
+    problems = current_problems(now, service_state(), read_json(HEARTBEAT_FILE), read_json(UPLOADER_STATUS_FILE))
     state, to_alert, resolved = update_state(read_json(STATE_FILE) or {}, problems)
     for _key, message in to_alert:
         notify("Bird Audio Suite: problema", message, urgency="critical")

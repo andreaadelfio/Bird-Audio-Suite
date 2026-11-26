@@ -11,6 +11,9 @@ the site, a WAV in the bucket's inbox/): MP3, spectrogram, analysis and Perch, a
 Supabase, all day long, and the site plays the WAV meanwhile. It looks at the folder every few
 seconds, so a clip is on Supabase moments after it closes;
 what failed (offline) is tried again every minute (the log says it once, and when it is over).
+Every ten minutes it publishes the PC's state for the site (birds.shared_settings, "pc_status"):
+the health check's verdict on the live, the uploader and the disk, with the last window analysed
+and the last clip sent. When the PC is off nothing comes, and the site says how long ago it last heard.
 Once an hour it also tidies up (Outbox.tidy: files of observations on iNaturalist that the site
 could not remove after the upload, empty observations, iNaturalist's species, names of new
 species, Perch); a step that failed is tried again after ten minutes. After each round, and every half minute while a long backlog goes, it
@@ -29,7 +32,7 @@ from pathlib import Path
 from typing import Callable
 
 from .config_watch import ConfigWatcher
-from .health import UPLOADER_STATUS_FILE as STATUS_FILE
+from .health import UPLOADER_STATUS_FILE as STATUS_FILE, describe_pc as describe_this_pc
 
 POLL_SECONDS = 3.0
 RETRY_SECONDS = 60.0
@@ -38,6 +41,7 @@ NAMES_REFRESH_SECONDS = 3600.0
 PURGE_EVERY_SECONDS = 3600.0
 TIDY_RETRY_SECONDS = 600.0  # a housekeeping step failed (offline at boot, iNaturalist down)
 PROGRESS_SECONDS = 30.0  # state written meanwhile, while a long backlog is being sent
+PC_STATUS_SECONDS = 600.0  # the PC's state for the site: 144 upserts of one row a day
 STALE_STATUS_SECONDS = 3 * 60  # the uploader writes at least every RETRY_SECONDS
 # what Outbox.tidy did, for the log
 TIDY_MESSAGES = {
@@ -132,12 +136,14 @@ def run_uploader(
     purge_every_seconds: float = PURGE_EVERY_SECONDS,
     tidy_retry_seconds: float = TIDY_RETRY_SECONDS,
     progress_seconds: float = PROGRESS_SECONDS,
+    pc_status_seconds: float = PC_STATUS_SECONDS,
     status: UploaderStatus | None = None,
     log: Callable[[str], None] = print,
     should_stop: Callable[[], bool] = lambda: False,
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
     watcher: ConfigWatcher | None = None,
+    describe_pc: Callable[[], dict] = describe_this_pc,
 ) -> None:
     """Push whenever the folder changes, and every `retry_seconds` while something waits.
     `make_outbox()` builds the Outbox (again every `names_refresh_seconds`, for fresh names).
@@ -156,6 +162,7 @@ def run_uploader(
     pull_error = ""
     last_purge = -purge_every_seconds
     settings_due, settings_tried, settings_failed = True, -retry_seconds, False
+    last_pc_status, pc_status_failed = -pc_status_seconds, False
     while not should_stop():
         if "LIKELY_CONFIDENCE" in watcher.poll():
             settings_due = True
@@ -212,6 +219,17 @@ def run_uploader(
                     log(f"{datetime.now():%H:%M:%S} - invio di nuovo a posto")
                 last_error = same_error(problem)
                 status.write(outbox_items(detections_dir), report, seconds, error)
+        # after the push: the state it publishes counts what is still waiting
+        if clock() - last_pc_status >= pc_status_seconds:
+            last_pc_status = clock()
+            try:
+                outbox.publish_pc_status(describe_pc())
+                pc_status_failed = False
+            except Exception as exc:  # offline: again in a minute, said once
+                if not pc_status_failed:
+                    log(f"{datetime.now():%H:%M:%S} - stato del PC per il sito non inviato: {exc!r}")
+                pc_status_failed = True
+                last_pc_status = clock() - pc_status_seconds + retry_seconds
         if clock() - last_purge >= purge_every_seconds:
             last_purge = clock()
             try:

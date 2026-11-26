@@ -9,7 +9,14 @@ from unittest.mock import patch
 
 from bird_audio_suite import geolocation
 from bird_audio_suite.geolocation import ResolvedLocation, resolve_location
-from bird_audio_suite.health import HeartbeatWriter, find_disk_problems, find_problems, resolution_message, update_state
+from bird_audio_suite.health import (
+    HeartbeatWriter,
+    find_disk_problems,
+    find_problems,
+    pc_status,
+    resolution_message,
+    update_state,
+)
 
 
 NOW = 1_000_000.0
@@ -46,6 +53,32 @@ class FindProblemsTests(unittest.TestCase):
         skipping = find_problems(NOW, "active", {**keeping_up, "skipped": 40, "load_pct": 180})
         self.assertEqual(list(skipping), ["slow"])
         self.assertIn("saltato 40 finestre", skipping["slow"])
+
+
+class PcStatusTests(unittest.TestCase):
+    """What the uploader publishes for the site: the health check's verdict and a few facts."""
+
+    def test_a_listening_pc(self) -> None:
+        status = pc_status(NOW, "active", {**heartbeat(age=20), "place_name": "Basaldella"},
+                           {"updated_at": NOW, "pending": 0, "last_sent_at": NOW - 300}, disk_problems={})
+        self.assertEqual(status["problems"], {})
+        self.assertEqual((status["live"], status["device"], status["place"], status["pending"]),
+                         ("active", "pulse", "Basaldella", 0))
+        self.assertEqual(status["heard_at"], "1970-01-12T13:46:20+00:00")  # NOW - 20 s, UTC
+        self.assertEqual(status["sent_at"], "1970-01-12T13:41:40+00:00")
+        self.assertEqual(status["level"], 0.002)
+
+    def test_a_live_that_analyses_nothing_says_so(self) -> None:
+        # 23 Nov 2026: the service was active, BirdNET failed every window, no heartbeat after the start
+        status = pc_status(NOW, "active", heartbeat(age=18 * 60), {"updated_at": NOW, "pending": 0}, disk_problems={})
+        self.assertEqual(list(status["problems"]), ["stale"])
+        self.assertIn("Nessun audio analizzato", status["problems"]["stale"])
+
+    def test_nothing_known_is_none_not_a_crash(self) -> None:
+        status = pc_status(NOW, "inactive", None, None, disk_problems={})
+        self.assertEqual((status["heard_at"], status["sent_at"], status["level"], status["pending"]),
+                         (None, None, None, None))
+        self.assertIn("non è attivo", status["problems"]["service"])
 
 
 class AlertStateTests(unittest.TestCase):

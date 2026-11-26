@@ -21,6 +21,7 @@ class FakeOutbox:
     def __init__(self, folder: Path) -> None:
         self.folder, self.pushes, self.offline, self.busy = folder, 0, False, False
         self.purges = self.published = self.site_looks = 0
+        self.pc_statuses: list[dict] = []
         self.tidy_fails = False
         self.during_push = lambda: None  # e.g. time passing while a long backlog goes
 
@@ -28,6 +29,11 @@ class FakeOutbox:
         if self.offline:
             raise RuntimeError("offline")
         self.published += 1
+
+    def publish_pc_status(self, status: dict) -> None:
+        if self.offline:
+            raise RuntimeError("offline")
+        self.pc_statuses.append(status)
 
     def complete_site_clips(self):
         self.site_looks += 1
@@ -86,7 +92,8 @@ class UploaderLoopTests(unittest.TestCase):
         run_uploader(folder, lambda: outbox, poll_seconds=3, retry_seconds=60,
                      status=UploaderStatus(self.status_path), log=log or (lambda message: None),
                      should_stop=loop.stop, sleep=loop.sleep, clock=lambda: loop.now,
-                     watcher=watcher or types.SimpleNamespace(poll=lambda: {}))
+                     watcher=watcher or types.SimpleNamespace(poll=lambda: {}),
+                     describe_pc=lambda: {"at": loop.now, "pending": (read_status(self.status_path) or {}).get("pending")})
         return read_status(self.status_path)
 
     def test_the_likely_threshold_goes_to_the_site_at_start_and_when_config_changes(self) -> None:
@@ -103,6 +110,29 @@ class UploaderLoopTests(unittest.TestCase):
             outbox = FakeOutbox(Path(directory))
             self.run_loop(Path(directory), outbox, [lambda: None] * 220)  # 11 minutes
         self.assertEqual(outbox.site_looks, 3)  # at start, after 5 and after 10 minutes
+
+    def test_the_pcs_state_goes_to_the_site_every_ten_minutes_after_the_first_push(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            write_clip(folder, "Merlo_1")
+            outbox = FakeOutbox(folder)
+            self.run_loop(folder, outbox, [lambda: None] * 420)  # 21 minutes
+        self.assertEqual([status["at"] for status in outbox.pc_statuses], [0, 600, 1200])
+        self.assertEqual(outbox.pc_statuses[0]["pending"], 0)  # written after the push it describes
+
+    def test_the_pcs_state_offline_is_said_once_and_tried_again_after_a_minute(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            outbox = FakeOutbox(Path(directory))
+            outbox.offline = True
+            lines: list[str] = []
+
+            def back_online() -> None:
+                outbox.offline = False
+
+            self.run_loop(Path(directory), outbox, [lambda: None] * 45 + [back_online] + [lambda: None] * 25,
+                          log=lines.append)
+        self.assertEqual(len([line for line in lines if "stato del PC" in line]), 1)
+        self.assertEqual(len(outbox.pc_statuses), 1)  # within a minute of the network coming back
 
     def test_a_new_clip_is_sent_within_a_poll_and_nothing_is_redone_while_idle(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

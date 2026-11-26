@@ -157,6 +157,7 @@ async function loadSharedSettings() {
   if (Number.isFinite(likely) && likely > 0) LIKELY_CONFIDENCE = likely;
   $('[data-filter-confidence="likely"]').title = `Almeno una clip con confidenza da ${LIKELY_CONFIDENCE} in su`;
   $('[data-filter-confidence="unsure"]').title = `Nessuna clip da ${LIKELY_CONFIDENCE} in su`;
+  showPc(data.find((row) => row.key === "pc_status")?.value);
 }
 
 async function loadSpecies() {
@@ -1771,8 +1772,12 @@ function emptyListHtml(onInat, toUpload = 0) {
 
 // The list goes by day, newest first: one heading per day ("Oggi", "Ieri", "dom 1 nov"), so the
 // cards say only the hour. A page loaded later goes on under the last heading when it is the same day.
+function daysAgo(isoDay) {
+  return Math.round((new Date(`${localDay(new Date().toISOString())}T12:00:00`) - new Date(`${isoDay}T12:00:00`)) / 86400000);
+}
+
 function dayHeading(isoDay) {
-  const ago = Math.round((new Date(`${localDay(new Date().toISOString())}T12:00:00`) - new Date(`${isoDay}T12:00:00`)) / 86400000);
+  const ago = daysAgo(isoDay);
   const label = ago === 0 ? "Oggi" : ago === 1 ? "Ieri" : formatDay(isoDay);
   return `<h2 class="day-head" data-day="${escapeHtml(isoDay)}">${label}${ago <= 1 ? ` <small>${formatDay(isoDay)}</small>` : ""}</h2>`;
 }
@@ -2767,6 +2772,69 @@ $("#refresh").addEventListener("click", async () => {
   }
 });
 
+// ---------------------------------------------------------------- the PC
+
+// uploader.py writes the PC's state every 10 minutes (health.pc_status): two missed ones, and the PC
+// is off or its uploader does not run
+const PC_STALE_MS = 25 * 60 * 1000;
+const PC_LOOKS = { ok: "in ascolto", problem: "da controllare", unknown: "nessuna notizia" };
+let pcStatus = null;
+
+// "alle 09:04", "ieri alle 09:04", "dom 23 nov alle 09:04"
+function momentLabel(iso) {
+  const ago = daysAgo(localDay(iso));
+  const hour = `alle ${hourFormat.format(new Date(iso))}`;
+  return ago === 0 ? hour : ago === 1 ? `ieri ${hour}` : `${formatDay(localDay(iso))} ${hour}`;
+}
+
+// problems by kind (health.find_problems): "stale" is said here, on the live's line, with its day
+function pcLook(status) {
+  if (Date.now() - new Date(status.at) > PC_STALE_MS) return "unknown";
+  return Object.keys(status.problems || {}).length ? "problem" : "ok";
+}
+
+function pcPanelHtml(status) {
+  const look = pcLook(status);
+  const { stale, ...problems } = status.problems || {};
+  const level = status.level > 0 ? `livello ${Math.round(20 * Math.log10(status.level))} dB` : "";
+  const where = [placeLabel(status.place), status.device ? `microfono ${status.device}` : "", level].filter(Boolean);
+  const heard = !status.heard_at ? "Il live non ha ancora analizzato audio"
+    : stale ? `Il live non analizza audio ${momentLabel(status.heard_at).replace(/^alle/, "dalle").replace(/^(?!dalle)/, "da ")}`
+      : `Ultimo audio analizzato ${momentLabel(status.heard_at)}`;
+  const pending = status.pending == null ? "" : status.pending ? `${status.pending} clip in attesa` : "nessuna clip in attesa";
+  const sent = status.sent_at ? `ultima mandata ${momentLabel(status.sent_at)}` : "";
+  const others = Object.values(problems);
+  return `<h2>PC <span class="pc-state ${look}">${PC_LOOKS[look]}</span></h2>
+    ${look === "unknown" ? `<p>Ultime notizie ${momentLabel(status.at)}: il PC è spento, o il servizio di invio non gira.</p>` : ""}
+    <p${stale ? ' class="pc-problem"' : ""}>${escapeHtml([heard, ...where].join(" · "))}</p>
+    <p>Invio a Supabase: ${escapeHtml([pending, sent].filter(Boolean).join(" · ") || "nessuna notizia")}</p>
+    ${others.length ? `<ul class="pc-problems">${others.map((problem) => `<li>${escapeHtml(problem)}</li>`).join("")}</ul>` : ""}
+    ${look === "unknown" ? "" : `<p class="hint">Aggiornato ${momentLabel(status.at)}: il PC lo scrive ogni 10 minuti.</p>`}`;
+}
+
+// the button's dot says it at a glance; the panel says what and since when
+function showPc(status) {
+  if (!status?.at) return; // an uploader older than this site: nothing to show
+  pcStatus = status;
+  const look = pcLook(status);
+  const button = $("#pc-toggle");
+  button.classList.remove("hidden");
+  button.dataset.pc = look;
+  button.title = `PC: ${PC_LOOKS[look]}`;
+  if (!$("#pc-panel").classList.contains("hidden")) $("#pc-panel").innerHTML = pcPanelHtml(status);
+}
+
+$("#pc-toggle").addEventListener("click", async () => {
+  const panel = $("#pc-panel");
+  panel.classList.toggle("hidden");
+  $("#pc-toggle").setAttribute("aria-expanded", String(!panel.classList.contains("hidden")));
+  if (panel.classList.contains("hidden")) return;
+  panel.innerHTML = pcPanelHtml(pcStatus);
+  // the latest: what the button showed may be from when the page opened
+  const { data, error } = await state.client.from("shared_settings").select("value").eq("key", "pc_status").maybeSingle();
+  if (!error && data) showPc(data.value);
+});
+
 // Back to the site (the app on the phone, a tab) after a while: what the PC heard meanwhile.
 // The numbers always; the page only near its top and with nothing in progress (a selection, a
 // clip being linked, a field being typed in, a clip playing), so nothing is taken from under you.
@@ -2781,7 +2849,7 @@ document.addEventListener("visibilitychange", async () => {
   hiddenSince = null;
   if (away < STALE_AFTER_MS || !state.client) return;
   try {
-    await refreshCounts();
+    await Promise.all([refreshCounts(), loadSharedSettings()]);
     const busy = state.selection.on || state.linking || document.activeElement?.matches("input, textarea, select")
       || [...content.querySelectorAll("audio")].some((audio) => !audio.paused);
     if (!busy && window.scrollY < 400) await render();

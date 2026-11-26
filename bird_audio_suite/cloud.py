@@ -699,6 +699,13 @@ class Outbox:
                                               "updated_at": datetime.now(timezone.utc).isoformat()}],
                          on_conflict="key")
 
+    def publish_pc_status(self, status: dict) -> None:
+        """The PC's state (health.pc_status) into birds.shared_settings: the site shows it."""
+        self._connect()
+        self.rest.upsert("shared_settings", [{"key": "pc_status", "value": status,
+                                              "updated_at": datetime.now(timezone.utc).isoformat()}],
+                         on_conflict="key")
+
     def tidy(self) -> tuple[dict[str, int], list[str]]:
         """The uploader's hourly housekeeping: files of clips on iNaturalist the site could not
         remove, observations left empty, the species iNaturalist shows for the uploaded ones, names

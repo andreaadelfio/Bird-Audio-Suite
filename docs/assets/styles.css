@@ -275,8 +275,8 @@ label { color: var(--ink-soft); font-size: 0.85rem; }
   border-radius: var(--radius);
 }
 
-.inat-panel h2 { margin: 0 0 0.4rem; font-size: 1rem; color: var(--accent-deep); }
-.inat-state { margin-left: 0.4rem; font-size: 0.85rem; font-weight: 600; color: var(--positive); }
+.inat-panel h2, .pc-panel h2 { margin: 0 0 0.4rem; font-size: 1rem; color: var(--accent-deep); }
+.inat-state, .pc-state { margin-left: 0.4rem; font-size: 0.85rem; font-weight: 600; color: var(--positive); }
 .inat-state.error { color: var(--negative); }
 .inat-token, .inat-row { display: flex; flex-wrap: wrap; gap: var(--gap); align-items: center; }
 .inat-token input { flex: 1 1 200px; }
@@ -284,6 +284,23 @@ label { color: var(--ink-soft); font-size: 0.85rem; }
 .inat-log { margin: 0.4rem 0 0; padding-left: 1.1rem; font-size: 0.85rem; max-height: 9rem; overflow-y: auto; }
 .inat-log:empty { display: none; }
 .inat-log .error { color: var(--negative); }
+
+/* ---------------------------------------------------------------- the PC (its state, from uploader.py) */
+
+.pc-panel { margin-bottom: 0.6rem; padding: 0.7rem 0.9rem; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); }
+.pc-panel p { margin: 0.2rem 0 0; }
+.pc-panel .hint { color: var(--ink-soft); font-size: 0.8rem; }
+.pc-state.problem, .pc-problems, .pc-problem { color: var(--pending); }
+.pc-state.unknown { color: var(--ink-soft); }
+.pc-problems { margin: 0.3rem 0 0; padding-left: 1.1rem; }
+/* a dot on the button: green listening, amber to check, grey no news */
+.pc-toggle { position: relative; }
+.pc-toggle::after {
+  content: ""; position: absolute; top: 2px; right: 2px; width: 0.55rem; height: 0.55rem;
+  border-radius: 999px; border: 2px solid var(--bg); background: var(--ink-soft);
+}
+.pc-toggle[data-pc="ok"]::after { background: var(--positive); }
+.pc-toggle[data-pc="problem"]::after { background: var(--pending); }
 
 /* ---------------------------------------------------------------- filters */
 
@@ -857,7 +874,8 @@ button.denoise.strong { background: var(--accent-deep); border-color: var(--acce
     padding: calc(0.45rem + env(safe-area-inset-top)) 0.5rem 0.45rem;
   }
 
-  .top-bar h1 { flex: 1; font-size: 1.05rem; }
+  /* one row with its five buttons: a narrow phone (360 px) cuts the title instead of wrapping it */
+  .top-bar h1 { flex: 1; min-width: 0; font-size: 1.05rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .tabs { order: 3; width: 100%; }
   /* scrolling down, the title row slides away and the tabs stay (2.9rem: the row and its gap) */
   .top-bar.compact { transform: translateY(-2.9rem); }
