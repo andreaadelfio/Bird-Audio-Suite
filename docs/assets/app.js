@@ -288,18 +288,38 @@ const ICON_LINK = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.9 12c
 const ICON_UNLINK = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17 7h-4v1.9h4a3.1 3.1 0 0 1 0 6.2h-4V17h4a5 5 0 0 0 0-10zM2 4.27 4.73 7A5 5 0 0 0 7 17h4v-1.9H7a3.1 3.1 0 0 1-2.53-4.88L6.56 12.3 8 13h1.27L11 14.73V13h.73l4.25 4.25 1.27-1.25L3.27 3 2 4.27zM7 8.9h1.73l-1.9-1.9L7 7v1.9z"/></svg>';
 
 // "Pica pica  W iN  status" over "Gazza · Eurasian Magpie"
+// the first day of listening: on it every species was new, so NEW means nothing up to there
+function firstListeningDay() {
+  return [...state.species.values()].map((row) => row.first_seen_date).filter(Boolean).sort()[0] || "";
+}
+
+function newBadge(firstSeen) {
+  return `<span class="new-badge" title="Prima volta in assoluto: ${formatDay(firstSeen)}">NEW</span>`;
+}
+
+// NEW on a card: the species it counts as (the correction, if any) was never heard before its day.
+// Worth a careful listen: a first time is also where BirdNET's mistakes hide
+function heardForTheFirstTime(observation) {
+  const counted = observation.corrected_scientific_name || observation.scientific_name;
+  const firstSeen = state.species.get(counted)?.first_seen_date;
+  const firstEver = firstListeningDay();
+  return observation.status !== "rejected" && observation.day && firstEver && observation.day > firstEver
+    && firstSeen === observation.day ? firstSeen : "";
+}
+
 function speciesHeaderHtml(observation, label, kind = observation.status, selectable = false) {
   const species = observation.species || {};
+  const firstTime = heardForTheFirstTime(observation);
   const names = [species.italian_name, species.english_name].filter(Boolean).map(escapeHtml).join(" · ");
   return `
       <header class="obs-head">
         <div class="title-row">
           ${selectable ? selectBox("observation", observation.id, "Seleziona l'osservazione") : ""}
-          <h2><i>${escapeHtml(observation.scientific_name)}</i></h2>
+          <h2><i>${escapeHtml(observation.scientific_name)}</i>${firstTime && !names ? newBadge(firstTime) : ""}</h2>
           ${speciesLinks(observation.scientific_name)}
           ${label ? `<span class="badge badge-${kind}">${escapeHtml(label)}</span>` : ""}
         </div>
-        ${names ? `<p class="common-names">${names}</p>` : ""}
+        ${names ? `<p class="common-names">${names}${firstTime ? newBadge(firstTime) : ""}</p>` : ""}
       </header>`;
 }
 
@@ -2555,14 +2575,14 @@ async function renderReport(days = Number(storageGet("reportDays")) || 7) {
   const totalMinutes = Math.round(speciesRows.reduce((sum, row) => sum + row.seconds, 0) / 60);
   // NEW: heard for the first time ever in this period; meaningless when the period reaches back
   // to the first day of listening (then every species would be new)
-  const firstEver = [...state.species.values()].map((row) => row.first_seen_date).filter(Boolean).sort()[0] || "";
+  const firstEver = firstListeningDay();
   const firstSeen = (row) => state.species.get(row.scientific_name)?.first_seen_date || "";
   const isNew = (row) => firstEver && from > firstEver && firstSeen(row) >= from;
   reportShown = { rows, from };
   speciesTable.rows = speciesRows;
   speciesTable.rowHtml = (row) => `
             <tr>
-              <td>${speciesLink(row)}${isNew(row) ? `<span class="new-badge" title="Prima volta in assoluto: ${formatDay(firstSeen(row))}">NEW</span>` : ""}${speciesNote(row)}</td>
+              <td>${speciesLink(row)}${isNew(row) ? newBadge(firstSeen(row)) : ""}${speciesNote(row)}</td>
               <td>${row.observations}</td><td>${row.days}</td>
               <td class="${row.best ? `conf-${confidenceClass(row.best)}` : ""}">${row.best ? row.best.toFixed(2) : "—"}</td>
               <td>${row.last_heard ? shortDateFormat.format(new Date(row.last_heard)) : ""}</td>
