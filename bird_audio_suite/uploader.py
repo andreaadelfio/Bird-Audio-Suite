@@ -162,7 +162,23 @@ def run_uploader(
     pull_error = ""
     last_purge = -purge_every_seconds
     settings_due, settings_tried, settings_failed = True, -retry_seconds, False
-    last_pc_status, pc_status_failed = -pc_status_seconds, False
+    pc_status = {"last": -pc_status_seconds, "failed": False}
+
+    def publish_pc_status() -> None:
+        """When due: after a push (the state counts what still waits), and while a long one goes,
+        so days of backlog do not look like a PC switched off"""
+        if clock() - pc_status["last"] < pc_status_seconds:
+            return
+        pc_status["last"] = clock()
+        try:
+            outbox.publish_pc_status(describe_pc())
+            pc_status["failed"] = False
+        except Exception as exc:  # offline: again in a minute, said once
+            if not pc_status["failed"]:
+                log(f"{datetime.now():%H:%M:%S} - stato del PC per il sito non inviato: {exc!r}")
+            pc_status["failed"] = True
+            pc_status["last"] = clock() - pc_status_seconds + retry_seconds
+
     while not should_stop():
         if "LIKELY_CONFIDENCE" in watcher.poll():
             settings_due = True
@@ -200,6 +216,7 @@ def run_uploader(
                 if clock() - shown[0] >= progress_seconds:
                     shown[0] = clock()
                     status.write(outbox_items(detections_dir), partial, finished=False)
+                    publish_pc_status()
 
             try:
                 report, error = outbox.push(progress=progress), ""
@@ -219,17 +236,7 @@ def run_uploader(
                     log(f"{datetime.now():%H:%M:%S} - invio di nuovo a posto")
                 last_error = same_error(problem)
                 status.write(outbox_items(detections_dir), report, seconds, error)
-        # after the push: the state it publishes counts what is still waiting
-        if clock() - last_pc_status >= pc_status_seconds:
-            last_pc_status = clock()
-            try:
-                outbox.publish_pc_status(describe_pc())
-                pc_status_failed = False
-            except Exception as exc:  # offline: again in a minute, said once
-                if not pc_status_failed:
-                    log(f"{datetime.now():%H:%M:%S} - stato del PC per il sito non inviato: {exc!r}")
-                pc_status_failed = True
-                last_pc_status = clock() - pc_status_seconds + retry_seconds
+        publish_pc_status()
         if clock() - last_purge >= purge_every_seconds:
             last_purge = clock()
             try:

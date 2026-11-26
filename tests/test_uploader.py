@@ -256,6 +256,25 @@ class UploaderLoopTests(unittest.TestCase):
         self.assertEqual([state["sent_total"] for state in meanwhile], [0, 0, 0, 0])  # counted once, at the end
         self.assertEqual((status["pending"], status["sent_total"]), (0, 5))
 
+    def test_a_long_backlog_does_not_look_like_a_pc_switched_off(self) -> None:
+        # days offline, a minute a clip: the site would say "nessuna notizia" after 25 minutes
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            for index in range(25):
+                write_clip(folder, f"Merlo_{index:02}", recorded_at=f"2026-10-11T08:{index:02}:00+02:00")
+            outbox = FakeOutbox(folder)
+            loop = Loop([lambda: None])
+
+            def a_minute_per_clip() -> None:
+                loop.now += 60
+
+            outbox.during_push = a_minute_per_clip
+            self.run_loop(folder, outbox, None, loop=loop)
+
+        self.assertEqual([(state["at"], state["pending"]) for state in outbox.pc_statuses],
+                         [(60, 24), (660, 14), (1260, 4)])
+
+
 class StatusTests(unittest.TestCase):
     def test_the_line_under_the_live_table(self) -> None:
         status = {"updated_at": 1000.0, "pending": 2, "last_sent_at": None, "seconds_per_clip": 2.34,

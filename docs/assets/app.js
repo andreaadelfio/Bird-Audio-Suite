@@ -2879,6 +2879,7 @@ function showPc(status) {
   button.classList.remove("hidden");
   button.dataset.pc = look;
   button.title = `PC: ${PC_LOOKS[look]}`;
+  button.setAttribute("aria-label", `Stato del PC: ${PC_LOOKS[look]}`);
   if (!$("#pc-panel").classList.contains("hidden")) $("#pc-panel").innerHTML = pcPanelHtml(status);
 }
 
